@@ -189,6 +189,7 @@ export interface ThreadStartParams {
   developerInstructions?: string
   experimentalRawEvents: boolean
   persistExtendedHistory: boolean
+  ephemeral?: boolean
 }
 
 export interface CodexTextUserInput {

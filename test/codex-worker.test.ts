@@ -6,7 +6,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { existsSync } from "node:fs"
 
-import { CodexWorker, DEFAULT_REQUEST_TIMEOUT_MS, DEFAULT_TURN_STALL_TIMEOUT_MS } from "../src/worker/codex.js"
+import { CodexWorker, DEFAULT_REQUEST_TIMEOUT_MS, DEFAULT_THREAD_EPHEMERAL, DEFAULT_TURN_STALL_TIMEOUT_MS } from "../src/worker/codex.js"
 import { JsonRpcStdioClient, StdioTransportError, JsonRpcResponseError } from "../src/worker/jsonrpc-stdio.js"
 import { AgentError, AgentInterrupted, type WorkerProgress } from "../src/worker/index.js"
 import type { AgentSpec } from "../src/dsl/types.js"
@@ -259,17 +259,26 @@ test("JsonRpcStdioClient: dispatches notifications and server requests", () => {
 // intercepting spawnChild. Avoids the attach-after-spawn race.
 function makeServedWorker(
   turnScript: (req: any, reply: (obj: unknown) => void, turnIndex: number) => void,
-  opts: { requestTimeoutMs?: number; turnStallTimeoutMs?: number; threadId?: string; initResult?: unknown; onServerReq?: (child: FakeChild, req: any) => void } = {},
+  opts: {
+    requestTimeoutMs?: number
+    turnStallTimeoutMs?: number
+    threadEphemeral?: boolean
+    threadId?: string
+    initResult?: unknown
+    onServerReq?: (child: FakeChild, req: any) => void
+  } = {},
 ): { worker: CodexWorker; getChild: () => FakeChild } {
   let child!: FakeChild
   let turnIndex = 0
   const worker = new CodexWorker({
     requestTimeoutMs: opts.requestTimeoutMs,
     turnStallTimeoutMs: opts.turnStallTimeoutMs,
+    threadEphemeral: opts.threadEphemeral,
     spawnChild: () => {
       child = new FakeChild()
       const threadId = opts.threadId ?? "thread-1"
       child.onWrite = (req: any) => {
+        opts.onServerReq?.(child, req)
         if (req.method === "initialize") return child.pushLine({ jsonrpc: "2.0", id: req.id, result: opts.initResult ?? INIT_OK })
         if (req.method === "initialized") return
         if (req.method === "thread/start") return child.pushLine({ jsonrpc: "2.0", id: req.id, result: { thread: { id: threadId } } })
@@ -305,6 +314,48 @@ test("runAgent happy path (served before spawn): resolves with usage", async () 
   assert.equal(res.text, "done")
   assert.equal(res.usage.inputTokens, 50)
   assert.equal(res.usage.outputTokens, 10)
+  await worker.shutdown()
+})
+
+test("CodexWorker starts Codex provider threads as ephemeral by default", async () => {
+  const threadStarts: any[] = []
+  const { worker } = makeServedWorker(
+    (_req, reply) => {
+      reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
+      reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
+    },
+    {
+      onServerReq: (_child, req) => {
+        if (req.method === "thread/start") threadStarts.push(req.params)
+      },
+    },
+  )
+
+  assert.equal(DEFAULT_THREAD_EPHEMERAL, true)
+  await worker.runAgent(spec(), ctx())
+  assert.equal(threadStarts.length, 1)
+  assert.equal(threadStarts[0].ephemeral, true)
+  await worker.shutdown()
+})
+
+test("CodexWorker can explicitly disable ephemeral thread/start for debugging", async () => {
+  const threadStarts: any[] = []
+  const { worker } = makeServedWorker(
+    (_req, reply) => {
+      reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
+      reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
+    },
+    {
+      threadEphemeral: false,
+      onServerReq: (_child, req) => {
+        if (req.method === "thread/start") threadStarts.push(req.params)
+      },
+    },
+  )
+
+  await worker.runAgent(spec(), ctx())
+  assert.equal(threadStarts.length, 1)
+  assert.equal(threadStarts[0].ephemeral, false)
   await worker.shutdown()
 })
 

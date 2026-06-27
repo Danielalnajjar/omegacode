@@ -7,7 +7,7 @@ metadata:
 
 # omegacode
 
-Run a workflow file that orchestrates multiple agents deterministically. `omegacode run <file.workflow.js>` executes the file; it persists to `~/.omegacode/runs/<id>/` and prints a runId. Use `omegacode serve` (or `run --open`) to watch live progress. Each `agent()` call spawns a real **Codex** (gpt-5.x) or **Claude Code** agent — you pick the provider per call.
+Run a workflow file that orchestrates multiple agents deterministically. `omegacode run <file.workflow.js>` executes the file; it persists to `~/.omegacode/runs/<id>/` and prints a runId. Use `omegacode serve` (or `run --open`) to watch live progress. Each `agent()` call spawns a real **Codex** (gpt-5.x) or **Claude Code** agent — you pick the provider per call. Codex provider worker threads are started as ephemeral Codex threads, so the durable audit trail is the OmegaCode run directory, not normal Codex Desktop sidebar sessions.
 
 A workflow structures work across many agents — to be comprehensive (decompose and cover in parallel), to be confident (independent perspectives and adversarial checks before committing), or to take on scale one context can't hold (migrations, audits, broad sweeps). The file is where you encode that structure: what fans out, what verifies, what synthesizes.
 

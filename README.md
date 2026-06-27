@@ -40,6 +40,9 @@ With the skill installed, just ask your agent:
 It will author a workflow — finders fan out in parallel, a cross-provider skeptic pass tries to
 refute each finding, a synthesizer merges what survives — then run it and report back. Runs are
 journaled and resumable, and `omegacode serve` opens a live dashboard of every agent as it works.
+When the Codex provider is used, the provider-side Codex worker threads are started as ephemeral
+threads so they do not persist as normal Codex Desktop sidebar sessions; OmegaCode's own run
+directory remains the durable record.
 
 ## What a workflow looks like
 

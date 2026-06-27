@@ -47,6 +47,10 @@ export interface CodexWorkerOpts {
    *  thread has received NO inbound frame (notification or approval request)
    *  for this long, instead of hanging forever. */
   turnStallTimeoutMs?: number
+  /** Start provider Codex threads as ephemeral by default. OmegaCode owns run
+   *  artifacts itself; persisting each worker as a normal Codex Desktop thread
+   *  creates sidebar noise without helping OmegaCode resume. */
+  threadEphemeral?: boolean
 }
 
 const PROVIDER = "codex" as const
@@ -68,6 +72,12 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000
  *  is permanent; detecting it in 30 minutes still beats a run that never
  *  settles. (M30) */
 export const DEFAULT_TURN_STALL_TIMEOUT_MS = 30 * 60_000
+
+/** Provider-side Codex threads are an implementation detail of an OmegaCode run.
+ *  Keeping them ephemeral prevents worker sessions from being persisted into the
+ *  user's normal Codex Desktop thread store while preserving OmegaCode's own
+ *  events/journal/transcripts/result files. */
+export const DEFAULT_THREAD_EPHEMERAL = true
 
 /** The silent second-turn prompt that extracts the final structured answer. */
 const EXTRACTION_PROMPT =
@@ -109,6 +119,7 @@ export class CodexWorker implements Worker {
   private readonly spawnChild?: SpawnChild
   private readonly requestTimeoutMs: number
   private readonly turnStallTimeoutMs: number
+  private readonly threadEphemeral: boolean
   private client: JsonRpcStdioClient | null = null
   private initPromise: Promise<void> | null = null
   /** The handshaked server's userAgent ("…/0.137.0 (…)") — quoted in drift and
@@ -123,6 +134,7 @@ export class CodexWorker implements Worker {
     this.spawnChild = opts.spawnChild
     this.requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
     this.turnStallTimeoutMs = opts.turnStallTimeoutMs ?? DEFAULT_TURN_STALL_TIMEOUT_MS
+    this.threadEphemeral = opts.threadEphemeral ?? DEFAULT_THREAD_EPHEMERAL
   }
 
   async runAgent(spec: AgentSpec, ctx: WorkerContext): Promise<AgentResult> {
@@ -147,6 +159,7 @@ export class CodexWorker implements Worker {
       ...(spec.instructions ? { developerInstructions: spec.instructions } : {}),
       experimentalRawEvents: false,
       persistExtendedHistory: false,
+      ephemeral: this.threadEphemeral,
     }
     const startResult = await this.request("thread/start", startParams)
     const threadId = readThreadId(startResult)
@@ -749,4 +762,3 @@ function codexToolInput(item: Record<string, unknown>): unknown {
   if (Array.isArray(item.queries)) return item.queries
   return undefined
 }
-

@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url"
 import { runWorkflow, type RunOverrides } from "./runtime/run.js"
 import { parseWorkflow, WorkflowSyntaxError } from "./runtime/sandbox.js"
 import { listWorkflows, resolveWorkflowName, WorkflowNotFoundError } from "./runtime/registry.js"
-import { dataRoot, Journal, JournalNotFoundError, ResumePreconditionError } from "./runtime/journal.js"
+import { dataRoot, Journal, JournalNotFoundError, ResumePreconditionError, runDir } from "./runtime/journal.js"
 import { WorkflowError } from "./runtime/primitives.js"
 import { startViewer } from "./server/serve.js"
 import { AgentError, AgentInterrupted } from "./worker/index.js"
@@ -36,6 +36,7 @@ export class UsageError extends Error {
 const BOOLEAN_FLAGS = new Set([
   "fake",
   "json",
+  "start-json",
   "open",
   "no-serve",
   "prune",
@@ -378,7 +379,7 @@ function dirSize(dir: string): number {
 async function cmdRun(flags: Flags): Promise<void> {
   const file = (flags._ as string[])[1]
   if (!file) {
-    console.error("usage: omegacode run <file.workflow.js | name> [--args <json>] [--provider codex|claude-code|opencode|pi] [--fake] [--json]")
+    console.error("usage: omegacode run <file.workflow.js | name> [--args <json>] [--provider codex|claude-code|opencode|pi] [--fake] [--json] [--start-json]")
     process.exitCode = 1
     return
   }
@@ -437,13 +438,18 @@ async function cmdRun(flags: Flags): Promise<void> {
   const port = portFlag(flags)
   // ensureViewer returns undefined when the viewer never came up — never claim a dead URL.
   const base = wantServe ? await ensureViewer(port).catch(() => undefined) : undefined
-  const onStart = base
-    ? (runId: string) => {
-        const u = `${base}#/run/${runId}`
-        if (flags.json !== true) process.stderr.write(`view: ${u}\n`)
-        if (flags.open === true) openBrowser(u)
-      }
-    : undefined
+  const startJson = flags["start-json"] === true
+  const onStart =
+    base || startJson
+      ? (runId: string) => {
+          const u = base ? `${base}#/run/${runId}` : null
+          if (startJson) {
+            process.stderr.write(JSON.stringify({ type: "run.started", runId, runDir: runDir(runId), url: u }) + "\n")
+          }
+          if (u && flags.json !== true) process.stderr.write(`view: ${u}\n`)
+          if (u && flags.open === true) openBrowser(u)
+        }
+      : undefined
 
   const outcome = await runWorkflow({
     file: resolvedFile,
@@ -589,7 +595,7 @@ async function cmdDoctor(): Promise<void> {
   console.log(`  codex        : ${check(codexBin, ["--version"])}`)
   console.log(`  claude-code  : ${check("claude", ["--version"])}`)
   console.log(`  opencode     : ${withMin(check(opencodeBin, ["--version"]), OPENCODE_MIN_VERSION, "upgrade the opencode CLI")}`)
-  console.log(`  pi           : ${withMin(piOut, PI_MIN_VERSION, "npm i -g @earendil-works/pi-coding-agent")}`)
+  console.log(`  pi           : ${withMin(piOut, PI_MIN_VERSION, "bun add -g @earendil-works/pi-coding-agent")}`)
   console.log(`  data dir     : ${dataRoot()}`)
 }
 
@@ -650,11 +656,14 @@ Usage:
       --resume <runId>                     replay unchanged prefix, re-run the rest
       --fake                               run with a fake worker (no real agents)
       --json                               print {runId,status,url,result,error} as JSON (viewer still starts)
+      --start-json                         print {"type":"run.started",runId,runDir,url} on stderr at launch
       --open                               also open the browser to this run
       --no-serve                           don't auto-start the viewer
 
   By default \`run\` auto-starts the viewer (if not already up) and prints the run's URL
   (with --json the URL is in the JSON \`url\` field and the \`view:\` line is suppressed).
+  Use --start-json with --json when a wrapper needs the run id and native run directory before
+  completion; stdout remains reserved for the final JSON object.
 
   omegacode serve [--port 4123] [--host h] [--idle-shutdown]   Live read-only web viewer of all runs
   omegacode runs [--prune --keep <N>] [--prune-stale]   List runs (--prune old, --prune-stale dead)

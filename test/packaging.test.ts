@@ -8,7 +8,7 @@
 
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -18,10 +18,15 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const read = (rel: string) => readFileSync(join(root, rel), "utf8")
 const pkg = JSON.parse(read("package.json")) as Record<string, any>
 
-/** Run `npm <args>` portably: on Windows npm is npm.cmd, which only spawns through a shell. */
-function npm(args: string[], cwd: string): string {
+/** Run `pnpm <args>` portably: on Windows pnpm is pnpm.cmd, which only spawns through a shell. */
+function pnpm(args: string[], cwd: string): string {
   const win = process.platform === "win32"
-  return execFileSync(win ? "npm.cmd" : "npm", args, { cwd, encoding: "utf8", shell: win })
+  return execFileSync(win ? "pnpm.cmd" : "pnpm", args, { cwd, encoding: "utf8", shell: win })
+}
+
+function packEntries(stdout: string): Array<{ path: string }> {
+  const parsed = JSON.parse(stdout)
+  return (Array.isArray(parsed) ? parsed[0] : parsed).files as Array<{ path: string }>
 }
 
 describe("exports / types map (M31)", () => {
@@ -235,12 +240,13 @@ describe("build pipeline is portable (L19, M31)", () => {
     assert.ok(!/cp\s+-r/.test(tsup), "cp -r is POSIX-only; use the node postbuild helper")
   })
 
-  test("build script runs the node build helpers (no bare pnpm -C build, no POSIX copy)", () => {
+  test("build script uses the pnpm workspace viewer build plus node postbuild (no POSIX copy)", () => {
     const build = pkg.scripts.build as string
-    assert.ok(build.includes("scripts/build-viewer.mjs"), "build must use the viewer build helper")
+    assert.ok(build.includes("pnpm --filter viewer build"), "build must use the viewer workspace package")
     assert.ok(build.includes("scripts/postbuild.mjs"), "build must run the portable postbuild helper")
     assert.ok(build.includes("tsup"), "build must run tsup")
     assert.ok(!/rm\s+-rf/.test(build) && !/cp\s+-r/.test(build), "build must not use POSIX rm/cp")
+    assert.ok(!build.includes("scripts/build-viewer.mjs"), "old npm-to-pnpm viewer bridge must stay deleted")
   })
 
   test("prepublishOnly builds (so the published tarball is fresh)", () => {
@@ -248,7 +254,7 @@ describe("build pipeline is portable (L19, M31)", () => {
   })
 
   test("the build helper scripts parse as valid ESM", () => {
-    for (const s of ["scripts/build-viewer.mjs", "scripts/postbuild.mjs"]) {
+    for (const s of ["scripts/install-safe.mjs", "scripts/postbuild.mjs"]) {
       // node --check throws (non-zero exit) on a syntax error.
       execFileSync(process.execPath, ["--check", join(root, s)])
     }
@@ -327,9 +333,9 @@ describe("postbuild helper behavior (L19)", () => {
   })
 })
 
-describe("npm pack tarball contract (M31)", () => {
+describe("pnpm pack tarball contract (M31)", () => {
   // Build an isolated package from the real package.json + a synthetic dist matching the files
-  // whitelist, then run `npm pack --dry-run --json` there. This asserts the packaging CONTRACT
+  // whitelist, then run `pnpm pack --dry-run --json` there. This asserts the packaging CONTRACT
   // without depending on the repo's dist (which other agents may have left half-built mid-sweep).
   let stage: string
   let entries: Array<{ path: string }>
@@ -359,8 +365,8 @@ describe("npm pack tarball contract (M31)", () => {
     writeFileSync(join(stage, "src", "dsl", "ambient.d.ts"), "export {}\n")
     writeFileSync(join(stage, "secret.env"), "TOKEN=xxx\n")
 
-    const out = npm(["pack", "--dry-run", "--json"], stage)
-    entries = JSON.parse(out)[0].files as Array<{ path: string }>
+    const out = pnpm(["pack", "--dry-run", "--json"], stage)
+    entries = packEntries(out)
   })
   after(() => {
     rmSync(stage, { recursive: true, force: true })
@@ -392,14 +398,14 @@ describe("npm pack tarball contract (M31)", () => {
   })
 })
 
-describe("real npm pack tarball (M31, post-build)", () => {
+describe("real pnpm pack tarball (M31, post-build)", () => {
   // Runs against the actual repo dist when it exists. Skipped when dist hasn't been built in this
   // checkout (the synthetic contract suite above still covers the packaging rules).
   const built = existsSync(join(root, "dist", "index.d.ts"))
 
   test("built dist packs the dts, ambient, web assets, LICENSE — and nothing unexpected", { skip: !built }, () => {
-    const out = npm(["pack", "--dry-run", "--json"], root)
-    const entries = JSON.parse(out)[0].files as Array<{ path: string }>
+    const out = pnpm(["pack", "--dry-run", "--json"], root)
+    const entries = packEntries(out)
     const paths = entries.map((e) => e.path)
     for (const required of [
       "LICENSE",
@@ -432,104 +438,39 @@ describe("real npm pack tarball (M31, post-build)", () => {
   })
 })
 
-describe("viewer build helper (L19)", () => {
-  // The root is npm-governed; the viewer is pnpm-lockfile-governed. The helper must reach pnpm even
-  // on an npm-only machine (npx fallback) and must install viewer deps before building.
-  const helper = read("scripts/build-viewer.mjs")
-  const posix = process.platform !== "win32"
-
-  test("installs with a frozen lockfile before building", () => {
-    assert.match(helper, /--frozen-lockfile/)
-  })
-
-  test("falls back to npx pnpm when pnpm is missing", () => {
-    assert.match(helper, /npx/, "helper must have an npx fallback for npm-only machines")
-  })
-
-  const stageHelper = (binStubs: Record<string, string>) => {
-    const work = mkdtempSync(join(tmpdir(), "omega-viewerbuild-"))
-    mkdirSync(join(work, "scripts"), { recursive: true })
-    cpSync(join(root, "scripts", "build-viewer.mjs"), join(work, "scripts", "build-viewer.mjs"))
-    mkdirSync(join(work, "viewer"), { recursive: true })
-    const bin = join(work, "bin")
-    mkdirSync(bin, { recursive: true })
-    for (const [name, script] of Object.entries(binStubs)) {
-      const p = join(bin, name)
-      writeFileSync(p, script)
-      chmodSync(p, 0o755)
-    }
-    return { work, bin }
-  }
-
-  const runHelper = (work: string, bin: string) =>
-    execFileSync(process.execPath, [join(work, "scripts", "build-viewer.mjs")], {
-      stdio: "pipe",
-      env: { ...process.env, PATH: bin, LOG: join(work, "log.txt") },
-    })
-
-  test("uses pnpm from PATH: install (no node_modules) then build", { skip: !posix }, () => {
-    const { work, bin } = stageHelper({
-      pnpm: '#!/bin/sh\necho "pnpm $@" >> "$LOG"\nexit 0\n',
-    })
-    try {
-      runHelper(work, bin)
-      const log = readFileSync(join(work, "log.txt"), "utf8").trim().split("\n")
-      assert.deepEqual(log, ["pnpm install --frozen-lockfile", "pnpm build"])
-    } finally {
-      rmSync(work, { recursive: true, force: true })
-    }
-  })
-
-  test("skips install when viewer/node_modules exists", { skip: !posix }, () => {
-    const { work, bin } = stageHelper({
-      pnpm: '#!/bin/sh\necho "pnpm $@" >> "$LOG"\nexit 0\n',
-    })
-    try {
-      mkdirSync(join(work, "viewer", "node_modules"), { recursive: true })
-      runHelper(work, bin)
-      const log = readFileSync(join(work, "log.txt"), "utf8").trim().split("\n")
-      assert.deepEqual(log, ["pnpm build"])
-    } finally {
-      rmSync(work, { recursive: true, force: true })
-    }
-  })
-
-  test("falls back to npx pnpm@10 when pnpm is not on PATH", { skip: !posix }, () => {
-    const { work, bin } = stageHelper({
-      npx: '#!/bin/sh\necho "npx $@" >> "$LOG"\nexit 0\n',
-    })
-    try {
-      mkdirSync(join(work, "viewer", "node_modules"), { recursive: true })
-      runHelper(work, bin)
-      const log = readFileSync(join(work, "log.txt"), "utf8").trim().split("\n")
-      assert.deepEqual(log, ["npx --yes pnpm@10 build"])
-    } finally {
-      rmSync(work, { recursive: true, force: true })
-    }
-  })
-
-  test("propagates a non-zero pnpm exit as a loud failure", { skip: !posix }, () => {
-    const { work, bin } = stageHelper({
-      pnpm: "#!/bin/sh\nexit 7\n",
-    })
-    try {
-      mkdirSync(join(work, "viewer", "node_modules"), { recursive: true })
-      assert.throws(() => runHelper(work, bin), /exited with code 7/)
-    } finally {
-      rmSync(work, { recursive: true, force: true })
-    }
-  })
-})
-
 describe("one coherent package-manager story (L19)", () => {
-  test("root is npm-governed (package-lock.json present)", () => {
-    assert.ok(existsSync(join(root, "package-lock.json")))
+  const workspace = read("pnpm-workspace.yaml")
+
+  test("root package declares pnpm ownership and engines", () => {
+    assert.equal(pkg.packageManager, "pnpm@11.8.0")
+    assert.equal(pkg.engines.node, ">=20")
+    assert.equal(pkg.engines.pnpm, ">=11.4.0 <12")
   })
 
-  test("viewer is pnpm-lockfile-governed and the bundle build goes through the helper", () => {
-    assert.ok(existsSync(join(root, "viewer", "pnpm-lock.yaml")))
-    assert.ok((pkg.scripts["viewer:build"] as string).includes("scripts/build-viewer.mjs"))
-    // The publish path must never assume viewer deps are pre-installed.
-    assert.ok(!(pkg.scripts.build as string).includes("pnpm -C viewer build"))
+  test("one root pnpm workspace and lockfile own root plus viewer", () => {
+    assert.ok(existsSync(join(root, "pnpm-workspace.yaml")), "root pnpm-workspace.yaml must exist")
+    assert.ok(existsSync(join(root, "pnpm-lock.yaml")), "root pnpm-lock.yaml must exist")
+    assert.match(workspace, /packages:\n\s+- "\."\n\s+- "viewer"/)
+    assert.match(workspace, /minimumReleaseAge:\s*1440/)
+    assert.match(workspace, /strictDepBuilds:\s*true/)
+    assert.match(workspace, /trustPolicy:\s*no-downgrade/)
+  })
+
+  test("stale split-lockfile and npm bridge artifacts are gone", () => {
+    assert.ok(!existsSync(join(root, "package-lock.json")), "root package-lock.json must be removed")
+    assert.ok(!existsSync(join(root, "viewer", "pnpm-lock.yaml")), "viewer-local lockfile must be removed")
+    assert.ok(!existsSync(join(root, "viewer", "pnpm-workspace.yaml")), "viewer-local workspace must be removed")
+    assert.ok(!existsSync(join(root, "scripts", "build-viewer.mjs")), "npx/self-install viewer bridge must be removed")
+  })
+
+  test("scripts are pnpm-only and route viewer commands through workspace filters", () => {
+    for (const [name, value] of Object.entries(pkg.scripts as Record<string, string>)) {
+      assert.ok(!/\bnpm\s+run\b/.test(value), `${name} must not invoke npm run`)
+      assert.ok(!/\bnpx\b/.test(value), `${name} must not invoke npx`)
+      assert.ok(!/\bpnpm\s+-C\b/.test(value), `${name} must use workspace filters instead of pnpm -C`)
+    }
+    assert.equal(pkg.scripts["viewer:build"], "pnpm --filter viewer build")
+    assert.equal(pkg.scripts["viewer:dev"], "pnpm --filter viewer dev")
+    assert.match(pkg.scripts["verify:deps"], /pnpm pack --dry-run --json/)
   })
 })

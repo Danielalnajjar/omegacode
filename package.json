@@ -4,6 +4,7 @@
   "description": "Run JS workflow files that orchestrate Codex, Claude Code, OpenCode, and pi agents (agent()/parallel()/pipeline()/phase()).",
   "license": "MIT",
   "author": "Sawyer Hood",
+  "packageManager": "pnpm@11.8.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/SawyerHood/omegacode.git"
@@ -42,17 +43,21 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=20",
+    "pnpm": ">=11.4.0 <12"
   },
   "scripts": {
-    "build": "node scripts/build-viewer.mjs && tsup && node scripts/postbuild.mjs",
-    "prepublishOnly": "npm run build",
+    "build": "pnpm --filter viewer build && tsup && node scripts/postbuild.mjs",
+    "prepublishOnly": "pnpm run build",
     "typecheck": "tsc --noEmit",
     "dev": "tsx src/cli.ts",
     "test": "node --test --import tsx ./test/*.test.ts",
     "start": "node dist/cli.js",
-    "viewer:dev": "pnpm -C viewer dev",
-    "viewer:build": "node scripts/build-viewer.mjs"
+    "viewer:dev": "pnpm --filter viewer dev",
+    "viewer:build": "pnpm --filter viewer build",
+    "pnpm:devPreinstall": "node scripts/install-safe.mjs --dev-preinstall",
+    "install:safe": "node scripts/install-safe.mjs --frozen",
+    "verify:deps": "pnpm test && pnpm typecheck && pnpm build && pnpm pack --dry-run --json"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.163",

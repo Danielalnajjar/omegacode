@@ -515,6 +515,9 @@ printed at the end of the prior run.)*
   wraps `{ runId, status, url, result, error }` for piping (§12). *(The richer
   `{ result, usage, durationMs, agents: [...] }` envelope from the original sketch is **not
   shipped** — usage/per-agent detail lives in `events.jsonl` and the viewer, §10.2.)*
+- **Start event (stderr):** `--start-json` emits one `{"type":"run.started", "runId", "runDir", "url"}`
+  line when the native run directory exists. It is for wrappers that need immediate run identity;
+  stdout remains reserved for the final result/envelope.
 
 ### 10.2 The viewer server (HTTP visualization)
 Every run already persists to `~/.omegacode/runs/<runId>/`, so the web UI is just a **reader of
@@ -615,10 +618,10 @@ estimate — were **not shipped**. `validate` only parses the file and prints it
 
 ```
 omegacode run <file.workflow.js | name> [--args <json> | --args-file f.json]
-                                 [--provider codex|claude-code] [--model m] [--effort e]
+                                 [--provider codex|claude-code|opencode|pi] [--model m] [--effort e]
                                  [--sandbox read-only|workspace-write|danger-full-access] [--cwd <dir>]
                                  [--concurrency N] [--budget N] [--resume <runId>]
-                                 [--fake] [--json] [--open] [--no-serve] [--port N]
+                                 [--fake] [--json] [--start-json] [--open] [--no-serve] [--port N]
 omegacode serve [--port 4123] [--host h] [--idle-shutdown]   # read-only viewer over all runs
 omegacode runs [--prune --keep N] [--prune-stale]            # list runs (or prune old / dead ones)
 omegacode workflows [--json]            # list saved/named workflows (project, user, builtin tiers)
@@ -633,6 +636,8 @@ omegacode install-skill [--claude] [--agents]   # install skill/SKILL.md into ag
 (both-or-neither, like every other provider/model site); individual `agent()` calls override the
 pair via `opts.provider` + `opts.model`. By default `run` auto-starts the viewer and prints the run's URL; `--open` also launches
 the browser, `--no-serve` opts out, and `--json` keeps stdout pure JSON (the URL moves to a `url` field).
+`--start-json` writes the early `run.started` event to stderr with the native `runDir`, without changing
+final stdout.
 On completion *or* failure, `run` prints the `runId` and the exact `--resume` command. `--fake` swaps in
 the in-process fake worker (no real provider calls) for offline smoke tests. `guide` and `install-skill`
 both read the single source of truth `skill/SKILL.md`.
@@ -708,13 +713,13 @@ omegacode/
       claude.ts           # ClaudeWorker: query() loop, outputFormat, canUseTool sandbox gate
       fake.ts             # in-process FakeWorker (--fake): synthesizes deterministic text/structured output
       errors.ts           # normalize codexErrorInfo / SDKResultError → AgentError; retry classification
-  viewer/                 # the web viewer — a standalone React + Vite app (built into a static bundle
-                          #  by the build script, then served by src/server/serve.ts)
+  viewer/                 # the web viewer — a React + Vite pnpm workspace package (built into a
+                          #  static bundle by the root build script, then served by src/server/serve.ts)
   examples/
     hello.workflow.js  deep-research.workflow.js  code-review.workflow.js
     explore-codebase.workflow.js  parity-audit.workflow.js  omega-logos.workflow.js
   skill/SKILL.md          # the canonical authoring guide that ships with the tool
-  test/                   # node:test suites (run via `npm test`)
+  test/                   # node:test suites (run via `pnpm test`)
 ```
 
 `worker/index.ts` + `worker/factory.ts` are the seam: the runtime depends only on `Worker`, so a new

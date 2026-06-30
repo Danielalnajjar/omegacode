@@ -12,7 +12,7 @@ drive **Claude Code**, **Codex**, **OpenCode**, and **pi** in a single run.
 ## Install
 
 ```bash
-npm install -g omegacode
+bun add -g omegacode
 omegacode install-skill
 ```
 
@@ -21,7 +21,7 @@ omegacode install-skill
 `--claude` or `--agents` to install to just one.
 
 You'll need Node 20+ and at least one worker installed: `codex` (the default provider), `claude`,
-`opencode` (≥ 1.16.2), and/or `pi` (≥ 0.79.1, `npm i -g @earendil-works/pi-coding-agent`). Run
+`opencode` (≥ 1.16.2), and/or `pi` (≥ 0.79.1, `bun add -g @earendil-works/pi-coding-agent`). Run
 `omegacode doctor` to check — it flags binaries below the minimum versions, which the workers
 refuse at runtime.
 

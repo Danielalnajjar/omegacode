@@ -3,9 +3,7 @@
 # itself when dist/ is absent) actually executes.
 #
 # Windows lanes are observational (continue-on-error) until the suite is proven there — the
-# code has Windows paths but has never run on one. Windows × Node 20 is excluded outright:
-# the npm test script passes a glob that cmd.exe doesn't expand, and Node only resolves
-# --test globs itself from 21 on.
+# code has Windows paths but has never run on one.
 
 name: CI
 
@@ -43,12 +41,15 @@ jobs:
             experimental: true
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.8.0
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-          cache: npm
-      - run: npm ci
-      - run: npm run typecheck
-      # Full build: viewer (pnpm via the npx fallback in build-viewer.mjs), tsup, postbuild.
-      - run: npm run build
-      - run: npm test
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      # Full build: viewer workspace package, tsup, postbuild.
+      - run: pnpm build
+      - run: pnpm test

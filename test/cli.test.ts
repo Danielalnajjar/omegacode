@@ -78,9 +78,10 @@ describe("parseArgs — boolean flags never consume the next token (M18)", () =>
     assert.deepEqual(f._, ["run", "wf.js"])
   })
 
-  test("--json, --open, --no-serve stay boolean and leave the next token alone", () => {
-    const f = parseArgs(["run", "--json", "--open", "--no-serve", "wf.js"])
+  test("--json, --start-json, --open, --no-serve stay boolean and leave the next token alone", () => {
+    const f = parseArgs(["run", "--json", "--start-json", "--open", "--no-serve", "wf.js"])
     assert.equal(f.json, true)
+    assert.equal(f["start-json"], true)
     assert.equal(f.open, true)
     assert.equal(f["no-serve"], true)
     assert.deepEqual(f._, ["run", "wf.js"])
@@ -201,6 +202,14 @@ function runCli(args: string[], env: Record<string, string> = {}): Promise<RunRe
   return runNode(["--import", "tsx", CLI_ENTRY, ...args], env)
 }
 
+function startEvent(stderr: string): any {
+  const line = stderr
+    .split("\n")
+    .find((l) => l.trim().startsWith('{"type":"run.started"'))
+  assert.ok(line, `missing run.started stderr event; stderr=${stderr}`)
+  return JSON.parse(line)
+}
+
 /** Does GET /api/runs on this port answer 200? An independent probe of a claimed viewer URL. */
 function apiUp(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -244,6 +253,21 @@ describe("CLI end-to-end (--fake)", () => {
     assert.match(String(out.result), /fake/)
     // --no-serve means no viewer; URL must be absent rather than a dead link (M22).
     assert.equal(out.url, undefined)
+    assert.doesNotMatch(r.stderr, /"type":"run\.started"/)
+  })
+
+  test("--fake --no-serve --json --start-json emits start event on stderr and final JSON on stdout", async () => {
+    const r = await runCli(["run", wf, "--fake", "--no-serve", "--json", "--start-json"], {
+      OMEGACODE_HOME: home,
+    })
+    assert.equal(r.code, 0, `nonzero exit; stderr=${r.stderr}`)
+    const out = JSON.parse(r.stdout)
+    const started = startEvent(r.stderr)
+    assert.equal(started.type, "run.started")
+    assert.equal(started.runId, out.runId)
+    assert.equal(started.runDir, join(home, "runs", out.runId))
+    assert.equal(started.url, null)
+    assert.equal(out.status, "completed")
   })
 
   test("--fake works even when the workflow file follows --fake directly (regression for M18)", async () => {
@@ -436,6 +460,41 @@ describe("ensureViewer never claims a dead URL (M22)", () => {
     } finally {
       server.kill("SIGTERM")
       await new Promise((res) => server.on("close", res))
+    }
+  })
+
+  test("when a viewer is up, --start-json URL matches final JSON and runDir honors OMEGACODE_HOME", async () => {
+    const port = String(20000 + Math.floor(Math.random() * 20000))
+    const runHome = mkdtempSync(join(tmpdir(), "omegacode-start-home-"))
+    const server = spawn(process.execPath, ["--import", "tsx", CLI_ENTRY, "serve", "--port", port], {
+      env: { ...process.env, OMEGACODE_HOME: runHome },
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    try {
+      await new Promise<void>((res, rej) => {
+        const t = setTimeout(() => rej(new Error("serve never printed its banner")), 8000)
+        server.stderr.on("data", (d) => {
+          if (String(d).includes("viewer:")) {
+            clearTimeout(t)
+            res()
+          }
+        })
+        server.on("error", rej)
+      })
+      const r = await runCli(["run", wf, "--fake", "--json", "--start-json", "--port", port], {
+        OMEGACODE_HOME: runHome,
+      })
+      assert.equal(r.code, 0, `stderr=${r.stderr}`)
+      const out = JSON.parse(r.stdout)
+      const started = startEvent(r.stderr)
+      assert.equal(out.url, `http://127.0.0.1:${port}/#/run/${out.runId}`)
+      assert.equal(started.url, out.url)
+      assert.equal(started.runDir, join(runHome, "runs", out.runId))
+      assert.equal(await apiUp(Number(port)), true, "claimed url but /api/runs does not answer")
+    } finally {
+      server.kill("SIGTERM")
+      await new Promise((res) => server.on("close", res))
+      rmSync(runHome, { recursive: true, force: true })
     }
   })
 })

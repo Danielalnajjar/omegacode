@@ -206,7 +206,7 @@ Every run has a runId (printed on completion). To resume after a script edit or 
 omegacode run <file.workflow.js | name> [--args '<json>' | --args-file <f>]
                                        [--provider codex|claude-code|opencode|pi --model m] [--effort e]
                                        [--sandbox read-only|workspace-write|danger-full-access] [--cwd dir]
-                                       [--concurrency N] [--budget N] [--resume <runId>] [--fake] [--json] [--open]
+                                       [--concurrency N] [--budget N] [--resume <runId>] [--fake] [--json] [--start-json] [--open]
 omegacode serve [--port 4123] [--host h]      Live read-only web viewer of all runs
 omegacode runs [--prune --keep <N>]           List runs (or prune old ones)
 omegacode workflows [--json]                  List saved/named workflows (project, user, builtin)
@@ -216,7 +216,7 @@ omegacode doctor                              Check codex/claude availability + 
 omegacode install-skill [--claude] [--agents] Install this skill into agent skill dirs
 ```
 
-`--fake` runs with a fake worker (no real agents) for a fast smoke test; `--json` prints `{runId, status, url, result, error}` (and still starts the viewer). The viewer (`serve` / `run --open`, and auto-started by `run`) reads `~/.omegacode/runs` and shows a run list, a live phase/agent tree, and a per-agent chat-feed drilldown; it streams via SSE and never executes anything.
+`--fake` runs with a fake worker (no real agents) for a fast smoke test; `--json` prints `{runId, status, url, result, error}` (and still starts the viewer). `--start-json` additionally prints one `{"type":"run.started", "runId", "runDir", "url"}` JSON line on stderr as soon as the native run directory exists; stdout remains reserved for the final JSON object. The viewer (`serve` / `run --open`, and auto-started by `run`) reads `~/.omegacode/runs` and shows a run list, a live phase/agent tree, and a per-agent chat-feed drilldown; it streams via SSE and never executes anything.
 
 ## Saved / named workflows
 

@@ -24,7 +24,7 @@ const viewerDist = join(root, "viewer", "dist")
 const webOut = join(dist, "web")
 if (!existsSync(viewerDist)) {
   throw new Error(
-    `viewer build output missing at ${viewerDist}; run the viewer build before tsup (npm run build)`,
+    `viewer build output missing at ${viewerDist}; run the viewer build before tsup (pnpm build)`,
   )
 }
 rmSync(webOut, { recursive: true, force: true })

@@ -194,7 +194,7 @@ export class PiWorker implements Worker {
         code: "provider_outdated",
         message:
           `pi ${out || "(unknown version)"} is below the minimum supported ${PI_MIN_VERSION} — ` +
-          `upgrade with: npm i -g @earendil-works/pi-coding-agent (the renamed @mariozechner/pi-coding-agent package is outdated)`,
+          `upgrade with: bun add -g @earendil-works/pi-coding-agent (the renamed @mariozechner/pi-coding-agent package is outdated)`,
         retryable: false,
       })
     }

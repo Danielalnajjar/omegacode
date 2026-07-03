@@ -7,6 +7,7 @@ export type WorkerProgress =
   | { kind: "tool"; id?: string; name: string; input?: unknown } // tool / command / file-change use
   | { kind: "tool-result"; id?: string; name?: string; output?: string; isError?: boolean }
   | { kind: "usage"; usage: Partial<AgentUsage> }
+  | { kind: "phase"; phase: string } // worker-internal phase marker (e.g. codex working/extraction turn) for observability; consumers may ignore it
 
 export interface WorkerContext {
   signal: AbortSignal

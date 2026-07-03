@@ -192,9 +192,14 @@ export class CodexWorker implements Worker {
       ...(toCodexEffort(spec.effort) ? { effort: toCodexEffort(spec.effort) } : {}),
     }
 
+    // Phase markers land in the task transcript so an observer can tell a
+    // long working turn from a silent extraction turn (extraction forwards no
+    // text, which otherwise looks identical to a stall from the outside).
+    ctx.onProgress({ kind: "phase", phase: "working" })
     const working = await this.runTurn(ctx, spec.sandbox, spec.cwd, { ...baseTurn, input: textInput(spec.prompt) }, true)
     if (!spec.schema) return working
 
+    ctx.onProgress({ kind: "phase", phase: "extraction" })
     // The extraction turn runs under its own hard deadline (see the constant's
     // doc comment). On expiry the turn is interrupted and surfaced as a
     // retryable AgentError so the schema-repair/retry ladder gets a fresh

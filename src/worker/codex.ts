@@ -73,6 +73,14 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000
  *  settles. (M30) */
 export const DEFAULT_TURN_STALL_TIMEOUT_MS = 30 * 60_000
 
+/** Hard wall-clock ceiling for the silent EXTRACTION turn. Extraction only
+ *  reformats content the working turn already produced, so it should finish in
+ *  minutes. The stall watchdog alone cannot bound it: a turn that keeps
+ *  trickling notifications (reasoning deltas) resets the watchdog forever while
+ *  writing nothing to the transcript — observed live as a task stuck "running"
+ *  with a text-complete transcript and no answer file. */
+export const DEFAULT_EXTRACTION_TURN_TIMEOUT_MS = 15 * 60_000
+
 /** Provider-side Codex threads are an implementation detail of an OmegaCode run.
  *  Keeping them ephemeral prevents worker sessions from being persisted into the
  *  user's normal Codex Desktop thread store while preserving OmegaCode's own
@@ -187,16 +195,46 @@ export class CodexWorker implements Worker {
     const working = await this.runTurn(ctx, spec.sandbox, spec.cwd, { ...baseTurn, input: textInput(spec.prompt) }, true)
     if (!spec.schema) return working
 
-    const extraction = await this.runTurn(
-      ctx,
-      spec.sandbox,
-      spec.cwd,
-      { ...baseTurn, input: textInput(EXTRACTION_PROMPT), outputSchema: toCodexOutputSchema(spec.schema) },
-      false,
-      // Seed with the working turn's usage so it is not lost if the extraction
-      // turn emits no tokenUsage update of its own (see H5 note below).
-      working.usage,
-    )
+    // The extraction turn runs under its own hard deadline (see the constant's
+    // doc comment). On expiry the turn is interrupted and surfaced as a
+    // retryable AgentError so the schema-repair/retry ladder gets a fresh
+    // attempt instead of the task hanging as "running" forever.
+    const extractionController = new AbortController()
+    let extractionTimedOut = false
+    const onParentAbort = () => extractionController.abort(ctx.signal.reason)
+    if (ctx.signal.aborted) extractionController.abort(ctx.signal.reason)
+    else ctx.signal.addEventListener("abort", onParentAbort)
+    const extractionTimer = setTimeout(() => {
+      extractionTimedOut = true
+      extractionController.abort(new Error("extraction turn deadline"))
+    }, DEFAULT_EXTRACTION_TURN_TIMEOUT_MS)
+    let extraction: AgentResult
+    try {
+      extraction = await this.runTurn(
+        { ...ctx, signal: extractionController.signal },
+        spec.sandbox,
+        spec.cwd,
+        { ...baseTurn, input: textInput(EXTRACTION_PROMPT), outputSchema: toCodexOutputSchema(spec.schema) },
+        false,
+        // Seed with the working turn's usage so it is not lost if the extraction
+        // turn emits no tokenUsage update of its own (see H5 note below).
+        working.usage,
+      )
+    } catch (error) {
+      if (extractionTimedOut && error instanceof AgentInterrupted) {
+        throw new AgentError({
+          provider: PROVIDER,
+          code: "extraction_stall",
+          message: `codex extraction turn produced no completion within ${DEFAULT_EXTRACTION_TURN_TIMEOUT_MS}ms — failing instead of hanging forever`,
+          retryable: true,
+          usage: working.usage,
+        })
+      }
+      throw error
+    } finally {
+      clearTimeout(extractionTimer)
+      ctx.signal.removeEventListener("abort", onParentAbort)
+    }
     let structured: unknown
     try {
       structured = parseJsonLoose(extraction.text)

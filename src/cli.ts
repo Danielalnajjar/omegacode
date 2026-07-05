@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process"
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { get as httpGet } from "node:http"
 import { homedir } from "node:os"
 import { dirname, join, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
-import { runWorkflow, type RunOverrides } from "./runtime/run.js"
+import { newRunId, runWorkflow, type RunOverrides } from "./runtime/run.js"
 import { parseWorkflow, WorkflowSyntaxError } from "./runtime/sandbox.js"
 import { listWorkflows, resolveWorkflowName, WorkflowNotFoundError } from "./runtime/registry.js"
-import { dataRoot, Journal, JournalNotFoundError, ResumePreconditionError, runDir } from "./runtime/journal.js"
+import { dataRoot, Journal, JournalNotFoundError, listRunIds, ResumePreconditionError, runDir } from "./runtime/journal.js"
+import { expectedLogPath, isValidRunId, loadRunStatus, type RunStatusSnapshot } from "./runtime/run-store.js"
 import { WorkflowError } from "./runtime/primitives.js"
 import { startViewer } from "./server/serve.js"
 import { AgentError, AgentInterrupted } from "./worker/index.js"
@@ -37,6 +38,7 @@ const BOOLEAN_FLAGS = new Set([
   "fake",
   "json",
   "start-json",
+  "detach",
   "open",
   "no-serve",
   "prune",
@@ -161,6 +163,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   switch (cmd) {
     case "run":
       return cmdRun(flags)
+    case "status":
+      return cmdStatus(flags)
+    case "wait":
+      return cmdWait(flags)
     case "serve":
       return cmdServe(flags)
     case "runs":
@@ -406,6 +412,8 @@ async function cmdRun(flags: Flags): Promise<void> {
   // --resume, if present, must carry a runId — a bare `--resume` used to silently start a fresh run.
   const resumeRunId = str(flags.resume)
   if (resumeRunId !== undefined && resumeRunId.length === 0) throw new UsageError("--resume requires a runId")
+  const forcedRunId = str(flags["run-id"])
+  if (forcedRunId !== undefined && forcedRunId.length === 0) throw new UsageError("--run-id requires a runId")
 
   let args: unknown
   const argsStr = str(flags.args)
@@ -438,6 +446,10 @@ async function cmdRun(flags: Flags): Promise<void> {
   const port = portFlag(flags)
   // ensureViewer returns undefined when the viewer never came up — never claim a dead URL.
   const base = wantServe ? await ensureViewer(port).catch(() => undefined) : undefined
+  if (flags.detach === true) {
+    await launchDetachedRun({ resolvedFile, flags, argsStr, argsFile, overrides, resumeRunId, base })
+    return
+  }
   const startJson = flags["start-json"] === true
   const onStart =
     base || startJson
@@ -455,6 +467,7 @@ async function cmdRun(flags: Flags): Promise<void> {
     file: resolvedFile,
     args,
     overrides,
+    runId: forcedRunId,
     resumeRunId,
     fake: flags.fake === true,
     quiet: flags.json === true,
@@ -472,6 +485,158 @@ async function cmdRun(flags: Flags): Promise<void> {
     process.stderr.write(`\n${outcome.status}: ${outcome.error ?? ""}\nresume with: omegacode run ${file} --resume ${outcome.runId}\n`)
     process.exitCode = 1
   }
+}
+
+async function launchDetachedRun(opts: {
+  resolvedFile: string
+  flags: Flags
+  argsStr?: string
+  argsFile?: string
+  overrides: RunOverrides
+  resumeRunId?: string
+  base?: string
+}): Promise<void> {
+  const forcedRunId = str(opts.flags["run-id"])
+  if (forcedRunId) throw new UsageError("--run-id is internal and cannot be combined with --detach")
+
+  let runId: string
+  if (opts.resumeRunId) {
+    if (!isValidRunId(opts.resumeRunId)) throw new UsageError(`invalid --resume runId: ${opts.resumeRunId}`)
+    if (!Journal.exists(opts.resumeRunId)) throw new JournalNotFoundError(opts.resumeRunId, listRunIds())
+    runId = opts.resumeRunId
+  } else {
+    runId = newRunId()
+    while (existsSync(runDir(runId))) runId = newRunId()
+  }
+
+  const rd = runDir(runId)
+  mkdirSync(rd, { recursive: true })
+  const logPath = expectedLogPath(runId)
+  const childArgs = buildDetachedChildArgs(opts.resolvedFile, runId, opts)
+  const entry = fileURLToPath(import.meta.url)
+  const logFd = openSync(logPath, "a")
+  try {
+    const child = spawn(process.execPath, [...process.execArgv, entry, ...childArgs], {
+      cwd: process.cwd(),
+      detached: true,
+      env: process.env,
+      stdio: ["ignore", logFd, logFd],
+    })
+    child.on("error", () => {})
+    child.unref()
+  } finally {
+    closeSync(logFd)
+  }
+
+  const url = opts.base ? `${opts.base}#/run/${runId}` : undefined
+  if (url && opts.flags.open === true) openBrowser(url)
+  const payload = {
+    runId,
+    status: "started",
+    detached: true,
+    runDir: rd,
+    logPath,
+    url,
+    statusCommand: `omegacode status ${runId} --json`,
+    waitCommand: `omegacode wait ${runId} --json`,
+  }
+  if (opts.flags.json === true) {
+    process.stdout.write(JSON.stringify(payload, null, 2) + "\n")
+    return
+  }
+  process.stdout.write(`runId: ${runId}\nrunDir: ${rd}\nlog: ${logPath}\n`)
+  if (url) process.stdout.write(`view: ${url}\n`)
+  process.stdout.write(`status: ${payload.statusCommand}\nwait: ${payload.waitCommand}\n`)
+}
+
+function buildDetachedChildArgs(
+  resolvedFile: string,
+  runId: string,
+  opts: {
+    flags: Flags
+    argsStr?: string
+    argsFile?: string
+    overrides: RunOverrides
+    resumeRunId?: string
+  },
+): string[] {
+  const out = ["run", resolvedFile, "--json", "--no-serve"]
+  if (opts.resumeRunId) out.push("--resume", opts.resumeRunId)
+  else out.push("--run-id", runId)
+  if (opts.flags.fake === true) out.push("--fake")
+  if (opts.argsStr !== undefined) out.push("--args", opts.argsStr)
+  if (opts.argsFile) out.push("--args-file", resolve(opts.argsFile))
+  appendValue(out, "provider", opts.overrides.provider)
+  appendValue(out, "model", opts.overrides.model)
+  appendValue(out, "effort", opts.overrides.effort)
+  appendValue(out, "sandbox", opts.overrides.sandbox)
+  appendValue(out, "cwd", opts.overrides.cwd)
+  appendValue(out, "concurrency", opts.overrides.concurrency)
+  appendValue(out, "budget", opts.overrides.budget)
+  return out
+}
+
+function appendValue(args: string[], name: string, value: string | number | null | undefined): void {
+  if (value === undefined || value === null) return
+  args.push(`--${name}`, String(value))
+}
+
+async function cmdStatus(flags: Flags): Promise<void> {
+  const runId = (flags._ as string[])[1]
+  if (!runId) return commandError(flags, "usage: omegacode status <runId> [--json]")
+  if (!isValidRunId(runId)) return commandError(flags, `invalid runId: ${runId}`)
+  const snapshot = await loadRunStatus(runId)
+  if (!snapshot) return commandError(flags, `run not found: ${runId}`)
+  writeStatus(snapshot, flags)
+}
+
+async function cmdWait(flags: Flags): Promise<void> {
+  const runId = (flags._ as string[])[1]
+  if (!runId) return commandError(flags, "usage: omegacode wait <runId> [--json] [--poll-ms <N>] [--timeout-ms <N>]")
+  if (!isValidRunId(runId)) return commandError(flags, `invalid runId: ${runId}`)
+  const pollMs = positiveIntFlag(flags, "poll-ms") ?? 1000
+  const timeoutMs = intFlag(flags, "timeout-ms")
+  const start = Date.now()
+  for (;;) {
+    const snapshot = await loadRunStatus(runId)
+    if (!snapshot) return commandError(flags, `run not found: ${runId}`)
+    if (isTerminalStatus(snapshot.status)) {
+      writeStatus(snapshot, flags)
+      if (snapshot.status !== "completed") process.exitCode = 1
+      return
+    }
+    if (timeoutMs !== undefined && Date.now() - start >= timeoutMs) {
+      writeStatus({ ...snapshot, status: "stale", error: `timed out after ${timeoutMs}ms` }, flags)
+      process.exitCode = 1
+      return
+    }
+    await sleep(pollMs)
+  }
+}
+
+function isTerminalStatus(status: RunStatusSnapshot["status"]): boolean {
+  return status === "completed" || status === "failed" || status === "interrupted" || status === "stale"
+}
+
+function writeStatus(snapshot: RunStatusSnapshot, flags: Flags): void {
+  if (flags.json === true) {
+    process.stdout.write(JSON.stringify(snapshot, null, 2) + "\n")
+    return
+  }
+  process.stdout.write(`${snapshot.runId}  ${snapshot.status}\n`)
+  process.stdout.write(`runDir: ${snapshot.runDir}\n`)
+  if (snapshot.workflowFile) process.stdout.write(`workflow: ${snapshot.workflowFile}\n`)
+  if (snapshot.error) process.stdout.write(`error: ${snapshot.error}\n`)
+}
+
+function commandError(flags: Flags, message: string): void {
+  if (flags.json === true) process.stdout.write(JSON.stringify({ error: message }, null, 2) + "\n")
+  else process.stderr.write(message + "\n")
+  process.exitCode = 1
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
 }
 
 async function cmdValidate(flags: Flags): Promise<void> {
@@ -656,16 +821,19 @@ Usage:
       --resume <runId>                     replay unchanged prefix, re-run the rest
       --fake                               run with a fake worker (no real agents)
       --json                               print {runId,status,url,result,error} as JSON (viewer still starts)
+      --detach                             launch in the background; with --json print immediate launch JSON
       --start-json                         print {"type":"run.started",runId,runDir,url} on stderr at launch
       --open                               also open the browser to this run
       --no-serve                           don't auto-start the viewer
 
   By default \`run\` auto-starts the viewer (if not already up) and prints the run's URL
   (with --json the URL is in the JSON \`url\` field and the \`view:\` line is suppressed).
-  Use --start-json with --json when a wrapper needs the run id and native run directory before
-  completion; stdout remains reserved for the final JSON object.
+  Foreground \`run --json\` prints terminal JSON after completion. Detached \`run --detach --json\`
+  prints launch JSON immediately; use \`wait --json\` for terminal detached JSON.
 
   omegacode serve [--port 4123] [--host h] [--idle-shutdown]   Live read-only web viewer of all runs
+  omegacode status <runId> [--json]             Read native status from events.jsonl + heartbeat
+  omegacode wait <runId> [--json] [--poll-ms N] [--timeout-ms N]   Wait for a terminal native status
   omegacode runs [--prune --keep <N>] [--prune-stale]   List runs (--prune old, --prune-stale dead)
   omegacode workflows [--json]                  List saved/named workflows (project, user, builtin)
   omegacode save <file.workflow.js> [--project] [--force]   Save a workflow under its meta.name

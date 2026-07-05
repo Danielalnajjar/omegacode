@@ -5,7 +5,7 @@
 
 import { strict as assert } from "node:assert"
 import { execFileSync, spawn } from "node:child_process"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { get as httpGet } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -78,10 +78,11 @@ describe("parseArgs — boolean flags never consume the next token (M18)", () =>
     assert.deepEqual(f._, ["run", "wf.js"])
   })
 
-  test("--json, --start-json, --open, --no-serve stay boolean and leave the next token alone", () => {
-    const f = parseArgs(["run", "--json", "--start-json", "--open", "--no-serve", "wf.js"])
+  test("--json, --start-json, --detach, --open, --no-serve stay boolean and leave the next token alone", () => {
+    const f = parseArgs(["run", "--json", "--start-json", "--detach", "--open", "--no-serve", "wf.js"])
     assert.equal(f.json, true)
     assert.equal(f["start-json"], true)
+    assert.equal(f.detach, true)
     assert.equal(f.open, true)
     assert.equal(f["no-serve"], true)
     assert.deepEqual(f._, ["run", "wf.js"])
@@ -268,6 +269,93 @@ describe("CLI end-to-end (--fake)", () => {
     assert.equal(started.runDir, join(home, "runs", out.runId))
     assert.equal(started.url, null)
     assert.equal(out.status, "completed")
+  })
+
+  test("--fake --no-serve --detach --json returns launch JSON; wait/status read terminal native state", async () => {
+    const launch = await runCli(["run", wf, "--fake", "--no-serve", "--detach", "--json"], {
+      OMEGACODE_HOME: home,
+    })
+    assert.equal(launch.code, 0, `stderr=${launch.stderr}`)
+    const started = JSON.parse(launch.stdout)
+    assert.equal(started.status, "started")
+    assert.equal(started.detached, true)
+    assert.match(started.runId, /^wf_/)
+    assert.equal(started.runDir, join(home, "runs", started.runId))
+    assert.equal(started.logPath, join(home, "runs", started.runId, "run.log"))
+    assert.equal(started.url, undefined)
+
+    const waited = await runCli(["wait", started.runId, "--json", "--poll-ms", "50", "--timeout-ms", "10000"], {
+      OMEGACODE_HOME: home,
+    })
+    assert.equal(waited.code, 0, `stderr=${waited.stderr}`)
+    const done = JSON.parse(waited.stdout)
+    assert.equal(done.runId, started.runId)
+    assert.equal(done.status, "completed")
+    assert.match(String(done.result), /fake/)
+
+    const status = await runCli(["status", started.runId, "--json"], { OMEGACODE_HOME: home })
+    assert.equal(status.code, 0, `stderr=${status.stderr}`)
+    assert.equal(JSON.parse(status.stdout).status, "completed")
+  })
+
+  test("wait --json exits nonzero and reports a failed detached workflow", async () => {
+    const bad = join(home, "throws.workflow.js")
+    writeFileSync(
+      bad,
+      `export const meta = { name: "throws", description: "throws in body" }\n` +
+        `throw new Error("boom from detached child")\n`,
+    )
+    const launch = await runCli(["run", bad, "--fake", "--no-serve", "--detach", "--json"], {
+      OMEGACODE_HOME: home,
+    })
+    assert.equal(launch.code, 0, `stderr=${launch.stderr}`)
+    const started = JSON.parse(launch.stdout)
+    const waited = await runCli(["wait", started.runId, "--json", "--poll-ms", "50", "--timeout-ms", "10000"], {
+      OMEGACODE_HOME: home,
+    })
+    assert.equal(waited.code, 1)
+    const out = JSON.parse(waited.stdout)
+    assert.equal(out.status, "failed")
+    assert.match(out.error, /boom from detached child/)
+  })
+
+  test("detached workflow load errors become terminal failed status, not stale", async () => {
+    const bad = join(home, "invalid.workflow.js")
+    writeFileSync(bad, `export default async function workflow() { return "missing meta" }\n`)
+    const launch = await runCli(["run", bad, "--fake", "--no-serve", "--detach", "--json"], {
+      OMEGACODE_HOME: home,
+    })
+    assert.equal(launch.code, 0, `stderr=${launch.stderr}`)
+    const started = JSON.parse(launch.stdout)
+
+    const waited = await runCli(["wait", started.runId, "--json", "--poll-ms", "50", "--timeout-ms", "10000"], {
+      OMEGACODE_HOME: home,
+    })
+    assert.equal(waited.code, 1)
+    const out = JSON.parse(waited.stdout)
+    assert.equal(out.status, "failed")
+    assert.match(out.error, /must be the first statement/)
+  })
+
+  test("status/wait treat a stale heartbeat as a terminal stale run", async () => {
+    const runId = "wf_stale000001"
+    const rd = join(home, "runs", runId)
+    mkdirSync(rd, { recursive: true })
+    const old = Date.now() - 60_000
+    writeFileSync(join(rd, "events.jsonl"), JSON.stringify({ t: old, type: "run", status: "started", runId, workflowFile: wf }) + "\n")
+    writeFileSync(join(rd, ".heartbeat"), String(old))
+    const oldDate = new Date(old)
+    utimesSync(join(rd, ".heartbeat"), oldDate, oldDate)
+
+    const status = await runCli(["status", runId, "--json"], { OMEGACODE_HOME: home })
+    assert.equal(status.code, 0, `stderr=${status.stderr}`)
+    assert.equal(JSON.parse(status.stdout).status, "stale")
+
+    const waited = await runCli(["wait", runId, "--json", "--poll-ms", "50", "--timeout-ms", "1000"], {
+      OMEGACODE_HOME: home,
+    })
+    assert.equal(waited.code, 1)
+    assert.equal(JSON.parse(waited.stdout).status, "stale")
   })
 
   test("--fake works even when the workflow file follows --fake directly (regression for M18)", async () => {

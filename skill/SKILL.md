@@ -206,7 +206,9 @@ Every run has a runId (printed on completion). To resume after a script edit or 
 omegacode run <file.workflow.js | name> [--args '<json>' | --args-file <f>]
                                        [--provider codex|claude-code|opencode|pi --model m] [--effort e]
                                        [--sandbox read-only|workspace-write|danger-full-access] [--cwd dir]
-                                       [--concurrency N] [--budget N] [--resume <runId>] [--fake] [--json] [--start-json] [--open]
+                                       [--concurrency N] [--budget N] [--resume <runId>] [--fake] [--json] [--detach] [--open]
+omegacode status <runId> [--json]             Read native status from events.jsonl + heartbeat
+omegacode wait <runId> [--json] [--poll-ms N] [--timeout-ms N]   Wait for terminal native status
 omegacode serve [--port 4123] [--host h]      Live read-only web viewer of all runs
 omegacode runs [--prune --keep <N>]           List runs (or prune old ones)
 omegacode workflows [--json]                  List saved/named workflows (project, user, builtin)
@@ -216,7 +218,7 @@ omegacode doctor                              Check codex/claude availability + 
 omegacode install-skill [--claude] [--agents] Install this skill into agent skill dirs
 ```
 
-`--fake` runs with a fake worker (no real agents) for a fast smoke test; `--json` prints `{runId, status, url, result, error}` (and still starts the viewer). `--start-json` additionally prints one `{"type":"run.started", "runId", "runDir", "url"}` JSON line on stderr as soon as the native run directory exists; stdout remains reserved for the final JSON object. The viewer (`serve` / `run --open`, and auto-started by `run`) reads `~/.omegacode/runs` and shows a run list, a live phase/agent tree, and a per-agent chat-feed drilldown; it streams via SSE and never executes anything.
+`--fake` runs with a fake worker (no real agents) for a fast smoke test. Foreground `run --json` prints terminal `{runId, status, url, result, error}` JSON after completion. `run --detach --json` prints launch JSON immediately (`runId`, `runDir`, `logPath`, `url`, `statusCommand`, `waitCommand`); use `omegacode wait <runId> --json` for terminal detached JSON and `omegacode status <runId> --json` for native lifecycle state. The viewer (`serve` / `run --open`, and auto-started by `run`) reads `~/.omegacode/runs` and shows a run list, a live phase/agent tree, and a per-agent chat-feed drilldown; it streams via SSE and never executes anything.
 
 ## Saved / named workflows
 
@@ -236,7 +238,7 @@ The other four are omegacode-original multi-provider workflows — designs where
 
 When you (an agent such as Claude Code or Codex) run a workflow on a user's behalf, do two things:
 
-- **Background it (Claude Code) or block on it (Codex).** A workflow can run for many minutes (it spawns many agents). If you are **Claude Code**, launch `omegacode run …` in the background (your background-shell / detached process) and poll or await it for the result — don't run it in the foreground and block. If you are **Codex**, block on the run until it completes (run it in the foreground and wait for the result) unless the user specifies otherwise — Codex has no reliable background-shell to poll from, so blocking is the correct default.
-- **Link the viewer so the user can track progress.** The moment a run starts it prints `view: http://127.0.0.1:4123/#/run/<id>` (and `--json` returns the same in the `url` field). Surface that URL to the user as a clickable link *immediately* — before the run finishes — so they can watch live: the phase tree and per-agent chat feed stream in real time. Then check back when the run completes and report the result.
+- **Use native detached lifecycle for long runs.** A workflow can run for many minutes (it spawns many agents). For long or automation-driven runs, prefer `omegacode run … --detach --json`, surface the returned viewer URL immediately, and use `omegacode status <runId> --json` / `omegacode wait <runId> --json` rather than inventing PID polling or viewer scraping.
+- **Link the viewer so the user can track progress.** The moment a detached run starts, launch JSON includes `url: http://127.0.0.1:4123/#/run/<id>` when the viewer is available. Surface that URL to the user as a clickable link *immediately* — before the run finishes — so they can watch live: the phase tree and per-agent chat feed stream in real time. Then check back when the run completes and report the result.
 
 The viewer auto-starts on `run` (reused if already up) and idle-shuts-down once no run is active and no one is watching, so there's nothing to clean up.

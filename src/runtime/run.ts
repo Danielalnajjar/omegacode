@@ -22,6 +22,7 @@ import { checkProviderModelPair, checkSpecEnum, Runtime } from "./primitives.js"
 import { parseWorkflow } from "./sandbox.js"
 import { TerminalRenderer } from "./progress.js"
 import { runInSandbox } from "./sandbox.js"
+import { isValidRunId } from "./run-store.js"
 
 export interface RunOverrides {
   provider?: ProviderId
@@ -44,6 +45,8 @@ export interface RunOptions {
   file: string
   args?: unknown
   overrides?: RunOverrides
+  /** Preallocated run id for an internal detached child. Mutually exclusive with resumeRunId. */
+  runId?: string
   resumeRunId?: string
   fake?: boolean
   /** Suppress the terminal renderer (still writes events.jsonl). */
@@ -69,21 +72,34 @@ export interface RunOutcome {
 const HEARTBEAT_MS = 5000
 
 export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
-  const filePath = resolve(opts.file)
-  const source = readFileSync(filePath, "utf8")
-  const fileHash = sha256(source)
+  if (opts.runId && opts.resumeRunId) throw new Error("runId and resumeRunId are mutually exclusive")
+  if (opts.runId && !isValidRunId(opts.runId)) throw new Error(`invalid runId: ${opts.runId}`)
+  if (opts.resumeRunId && !isValidRunId(opts.resumeRunId)) throw new Error(`invalid resumeRunId: ${opts.resumeRunId}`)
 
-  const findings = determinismLint(source)
-  if (findings.length > 0) {
-    throw new Error(
-      "determinism lint failed: " + findings.map((f) => `${f.token} → use ${f.use}`).join("; "),
-    )
+  const filePath = resolve(opts.file)
+  let source: string
+  let fileHash: string
+  let parsed: ReturnType<typeof parseWorkflow>
+  let defaults: RunDefaults
+  try {
+    source = readFileSync(filePath, "utf8")
+    fileHash = sha256(source)
+
+    const findings = determinismLint(source)
+    if (findings.length > 0) {
+      throw new Error(
+        "determinism lint failed: " + findings.map((f) => `${f.token} → use ${f.use}`).join("; "),
+      )
+    }
+
+    parsed = parseWorkflow(source)
+    defaults = resolveDefaults(parsed.meta, opts)
+  } catch (err) {
+    if (opts.runId && !opts.resumeRunId) await writePreflightFailure(opts.runId, filePath, err)
+    throw err
   }
 
-  const parsed = parseWorkflow(source)
-  const defaults = resolveDefaults(parsed.meta, opts)
-
-  const runId = opts.resumeRunId ?? newRunId()
+  const runId = opts.resumeRunId ?? opts.runId ?? newRunId()
   let loaded: LoadedJournal = { results: new Map(), indexByKey: new Map() }
   if (opts.resumeRunId) {
     // A typo'd / unknown run id must fail loudly: silently starting a fresh run under the typo'd id
@@ -92,6 +108,8 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     loaded = Journal.load(runId)
     // A journaled result is only safe to replay if the file/args/key-version still match.
     checkResumePreconditions(loaded.meta, { fileHash, args: opts.args ?? null, keyVersion: KEY_VERSION })
+  } else if (opts.runId && Journal.exists(runId)) {
+    throw new Error(`run "${runId}" already has a journal; use --resume ${runId} instead`)
   }
   const seed = loaded.meta?.seed ?? randomSeed()
   const baseTimeMs = loaded.meta?.createdAt ?? Date.now()
@@ -181,6 +199,22 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   return { runId, result, status, error }
 }
 
+async function writePreflightFailure(runId: string, workflowFile: string, err: unknown): Promise<void> {
+  try {
+    if (Journal.exists(runId)) return
+    ensureRunDir(runId)
+    const events = new FileEventSink(runId)
+    events.emit({ type: "run", status: "failed", runId, workflowFile, error: errorMessage(err) })
+    await events.close()
+  } catch {
+    // Best effort: the original load/validation error remains the authoritative failure.
+  }
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
 function resolveDefaults(meta: { defaultProvider?: ProviderId; defaultModel?: string; defaultSandbox?: Sandbox }, opts: RunOptions): RunDefaults {
   const o = opts.overrides ?? {}
   // An invalid concurrency (0 / NaN / fractional) would build a Semaphore that never admits anyone:
@@ -225,7 +259,7 @@ function sha256(s: string): string {
   return createHash("sha256").update(s).digest("hex")
 }
 
-function newRunId(): string {
+export function newRunId(): string {
   return "wf_" + randomBytes(6).toString("hex")
 }
 

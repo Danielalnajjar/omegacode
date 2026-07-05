@@ -76,6 +76,9 @@ never silently ride another provider's call.
 omegacode run <file.workflow.js | name>   # run a workflow (auto-starts the live viewer)
 omegacode serve                           # read-only dashboard over all runs
 omegacode run <name> --resume <runId>     # resume — only the changed suffix re-runs
+omegacode run <name> --detach --json      # launch in background and print run metadata immediately
+omegacode status <runId> --json           # read native status from events.jsonl + heartbeat
+omegacode wait <runId> --json             # wait for terminal native JSON
 omegacode doctor                          # check codex/claude/opencode/pi availability + versions
 omegacode guide                           # print the full authoring guide
 ```

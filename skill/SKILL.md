@@ -238,7 +238,8 @@ The other four are omegacode-original multi-provider workflows — designs where
 
 When you (an agent such as Claude Code or Codex) run a workflow on a user's behalf, do two things:
 
-- **Use native detached lifecycle for long runs.** A workflow can run for many minutes (it spawns many agents). For long or automation-driven runs, prefer `omegacode run … --detach --json`, surface the returned viewer URL immediately, and use `omegacode status <runId> --json` / `omegacode wait <runId> --json` rather than inventing PID polling or viewer scraping.
-- **Link the viewer so the user can track progress.** The moment a detached run starts, launch JSON includes `url: http://127.0.0.1:4123/#/run/<id>` when the viewer is available. Surface that URL to the user as a clickable link *immediately* — before the run finishes — so they can watch live: the phase tree and per-agent chat feed stream in real time. Then check back when the run completes and report the result.
+- **Default to foreground/blocking.** A normal agent-driven run should use `omegacode run … --json`, wait for terminal JSON, then report the result. Do not create repeated chat turns just to say the run is still working; every extra tool/check turn replays context.
+- **Use detached monitoring only when explicitly needed.** If the user/lead chooses monitoring mode, or the host runtime cannot safely hold the foreground command, use `omegacode run … --detach --json`, surface the returned viewer URL and run metadata, then stop. Follow up with `omegacode status <runId> --json` / `omegacode wait <runId> --json` only at coarse, quiet checkpoints, and speak only on terminal result, failure, blocked state, or explicit status request.
+- **Link the viewer so the user can track progress.** Foreground terminal JSON and detached launch JSON both include `url: http://127.0.0.1:4123/#/run/<id>` when the viewer is available. Surface that URL to the user so they can watch live: the phase tree and per-agent chat feed stream in real time.
 
 The viewer auto-starts on `run` (reused if already up) and idle-shuts-down once no run is active and no one is watching, so there's nothing to clean up.

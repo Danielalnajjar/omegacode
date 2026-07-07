@@ -397,6 +397,13 @@ test("M4: a retryable AgentError is retried via withRetry, then succeeds", async
     const out = await runBody(b, `return await agent("p")`)
     assert.equal(out, "recovered")
     assert.equal(call, 2)
+    const retryLogs = b.sink.events.filter((e) => e.type === "log" && e.message.includes("retrying after"))
+    assert.deepEqual(retryLogs, [
+      {
+        type: "log",
+        message: "[p] retrying after overload (attempt 2/4, backoff 1000ms): 429",
+      },
+    ])
   } finally {
     b.cleanup()
   }

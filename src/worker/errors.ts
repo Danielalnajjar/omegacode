@@ -6,6 +6,15 @@ export interface RetryOptions {
   attempts?: number
   baseMs?: number
   maxMs?: number
+  onRetry?: (event: RetryEvent) => void | Promise<void>
+}
+
+export interface RetryEvent {
+  /** The 1-based attempt number that will run after this backoff. */
+  attempt: number
+  maxAttempts: number
+  delayMs: number
+  error: AgentError
 }
 
 /** Run `fn`, retrying on retryable AgentErrors with exponential backoff. */
@@ -26,6 +35,7 @@ export async function withRetry<T>(
       lastErr = err
       if (!(err instanceof AgentError) || !err.retryable || i === attempts - 1) throw err
       const delay = Math.min(max, base * 2 ** i)
+      await opts.onRetry?.({ attempt: i + 2, maxAttempts: attempts, delayMs: delay, error: err })
       await sleep(delay, signal)
     }
   }

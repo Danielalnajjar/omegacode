@@ -389,7 +389,11 @@ export class Runtime {
         }
         // Wrap the worker call in withRetry so a retryable AgentError (429/overload) backs off
         // instead of killing the agent and usually the whole run.
-        let result = await withRetry(() => worker.runAgent(runSpec, workerCtx), this.o.signal)
+        let result = await withRetry(() => worker.runAgent(runSpec, workerCtx), this.o.signal, {
+          onRetry: ({ attempt, maxAttempts, delayMs, error }) => {
+            this.o.events.emit({ type: "log", message: `[${label}] retrying after ${error.code} (attempt ${attempt}/${maxAttempts}, backoff ${delayMs}ms): ${error.message}` })
+          },
+        })
         attemptUsage = result.usage
         let value: unknown
         try {
@@ -402,7 +406,11 @@ export class Runtime {
               ...runSpec,
               instructions: `${runSpec.instructions ?? ""}\n\nYour previous response did not match the required JSON schema (${err.message}). Respond again with ONLY a JSON value that exactly matches the schema.`.trim(),
             }
-            result = await withRetry(() => worker.runAgent(corrective, workerCtx), this.o.signal)
+            result = await withRetry(() => worker.runAgent(corrective, workerCtx), this.o.signal, {
+              onRetry: ({ attempt, maxAttempts, delayMs, error }) => {
+                this.o.events.emit({ type: "log", message: `[${label}] corrective retry after ${error.code} (attempt ${attempt}/${maxAttempts}, backoff ${delayMs}ms): ${error.message}` })
+              },
+            })
             attemptUsage = addUsage(attemptUsage, result.usage)
             value = this.finalizeResult(spec, result)
           } else {

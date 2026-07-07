@@ -10,6 +10,8 @@ export interface FactoryOpts {
   /** Use the in-process FakeWorker for every provider (smoke tests, --fake). */
   fake?: boolean
   codexBin?: string
+  codexAppServerSocket?: string
+  codexDisableLocalMcps?: boolean
   claudeModel?: string
   /** Path to the claude-code executable (forwarded to the SDK). */
   pathToClaudeCodeExecutable?: string
@@ -34,7 +36,11 @@ export class DefaultWorkerFactory implements WorkerFactory {
     if (this.opts.fake) return new FakeWorker()
     switch (id) {
       case "codex":
-        return new CodexWorker({ bin: this.opts.codexBin })
+        return new CodexWorker({
+          bin: this.opts.codexBin,
+          appServerSocket: this.opts.codexAppServerSocket,
+          disableLocalMcps: this.opts.codexDisableLocalMcps,
+        })
       case "claude-code":
         return new ClaudeWorker({
           model: this.opts.claudeModel,

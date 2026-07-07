@@ -39,6 +39,12 @@ import {
 
 export interface CodexWorkerOpts {
   bin?: string
+  /** Full argv after the codex binary; defaults to ["app-server"]. */
+  appServerArgs?: string[]
+  /** Use `codex app-server proxy --sock <path>` instead of spawning a fresh app-server. */
+  appServerSocket?: string
+  /** Disable local user MCPs that are expensive in high-fanout worker runs. */
+  disableLocalMcps?: boolean
   /** Override the underlying spawn (tests inject a scripted fake child). */
   spawnChild?: SpawnChild
   /** Per-request timeout (ms). 0 disables. Guards against a wedged app-server. */
@@ -87,6 +93,25 @@ export const DEFAULT_EXTRACTION_TURN_TIMEOUT_MS = 15 * 60_000
  *  events/journal/transcripts/result files. */
 export const DEFAULT_THREAD_EPHEMERAL = true
 
+const MCP_SERVER_NAMES_DISABLED_BY_DEFAULT = ["onepassword", "node_repl"] as const
+
+export interface CodexAppServerArgsOptions {
+  appServerSocket?: string
+  disableLocalMcps?: boolean
+}
+
+export function buildCodexAppServerArgs(options: CodexAppServerArgsOptions = {}): string[] {
+  const args: string[] = []
+  if (options.disableLocalMcps === true) {
+    for (const name of MCP_SERVER_NAMES_DISABLED_BY_DEFAULT) {
+      args.push("-c", `mcp_servers.${name}.enabled=false`)
+    }
+  }
+  args.push("app-server")
+  if (options.appServerSocket) args.push("proxy", "--sock", options.appServerSocket)
+  return args
+}
+
 /** The silent second-turn prompt that extracts the final structured answer. */
 const EXTRACTION_PROMPT =
   "Now return your final answer as a single JSON value that conforms to the required output schema. Output only the JSON — no prose, no explanation, no code fences."
@@ -124,6 +149,7 @@ interface TurnState {
 export class CodexWorker implements Worker {
   readonly id = PROVIDER
   private readonly bin: string
+  private readonly appServerArgs: string[]
   private readonly spawnChild?: SpawnChild
   private readonly requestTimeoutMs: number
   private readonly turnStallTimeoutMs: number
@@ -139,6 +165,13 @@ export class CodexWorker implements Worker {
 
   constructor(opts: CodexWorkerOpts = {}) {
     this.bin = opts.bin ?? "codex"
+    this.appServerArgs = [
+      ...(opts.appServerArgs ??
+        buildCodexAppServerArgs({
+          appServerSocket: opts.appServerSocket,
+          disableLocalMcps: opts.disableLocalMcps,
+        })),
+    ]
     this.spawnChild = opts.spawnChild
     this.requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
     this.turnStallTimeoutMs = opts.turnStallTimeoutMs ?? DEFAULT_TURN_STALL_TIMEOUT_MS
@@ -350,7 +383,7 @@ export class CodexWorker implements Worker {
   private async startAndHandshake(): Promise<void> {
     const client = new JsonRpcStdioClient({
       bin: this.bin,
-      args: ["app-server"],
+      args: this.appServerArgs,
       spawnChild: this.spawnChild,
       requestTimeoutMs: this.requestTimeoutMs,
       onServerRequest: (id, method, params) => this.handleServerRequest(id, method, params),

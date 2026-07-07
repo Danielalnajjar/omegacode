@@ -49,6 +49,9 @@ const BOOLEAN_FLAGS = new Set([
   "help",
   "project",
   "force",
+  "codex-disable-local-mcps",
+  "codex-enable-local-mcps",
+  "codex-no-app-server-proxy",
 ])
 
 /**
@@ -408,6 +411,21 @@ async function cmdRun(flags: Flags): Promise<void> {
   if (concurrency !== undefined) overrides.concurrency = concurrency
   const budget = numberFlag(flags, "budget")
   if (budget !== undefined) overrides.budget = budget
+  const codexAppServerSocket = str(flags["codex-app-server-socket"])
+  if (codexAppServerSocket !== undefined) {
+    if (codexAppServerSocket.length === 0) throw new UsageError("--codex-app-server-socket requires a path")
+    overrides.codexAppServerSocket = resolve(codexAppServerSocket)
+  }
+  if (flags["codex-no-app-server-proxy"] === true) {
+    if (codexAppServerSocket !== undefined) throw new UsageError("--codex-app-server-socket and --codex-no-app-server-proxy cannot be combined")
+    overrides.codexNoAppServerProxy = true
+  }
+  if (flags["codex-disable-local-mcps"] === true && flags["codex-enable-local-mcps"] === true) {
+    throw new UsageError("--codex-disable-local-mcps and --codex-enable-local-mcps cannot be combined")
+  }
+  const codexDisableLocalMcps = flags["codex-disable-local-mcps"]
+  if (typeof codexDisableLocalMcps === "boolean") overrides.codexDisableLocalMcps = codexDisableLocalMcps
+  if (flags["codex-enable-local-mcps"] === true) overrides.codexDisableLocalMcps = false
 
   // --resume, if present, must carry a runId — a bare `--resume` used to silently start a fresh run.
   const resumeRunId = str(flags.resume)
@@ -573,6 +591,10 @@ function buildDetachedChildArgs(
   appendValue(out, "cwd", opts.overrides.cwd)
   appendValue(out, "concurrency", opts.overrides.concurrency)
   appendValue(out, "budget", opts.overrides.budget)
+  appendValue(out, "codex-app-server-socket", opts.overrides.codexAppServerSocket)
+  if (opts.overrides.codexNoAppServerProxy) out.push("--codex-no-app-server-proxy")
+  if (opts.overrides.codexDisableLocalMcps) out.push("--codex-disable-local-mcps")
+  if (opts.overrides.codexDisableLocalMcps === false) out.push("--codex-enable-local-mcps")
   return out
 }
 
@@ -818,6 +840,10 @@ Usage:
       --effort <e>  --sandbox read-only|workspace-write|danger-full-access
       --cwd <dir>  --concurrency <N>       working dir; max concurrent agents (default ${DEFAULTS.concurrency})
       --budget <N>                         output-token ceiling (enables budget.*)
+      --codex-enable-local-mcps            opt into 1Password/node_repl in Codex worker app-servers
+      --codex-disable-local-mcps           explicit default: keep selected local MCPs disabled for worker fanout
+      --codex-app-server-socket <path>     opt into proxying Codex workers through an existing app-server socket
+      --codex-no-app-server-proxy          force a fresh stdio app-server even when env selects a proxy socket
       --resume <runId>                     replay unchanged prefix, re-run the rest
       --fake                               run with a fake worker (no real agents)
       --json                               print {runId,status,url,result,error} as JSON (viewer still starts)
@@ -830,6 +856,10 @@ Usage:
   (with --json the URL is in the JSON \`url\` field and the \`view:\` line is suppressed).
   Foreground \`run --json\` prints terminal JSON after completion. Detached \`run --detach --json\`
   prints launch JSON immediately; use \`wait --json\` for terminal detached JSON.
+  Codex workers use a fresh stdio app-server per OmegaCode run by default. Use
+  --codex-app-server-socket or OMEGACODE_CODEX_APP_SERVER_SOCKET only when intentionally sharing
+  an existing app-server daemon across runs. CodeDB remains enabled; the default local-MCP
+  suppression only targets 1Password/node_repl for fresh worker app-servers.
 
   omegacode serve [--port 4123] [--host h] [--idle-shutdown]   Live read-only web viewer of all runs
   omegacode status <runId> [--json]             Read native status from events.jsonl + heartbeat

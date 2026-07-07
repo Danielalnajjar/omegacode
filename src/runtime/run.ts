@@ -39,6 +39,12 @@ export interface RunOverrides {
   /** Binary overrides for the subprocess workers (programmatic equivalent of OPENCODE_BIN/PI_BIN). */
   opencodeBin?: string
   piBin?: string
+  /** Use `codex app-server proxy --sock <path>` for Codex workers. */
+  codexAppServerSocket?: string
+  /** Force Codex workers to spawn their own stdio app-server, even if env selects a shared socket. */
+  codexNoAppServerProxy?: boolean
+  /** Disable user-configured local MCPs in Codex worker app-servers. */
+  codexDisableLocalMcps?: boolean
 }
 
 export interface RunOptions {
@@ -131,6 +137,8 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     codexBin: process.env.CODEX_BIN,
     opencodeBin: opts.overrides?.opencodeBin ?? process.env.OPENCODE_BIN,
     piBin: opts.overrides?.piBin ?? process.env.PI_BIN,
+    codexAppServerSocket: resolveCodexAppServerSocket(opts.overrides),
+    codexDisableLocalMcps: opts.overrides?.codexDisableLocalMcps ?? envFlag("OMEGACODE_CODEX_DISABLE_LOCAL_MCPS") ?? true,
     // Claude-specific factory defaults (L5). Only forwarded when the provider is claude-code; a
     // per-call opts.model still overrides via AgentSpec.model.
     claudeModel: opts.overrides?.claudeModel ?? (defaults.provider === "claude-code" ? defaults.model : undefined),
@@ -197,6 +205,22 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   }
 
   return { runId, result, status, error }
+}
+
+function resolveCodexAppServerSocket(overrides: RunOverrides | undefined): string | undefined {
+  if (overrides?.codexNoAppServerProxy) return undefined
+  if (overrides?.codexAppServerSocket !== undefined) return overrides.codexAppServerSocket
+  if (envFlag("OMEGACODE_CODEX_NO_APP_SERVER_PROXY") === true) return undefined
+  const configured = process.env.OMEGACODE_CODEX_APP_SERVER_SOCKET
+  if (configured !== undefined) return configured.length > 0 ? configured : undefined
+  return undefined
+}
+
+function envFlag(name: string): boolean | undefined {
+  const raw = process.env[name]
+  if (raw === undefined) return undefined
+  const normalized = raw.toLowerCase()
+  return normalized !== "0" && normalized !== "false" && normalized !== "no"
 }
 
 async function writePreflightFailure(runId: string, workflowFile: string, err: unknown): Promise<void> {

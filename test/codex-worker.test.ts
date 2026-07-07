@@ -6,7 +6,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { existsSync } from "node:fs"
 
-import { CodexWorker, DEFAULT_REQUEST_TIMEOUT_MS, DEFAULT_THREAD_EPHEMERAL, DEFAULT_TURN_STALL_TIMEOUT_MS } from "../src/worker/codex.js"
+import { CodexWorker, DEFAULT_REQUEST_TIMEOUT_MS, DEFAULT_THREAD_EPHEMERAL, DEFAULT_TURN_STALL_TIMEOUT_MS, buildCodexAppServerArgs } from "../src/worker/codex.js"
 import { JsonRpcStdioClient, StdioTransportError, JsonRpcResponseError } from "../src/worker/jsonrpc-stdio.js"
 import { AgentError, AgentInterrupted, type WorkerProgress } from "../src/worker/index.js"
 import type { AgentSpec } from "../src/dsl/types.js"
@@ -115,6 +115,37 @@ function spec(over: Partial<AgentSpec> = {}): AgentSpec {
     ...over,
   }
 }
+
+test("buildCodexAppServerArgs defaults to a fresh stdio app-server", () => {
+  assert.deepEqual(buildCodexAppServerArgs(), ["app-server"])
+})
+
+test("buildCodexAppServerArgs can disable expensive user MCPs for worker fanout", () => {
+  assert.deepEqual(buildCodexAppServerArgs({ disableLocalMcps: true }), [
+    "-c",
+    "mcp_servers.onepassword.enabled=false",
+    "-c",
+    "mcp_servers.node_repl.enabled=false",
+    "app-server",
+  ])
+})
+
+test("buildCodexAppServerArgs can proxy through an existing app-server socket", () => {
+  assert.deepEqual(buildCodexAppServerArgs({ appServerSocket: "/tmp/codex.sock" }), ["app-server", "proxy", "--sock", "/tmp/codex.sock"])
+})
+
+test("buildCodexAppServerArgs combines local-MCP disablement with app-server proxy", () => {
+  assert.deepEqual(buildCodexAppServerArgs({ disableLocalMcps: true, appServerSocket: "/tmp/codex.sock" }), [
+    "-c",
+    "mcp_servers.onepassword.enabled=false",
+    "-c",
+    "mcp_servers.node_repl.enabled=false",
+    "app-server",
+    "proxy",
+    "--sock",
+    "/tmp/codex.sock",
+  ])
+})
 
 // ===========================================================================
 // JsonRpcStdioClient — transport invariants (H1, M1, M2)

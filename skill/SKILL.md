@@ -206,7 +206,11 @@ Every run has a runId (printed on completion). To resume after a script edit or 
 omegacode run <file.workflow.js | name> [--args '<json>' | --args-file <f>]
                                        [--provider codex|claude-code|opencode|pi --model m] [--effort e]
                                        [--sandbox read-only|workspace-write|danger-full-access] [--cwd dir]
-                                       [--concurrency N] [--budget N] [--resume <runId>] [--fake] [--json] [--detach] [--open]
+                                       [--concurrency N] [--budget N]
+                                       [--codex-enable-local-mcps] [--codex-disable-local-mcps]
+                                       [--codex-app-server-socket <path>]
+                                       [--codex-no-app-server-proxy]
+                                       [--resume <runId>] [--fake] [--json] [--detach] [--open]
 omegacode status <runId> [--json]             Read native status from events.jsonl + heartbeat
 omegacode wait <runId> [--json] [--poll-ms N] [--timeout-ms N]   Wait for terminal native status
 omegacode serve [--port 4123] [--host h]      Live read-only web viewer of all runs
@@ -219,6 +223,8 @@ omegacode install-skill [--claude] [--agents] Install this skill into agent skil
 ```
 
 `--fake` runs with a fake worker (no real agents) for a fast smoke test. Foreground `run --json` prints terminal `{runId, status, url, result, error}` JSON after completion. `run --detach --json` prints launch JSON immediately (`runId`, `runDir`, `logPath`, `url`, `statusCommand`, `waitCommand`); use `omegacode wait <runId> --json` for terminal detached JSON and `omegacode status <runId> --json` for native lifecycle state. The viewer (`serve` / `run --open`, and auto-started by `run`) reads `~/.omegacode/runs` and shows a run list, a live phase/agent tree, and a per-agent chat-feed drilldown; it streams via SSE and never executes anything.
+
+For high-fanout Codex runs, OmegaCode starts a fresh lean app-server per OmegaCode run by default. This keeps simultaneous runs in different worktrees isolated. CodeDB remains enabled. Selected user-configured local MCPs that are expensive per client (`onepassword`, `node_repl`) are disabled by default for fresh worker app-servers; use `--codex-enable-local-mcps` or `OMEGACODE_CODEX_DISABLE_LOCAL_MCPS=0` only when a workflow genuinely needs those tools inside worker agents. Use `--codex-app-server-socket <path>` or `OMEGACODE_CODEX_APP_SERVER_SOCKET=<path>` only when intentionally sharing an existing app-server daemon across runs; `--codex-no-app-server-proxy` or `OMEGACODE_CODEX_NO_APP_SERVER_PROXY=1` forces a fresh stdio app-server even when env selects a proxy socket.
 
 ## Saved / named workflows
 

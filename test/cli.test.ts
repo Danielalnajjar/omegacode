@@ -368,7 +368,47 @@ describe("CLI end-to-end (--fake)", () => {
     assert.equal(status.code, 0, `stderr=${status.stderr}`)
     assert.equal(JSON.parse(status.stdout).status, "stale")
 
-    const waited = await runCli(["wait", runId, "--json", "--poll-ms", "50", "--timeout-ms", "1000"], {
+    const waited = await runCli(["wait", runId, "--json", "--poll-ms", "50", "--timeout-ms", "1000", "--stale-debounce-ms", "200"], {
+      OMEGACODE_HOME: home,
+    })
+    assert.equal(waited.code, 1)
+    assert.equal(JSON.parse(waited.stdout).status, "stale")
+  })
+
+  test("wait debounces a transiently stale heartbeat", async () => {
+    const runId = "wf_stale000002"
+    const rd = join(home, "runs", runId)
+    mkdirSync(rd, { recursive: true })
+    const old = Date.now() - 60_000
+    writeFileSync(join(rd, "events.jsonl"), JSON.stringify({ t: old, type: "run", status: "started", runId, workflowFile: wf }) + "\n")
+    writeFileSync(join(rd, ".heartbeat"), String(old))
+    const oldDate = new Date(old)
+    utimesSync(join(rd, ".heartbeat"), oldDate, oldDate)
+
+    const waited = runCli(["wait", runId, "--json", "--poll-ms", "50", "--timeout-ms", "10000", "--stale-debounce-ms", "2000"], {
+      OMEGACODE_HOME: home,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    const now = Date.now()
+    writeFileSync(join(rd, ".heartbeat"), String(now))
+    writeFileSync(join(rd, "events.jsonl"), JSON.stringify({ t: old, type: "run", status: "started", runId, workflowFile: wf }) + "\n" + JSON.stringify({ t: now, type: "run", status: "completed", runId }) + "\n")
+
+    const result = await waited
+    assert.equal(result.code, 0, `stderr=${result.stderr}`)
+    assert.equal(JSON.parse(result.stdout).status, "completed")
+  })
+
+  test("wait --stale-debounce-ms 0 keeps immediate stale", async () => {
+    const runId = "wf_stale000003"
+    const rd = join(home, "runs", runId)
+    mkdirSync(rd, { recursive: true })
+    const old = Date.now() - 60_000
+    writeFileSync(join(rd, "events.jsonl"), JSON.stringify({ t: old, type: "run", status: "started", runId, workflowFile: wf }) + "\n")
+    writeFileSync(join(rd, ".heartbeat"), String(old))
+    const oldDate = new Date(old)
+    utimesSync(join(rd, ".heartbeat"), oldDate, oldDate)
+
+    const waited = await runCli(["wait", runId, "--json", "--poll-ms", "50", "--stale-debounce-ms", "0"], {
       OMEGACODE_HOME: home,
     })
     assert.equal(waited.code, 1)

@@ -212,7 +212,7 @@ omegacode run <file.workflow.js | name> [--args '<json>' | --args-file <f>]
                                        [--codex-no-app-server-proxy]
                                        [--resume <runId>] [--fake] [--json] [--detach] [--open]
 omegacode status <runId> [--json]             Read native status from events.jsonl + heartbeat
-omegacode wait <runId> [--json] [--poll-ms N] [--timeout-ms N]   Wait for terminal native status
+omegacode wait <runId> [--json] [--poll-ms N] [--timeout-ms N] [--stale-debounce-ms N]   Wait for terminal native status
 omegacode serve [--port 4123] [--host h]      Live read-only web viewer of all runs
 omegacode runs [--prune --keep <N>]           List runs (or prune old ones)
 omegacode workflows [--json]                  List saved/named workflows (project, user, builtin)

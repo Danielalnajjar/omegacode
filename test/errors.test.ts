@@ -30,6 +30,35 @@ test("withRetry: retries retryable AgentErrors then succeeds", async () => {
   assert.equal(calls, 3)
 })
 
+test("withRetry: reports retryable failures before backing off", async () => {
+  let calls = 0
+  const retryEvents: Array<{ attempt: number; maxAttempts: number; delayMs: number; code: string; message: string }> = []
+  const r = await withRetry(
+    async () => {
+      calls++
+      if (calls === 1) throw new AgentError({ provider: "codex", code: "turn_stalled", message: "no progress", retryable: true })
+      return "done"
+    },
+    never(),
+    {
+      attempts: 3,
+      baseMs: 1,
+      maxMs: 1,
+      onRetry(event) {
+        retryEvents.push({
+          attempt: event.attempt,
+          maxAttempts: event.maxAttempts,
+          delayMs: event.delayMs,
+          code: event.error.code,
+          message: event.error.message,
+        })
+      },
+    },
+  )
+  assert.equal(r, "done")
+  assert.deepEqual(retryEvents, [{ attempt: 2, maxAttempts: 3, delayMs: 1, code: "turn_stalled", message: "no progress" }])
+})
+
 test("withRetry: does NOT retry a non-retryable AgentError", async () => {
   let calls = 0
   await assert.rejects(

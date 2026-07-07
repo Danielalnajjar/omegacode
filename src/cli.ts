@@ -614,20 +614,35 @@ async function cmdStatus(flags: Flags): Promise<void> {
 
 async function cmdWait(flags: Flags): Promise<void> {
   const runId = (flags._ as string[])[1]
-  if (!runId) return commandError(flags, "usage: omegacode wait <runId> [--json] [--poll-ms <N>] [--timeout-ms <N>]")
+  if (!runId) return commandError(flags, "usage: omegacode wait <runId> [--json] [--poll-ms <N>] [--timeout-ms <N>] [--stale-debounce-ms <N>]")
   if (!isValidRunId(runId)) return commandError(flags, `invalid runId: ${runId}`)
   const pollMs = positiveIntFlag(flags, "poll-ms") ?? 1000
   const timeoutMs = intFlag(flags, "timeout-ms")
+  const staleDebounceMs = intFlag(flags, "stale-debounce-ms") ?? 12_000
   const start = Date.now()
+  let staleSince: number | undefined
   for (;;) {
     const snapshot = await loadRunStatus(runId)
     if (!snapshot) return commandError(flags, `run not found: ${runId}`)
-    if (isTerminalStatus(snapshot.status)) {
-      writeStatus(snapshot, flags)
-      if (snapshot.status !== "completed") process.exitCode = 1
-      return
+    const now = Date.now()
+    // A stale heartbeat must persist for the debounce window before it counts as terminal:
+    // right after a machine sleep the first poll usually beats the next heartbeat write.
+    if (snapshot.status === "stale") {
+      const since = (staleSince ??= now)
+      if (now - since >= staleDebounceMs) {
+        writeStatus(snapshot, flags)
+        process.exitCode = 1
+        return
+      }
+    } else {
+      staleSince = undefined
+      if (isTerminalStatus(snapshot.status)) {
+        writeStatus(snapshot, flags)
+        if (snapshot.status !== "completed") process.exitCode = 1
+        return
+      }
     }
-    if (timeoutMs !== undefined && Date.now() - start >= timeoutMs) {
+    if (timeoutMs !== undefined && now - start >= timeoutMs) {
       writeStatus({ ...snapshot, status: "stale", error: `timed out after ${timeoutMs}ms` }, flags)
       process.exitCode = 1
       return
@@ -863,7 +878,7 @@ Usage:
 
   omegacode serve [--port 4123] [--host h] [--idle-shutdown]   Live read-only web viewer of all runs
   omegacode status <runId> [--json]             Read native status from events.jsonl + heartbeat
-  omegacode wait <runId> [--json] [--poll-ms N] [--timeout-ms N]   Wait for a terminal native status
+  omegacode wait <runId> [--json] [--poll-ms N] [--timeout-ms N] [--stale-debounce-ms N]   Wait for a terminal native status
   omegacode runs [--prune --keep <N>] [--prune-stale]   List runs (--prune old, --prune-stale dead)
   omegacode workflows [--json]                  List saved/named workflows (project, user, builtin)
   omegacode save <file.workflow.js> [--project] [--force]   Save a workflow under its meta.name

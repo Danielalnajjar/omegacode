@@ -348,6 +348,26 @@ test("runAgent happy path (served before spawn): resolves with usage", async () 
   await worker.shutdown()
 })
 
+test("CodexWorker passes max effort through to turn/start", async () => {
+  const turnStarts: any[] = []
+  const { worker } = makeServedWorker(
+    (_req, reply) => {
+      reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
+      reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
+    },
+    {
+      onServerReq: (_child, req) => {
+        if (req.method === "turn/start") turnStarts.push(req.params)
+      },
+    },
+  )
+
+  await worker.runAgent(spec({ effort: "max" }), ctx())
+  assert.equal(turnStarts.length, 1)
+  assert.equal(turnStarts[0].effort, "max")
+  await worker.shutdown()
+})
+
 test("CodexWorker starts Codex provider threads as ephemeral by default", async () => {
   const threadStarts: any[] = []
   const { worker } = makeServedWorker(

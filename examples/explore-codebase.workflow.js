@@ -37,7 +37,7 @@ phase("Map")
 const map = await agent(
   `Explore the codebase at ${dir}. Read the directory tree and the key entry files (package.json, src/ layout).
 Identify the 4-6 most important source areas a new engineer should understand. Return them.`,
-  { provider: "codex", model: "gpt-5.5", cwd: dir, sandbox: "read-only", schema: AREAS_SCHEMA, label: "map structure" },
+  { provider: "codex", model: "gpt-5.6-sol", cwd: dir, sandbox: "read-only", schema: AREAS_SCHEMA, label: "map structure" },
 )
 log(`mapped ${map.areas.length} areas: ${map.areas.map((a) => a.name).join(", ")}`)
 
@@ -51,7 +51,7 @@ Explain concretely, citing files: what it does, its key files/exports, the impor
 and any notable design choices or gotchas.`,
       {
         provider: i % 2 === 0 ? "codex" : "claude-code",
-        model: i % 2 === 0 ? "gpt-5.5" : "claude-fable-5",
+        model: i % 2 === 0 ? "gpt-5.6-sol" : "claude-fable-5",
         cwd: dir,
         sandbox: "read-only",
         label: `dive: ${area.name}`,

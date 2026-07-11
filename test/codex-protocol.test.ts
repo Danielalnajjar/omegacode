@@ -137,7 +137,7 @@ test("toCodexApprovalPolicy: read-only honors approval", () => {
   assert.equal(toCodexApprovalPolicy("read-only", "on-request"), "on-request")
 })
 
-test("toCodexEffort maps every level (max → xhigh)", () => {
+test("toCodexEffort preserves every supported Codex level, including max", () => {
   assert.equal(toCodexEffort(undefined), undefined)
   assert.equal(toCodexEffort("none"), "none")
   assert.equal(toCodexEffort("minimal"), "minimal")
@@ -145,7 +145,7 @@ test("toCodexEffort maps every level (max → xhigh)", () => {
   assert.equal(toCodexEffort("medium"), "medium")
   assert.equal(toCodexEffort("high"), "high")
   assert.equal(toCodexEffort("xhigh"), "xhigh")
-  assert.equal(toCodexEffort("max"), "xhigh")
+  assert.equal(toCodexEffort("max"), "max")
 })
 
 // ---------------------------------------------------------------------------

@@ -1,11 +1,11 @@
 // Audit omegacode for parity with Claude Code's built-in Workflows feature.
-// Spawns Codex (gpt-5.5) workers and Claude Code workers to analyze different dimensions in
+// Spawns Codex (gpt-5.6-sol) workers and Claude Code workers to analyze different dimensions in
 // parallel, then synthesizes a gap report. Reads the reverse-engineered Claude Code internals doc
 // and this repo's own source.
 
 export const meta = {
   name: "parity-audit",
-  description: "Audit omegacode vs Claude Code Workflows; codex (gpt-5.5) + claude workers, then synthesize gaps.",
+  description: "Audit omegacode vs Claude Code Workflows; codex (gpt-5.6-sol) + claude workers, then synthesize gaps.",
   phases: [{ title: "Analyze (codex + claude)" }, { title: "Synthesize" }],
 }
 
@@ -46,15 +46,15 @@ Be specific and evidence-based — cite the actual files/lines you read in B. Do
 DIMENSION: `
 
 const dimensions = [
-  { key: "DSL primitives & authoring", provider: "codex", model: "gpt-5.5",
+  { key: "DSL primitives & authoring", provider: "codex", model: "gpt-5.6-sol",
     focus: "the agent()/parallel()/pipeline()/phase()/log()/budget/args/workflow() primitives + the meta block + injected-globals authoring shape. Compare the full primitive set, signatures, and semantics (e.g. parallel barrier + null-mapping, pipeline stage args, budget, nested workflow())." },
   { key: "Resume, journal & determinism", provider: "claude-code", model: "claude-fable-5",
     focus: "the chained-key journal, longest-unchanged-prefix replay, edit-and-resume, started-hit-respawn, and the determinism enforcement that blocks nondeterministic time/RNG calls (the runtime shims + the static submit-time lint)." },
-  { key: "Sandbox & execution model", provider: "codex", model: "gpt-5.5",
+  { key: "Sandbox & execution model", provider: "codex", model: "gpt-5.6-sol",
     focus: "the hardened node:vm (codeGeneration off, frozen intrinsics, import/require blocked), meta pure-literal parsing, live-coroutine execution, and the 30s sync timeout." },
   { key: "Structured output, caps & budget", provider: "claude-code", model: "claude-fable-5",
     focus: "schema/StructuredOutput vs native outputSchema/outputFormat; the concurrency cap, 1000-agent lifetime cap, 4096 fan-out cap; and the token budget/ceiling." },
-  { key: "Tool surface, named workflows & UI", provider: "codex", model: "gpt-5.5",
+  { key: "Tool surface, named workflows & UI", provider: "codex", model: "gpt-5.6-sol",
     focus: "Claude Code's Workflow tool input (script/name/scriptPath/args/resumeFromRunId), saved/named workflows + the registry, the /workflows UI + progress tree, the approval gate, worktree isolation, and how all of that maps (or doesn't) to omegacode' CLI + viewer." },
 ]
 
@@ -77,7 +77,7 @@ log(`collected ${real.length}/${dimensions.length} dimension reports`)
 
 const report = await agent(
   `You are writing the final PARITY REPORT for "omegacode" vs Claude Code's Workflows feature.
-Below are structured findings from ${real.length} analysis agents (Codex gpt-5.5 + Claude Code), as JSON.
+Below are structured findings from ${real.length} analysis agents (Codex gpt-5.6-sol + Claude Code), as JSON.
 Write a crisp Markdown report:
 1. A one-line verdict + an estimated parity percentage.
 2. A "Gaps" section: every "missing" and "partial" item, grouped by severity (blocker / nice-to-have), each with what to build.

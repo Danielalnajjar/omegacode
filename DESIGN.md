@@ -241,8 +241,8 @@ and typechecking. Schemas are **JSON Schema** (the portable default that maps st
 | `budget` | `{ total, spent(), remaining() }` | The run's output-token ceiling (`--budget`, §8); `total` is `null` when no ceiling is set. |
 
 **`AgentOpts`:** `{ provider?: "codex" | "claude-code", label?, phase?, model?, effort?:
-"none"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max" (the union of both providers' levels; each
-worker maps to its nearest supported value), cwd?, sandbox?:
+"none"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max" (the shared provider union; each worker maps
+only the levels its backend does not support), cwd?, sandbox?:
 "read-only"|"workspace-write"|"danger-full-access", approval?: "never"|"on-request", instructions?,
 schema?: JSONSchema, worktree?: boolean | string, key?: string, maxTurns?: number }`.
 - `provider` selects the backend for this call; default = `--provider` → `meta.defaultProvider` →

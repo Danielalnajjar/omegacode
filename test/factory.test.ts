@@ -68,10 +68,10 @@ test("caches one worker per provider id", () => {
 })
 
 test("L5: claudeModel is consumed by the ClaudeWorker", () => {
-  const f = new DefaultWorkerFactory({ claudeModel: "claude-opus-4-8" })
+  const f = new DefaultWorkerFactory({ claudeModel: "test-model-sentinel" })
   const w = f.get("claude-code") as ClaudeWorker
   // opts is private; assert via the spec path: the worker carries the model option.
-  assert.equal((w as unknown as { opts: { model?: string } }).opts.model, "claude-opus-4-8")
+  assert.equal((w as unknown as { opts: { model?: string } }).opts.model, "test-model-sentinel")
 })
 
 test("L5: pathToClaudeCodeExecutable is consumed by the ClaudeWorker", () => {

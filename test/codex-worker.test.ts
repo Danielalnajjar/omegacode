@@ -120,6 +120,21 @@ test("buildCodexAppServerArgs defaults to a fresh stdio app-server", () => {
   assert.deepEqual(buildCodexAppServerArgs(), ["app-server"])
 })
 
+test("buildCodexAppServerArgs honors the env service-tier fallback when no per-worker tier is set", () => {
+  const previous = process.env.OMEGACODE_CODEX_SERVICE_TIER
+  process.env.OMEGACODE_CODEX_SERVICE_TIER = "flex"
+  try {
+    assert.deepEqual(buildCodexAppServerArgs(), ["-c", "service_tier=flex", "app-server"])
+  } finally {
+    if (previous === undefined) delete process.env.OMEGACODE_CODEX_SERVICE_TIER
+    else process.env.OMEGACODE_CODEX_SERVICE_TIER = previous
+  }
+})
+
+test("buildCodexAppServerArgs prefers an explicit per-worker service tier", () => {
+  assert.deepEqual(buildCodexAppServerArgs({ serviceTier: "fast" }), ["-c", "service_tier=fast", "app-server"])
+})
+
 test("buildCodexAppServerArgs can disable expensive user MCPs for worker fanout", () => {
   assert.deepEqual(buildCodexAppServerArgs({ disableLocalMcps: true }), [
     "-c",

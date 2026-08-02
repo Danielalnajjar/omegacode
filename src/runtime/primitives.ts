@@ -21,6 +21,7 @@ import type {
 import { addUsage, emptyUsage, PROVIDER_IDS } from "../dsl/types.js"
 import type { WorkerFactory, WorkerProgress } from "../worker/index.js"
 import { AgentError, AgentInterrupted } from "../worker/index.js"
+import { CODEX_SERVICE_TIERS } from "../worker/codex.js"
 import { withRetry } from "../worker/errors.js"
 import { stripNullOptionals, validate } from "../worker/schema.js"
 import { Journal, type LoadedJournal } from "./journal.js"
@@ -45,6 +46,7 @@ export const SPEC_ENUMS = {
   sandbox: ["read-only", "workspace-write", "danger-full-access"],
   effort: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
   approval: ["never", "on-request"],
+  serviceTier: CODEX_SERVICE_TIERS,
 } as const satisfies Record<string, readonly string[]>
 
 /**
@@ -235,6 +237,7 @@ export class Runtime {
       instructions: opts?.instructions,
       schema: opts?.schema,
       maxTurns: opts?.maxTurns,
+      serviceTier: opts?.serviceTier,
     }
     // Validate the RESOLVED values so both per-call opts and run defaults are covered (H14).
     // Provider included: an unknown provider would otherwise only fail at the factory — and not
@@ -243,10 +246,20 @@ export class Runtime {
     checkSpecEnum("sandbox", spec.sandbox)
     checkSpecEnum("effort", spec.effort)
     checkSpecEnum("approval", spec.approval)
+    checkSpecEnum("serviceTier", spec.serviceTier)
     // Pairing is checked on the RAW opts (after the enum checks, so a typo'd provider still reports
     // as invalid): a lone provider/model here would silently mix with the other half of the run
     // defaults — the exact leak this rule exists to prevent. resolveDefaults covers the CLI/meta sites.
     checkProviderModelPair(opts?.provider, opts?.model, "agent()")
+    // serviceTier configures a Codex app-server at worker construction time. Reject it here so
+    // --fake cannot hide an unsupported option; non-Codex workers repeat the guard pre-spawn.
+    if (spec.serviceTier !== undefined && spec.provider !== "codex") {
+      throw new AgentError({
+        provider: spec.provider,
+        code: "unsupported_option",
+        message: "serviceTier is codex-only; omit it or use the codex provider",
+      })
+    }
     return spec
   }
 
@@ -363,7 +376,7 @@ export class Runtime {
         if (opts?.worktree) {
           worktree = await this.setupWorktree(runSpec, opts.worktree, index)
         }
-        const worker = this.o.factory.get(runSpec.provider)
+        const worker = this.o.factory.get(runSpec.provider, runSpec.serviceTier)
         const workerCtx = {
           signal: this.o.signal,
           onProgress: (e: WorkerProgress) => {

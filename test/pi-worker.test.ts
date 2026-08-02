@@ -279,13 +279,14 @@ test("exit 0 with no assistant text is no_result", async () => {
   await assert.rejects(h.worker.runAgent(spec(), ctx()), (err: unknown) => err instanceof AgentError && err.code === "no_result")
 })
 
-test("fail-closed pre-spawn rejections: read-only (with remedy), workspace-write, maxTurns, approval", async () => {
+test("fail-closed pre-spawn rejections: read-only (with remedy), workspace-write, maxTurns, approval, serviceTier", async () => {
   const h = harness([])
   for (const [over, pattern] of [
     [{ sandbox: "read-only" }, /set sandbox: "danger-full-access" to use provider "pi"/],
     [{ sandbox: "workspace-write" }, /cannot enforce a "workspace-write" sandbox/],
     [{ maxTurns: 3 }, /no native turn cap/],
     [{ approval: "on-request" }, /cannot surface approval requests/],
+    [{ serviceTier: "fast" }, /serviceTier is codex-only/],
   ] as Array<[Partial<AgentSpec>, RegExp]>) {
     await assert.rejects(h.worker.runAgent(spec(over), ctx()), (err: unknown) => {
       assert.ok(err instanceof AgentError)

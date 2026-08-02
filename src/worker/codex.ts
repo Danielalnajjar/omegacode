@@ -45,6 +45,8 @@ export interface CodexWorkerOpts {
   appServerSocket?: string
   /** Disable local user MCPs that are expensive in high-fanout worker runs. */
   disableLocalMcps?: boolean
+  /** Codex service tier for every turn served by this worker's app-server. */
+  serviceTier?: string
   /** Override the underlying spawn (tests inject a scripted fake child). */
   spawnChild?: SpawnChild
   /** Per-request timeout (ms). 0 disables. Guards against a wedged app-server. */
@@ -95,7 +97,7 @@ export const DEFAULT_THREAD_EPHEMERAL = true
 
 const MCP_SERVER_NAMES_DISABLED_BY_DEFAULT = ["onepassword", "node_repl"] as const
 
-const CODEX_SERVICE_TIERS = ["default", "flex", "priority", "fast"] as const
+export const CODEX_SERVICE_TIERS = ["default", "flex", "priority", "fast"] as const
 
 export interface CodexAppServerArgsOptions {
   appServerSocket?: string
@@ -182,6 +184,7 @@ export class CodexWorker implements Worker {
         buildCodexAppServerArgs({
           appServerSocket: opts.appServerSocket,
           disableLocalMcps: opts.disableLocalMcps,
+          serviceTier: opts.serviceTier,
         })),
     ]
     this.spawnChild = opts.spawnChild

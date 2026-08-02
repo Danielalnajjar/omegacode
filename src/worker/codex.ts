@@ -95,13 +95,25 @@ export const DEFAULT_THREAD_EPHEMERAL = true
 
 const MCP_SERVER_NAMES_DISABLED_BY_DEFAULT = ["onepassword", "node_repl"] as const
 
+const CODEX_SERVICE_TIERS = ["default", "flex", "priority", "fast"] as const
+
 export interface CodexAppServerArgsOptions {
   appServerSocket?: string
   disableLocalMcps?: boolean
+  /** Codex service tier for every turn served by this app-server ("fast" canonicalizes to
+   *  "priority" on the wire, codex-side). Falls back to OMEGACODE_CODEX_SERVICE_TIER. */
+  serviceTier?: string
 }
 
 export function buildCodexAppServerArgs(options: CodexAppServerArgsOptions = {}): string[] {
   const args: string[] = []
+  const tier = (options.serviceTier ?? process.env.OMEGACODE_CODEX_SERVICE_TIER ?? "").trim()
+  if (tier) {
+    if (!(CODEX_SERVICE_TIERS as readonly string[]).includes(tier)) {
+      throw new Error(`invalid codex service tier "${tier}" — must be one of ${CODEX_SERVICE_TIERS.join(", ")}`)
+    }
+    args.push("-c", `service_tier=${tier}`)
+  }
   if (options.disableLocalMcps === true) {
     for (const name of MCP_SERVER_NAMES_DISABLED_BY_DEFAULT) {
       args.push("-c", `mcp_servers.${name}.enabled=false`)

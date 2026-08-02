@@ -11,7 +11,7 @@ declare global {
 
   type OmegacodeSandbox = "read-only" | "workspace-write" | "danger-full-access"
 
-  type OmegacodeEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+  type OmegacodeEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
 
   type OmegacodeApproval = "never" | "on-request"
 

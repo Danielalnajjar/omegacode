@@ -7,9 +7,10 @@ export type ProviderId = (typeof PROVIDER_IDS)[number]
 /** read-only: no writes; workspace-write: write within cwd; danger-full-access: unrestricted. */
 export type Sandbox = "read-only" | "workspace-write" | "danger-full-access"
 
-// Shared provider reasoning-effort union. Codex accepts none through max and Claude Code accepts
-// low through max; workers map only the tiers their backend does not support.
-export type Effort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+// Shared provider reasoning-effort union. Codex accepts none through ultra and Claude Code accepts
+// low through max; workers map only the tiers their backend does not support ("ultra" is
+// codex-only subagent orchestration; the Claude worker maps it to "max").
+export type Effort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
 
 export type Approval = "never" | "on-request"
 

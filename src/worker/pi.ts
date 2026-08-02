@@ -44,6 +44,7 @@ const EFFORT_TO_THINKING: Record<Effort, string> = {
   high: "high",
   xhigh: "xhigh",
   max: "xhigh", // pi has no public "max"; model metadata maps xhigh→max where applicable
+  ultra: "xhigh", // codex-only orchestration tier; pi clamps to its public ceiling
 }
 
 export interface PiWorkerOpts {

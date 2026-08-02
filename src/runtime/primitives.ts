@@ -43,7 +43,7 @@ export class AgentFailedError extends WorkflowError {}
 export const SPEC_ENUMS = {
   provider: PROVIDER_IDS,
   sandbox: ["read-only", "workspace-write", "danger-full-access"],
-  effort: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+  effort: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
   approval: ["never", "on-request"],
 } as const satisfies Record<string, readonly string[]>
 

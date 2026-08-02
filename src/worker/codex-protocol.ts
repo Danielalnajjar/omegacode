@@ -116,7 +116,7 @@ export type CodexAskForApproval = "untrusted" | "on-failure" | "on-request" | "n
 // Keep this narrower than the app-server's open string: OmegaCode is already the
 // orchestrator, so it exposes single-agent reasoning tiers through `max` but not
 // Codex's nested-orchestration `ultra` mode.
-export type CodexReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+export type CodexReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
 
 export function toCodexSandboxMode(sandbox: Sandbox): CodexSandboxMode {
   switch (sandbox) {
@@ -171,6 +171,8 @@ export function toCodexEffort(effort: Effort | undefined): CodexReasoningEffort 
       return "xhigh"
     case "max":
       return "max"
+    case "ultra":
+      return "ultra"
   }
 }
 

@@ -76,6 +76,13 @@ export class PiWorker implements Worker {
 
   async runAgent(spec: AgentSpec, ctx: WorkerContext): Promise<AgentResult> {
     if (ctx.signal.aborted) throw new AgentInterrupted()
+    if (spec.serviceTier !== undefined) {
+      throw new AgentError({
+        provider: PROVIDER,
+        code: "unsupported_option",
+        message: "serviceTier is codex-only; omit it or use the codex provider",
+      })
+    }
     if (spec.schema) {
       try {
         assertValidSchema(spec.schema)

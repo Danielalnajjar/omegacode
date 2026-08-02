@@ -32,6 +32,8 @@ declare global {
     key?: string
     /** Hard cap on agent turns (provider-enforced where supported). */
     maxTurns?: number
+    /** Codex-only service tier; `fast` canonicalizes to `priority` codex-side. */
+    serviceTier?: string
   }
 
   /** provider and model travel together (both-or-neither): a lone provider would inherit a model

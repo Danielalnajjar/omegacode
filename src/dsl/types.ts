@@ -42,6 +42,8 @@ interface AgentOptsBase {
   key?: string
   /** Hard cap on agent turns (provider-enforced where supported). */
   maxTurns?: number
+  /** Codex-only service tier; `fast` canonicalizes to `priority` codex-side. */
+  serviceTier?: string
 }
 
 export type AgentOpts = AgentOptsBase & ProviderModelPair
@@ -58,6 +60,7 @@ export interface AgentSpec {
   instructions?: string
   schema?: JSONSchema
   maxTurns?: number
+  serviceTier?: string
 }
 
 export interface AgentUsage {

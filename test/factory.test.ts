@@ -57,9 +57,11 @@ test("fake:true routes EVERY provider id to the FakeWorker", () => {
   assert.ok(f.get("anything" as ProviderId) instanceof FakeWorker)
 })
 
-test("caches one worker per provider id", () => {
+test("caches workers by provider id and codex service tier", () => {
   const f = new DefaultWorkerFactory()
   assert.equal(f.get("codex"), f.get("codex"))
+  assert.equal(f.get("codex", "fast"), f.get("codex", "fast"))
+  assert.notEqual(f.get("codex"), f.get("codex", "fast"))
   assert.equal(f.get("claude-code"), f.get("claude-code"))
   assert.equal(f.get("opencode"), f.get("opencode"))
   assert.equal(f.get("pi"), f.get("pi"))
@@ -97,13 +99,20 @@ test("opencodeBin / piBin are consumed by their workers", () => {
   assert.equal((pi as unknown as { bin: string }).bin, "/opt/pi")
 })
 
-test("shutdownAll clears the cache and is safe to call repeatedly", async () => {
+test("shutdownAll shuts down every service-tier worker, clears the cache, and is repeatable", async () => {
   const f = new DefaultWorkerFactory({ fake: true })
   const first = f.get("codex")
+  const fast = f.get("codex", "fast")
+  const shutDown: string[] = []
+  first.shutdown = async () => { shutDown.push("default") }
+  fast.shutdown = async () => { shutDown.push("fast") }
   await f.shutdownAll()
+  assert.deepEqual(shutDown.sort(), ["default", "fast"])
   // a fresh instance is created after a shutdown clears the cache
   const second = f.get("codex")
+  const secondFast = f.get("codex", "fast")
   assert.notEqual(first as unknown, second as unknown)
+  assert.notEqual(fast as unknown, secondFast as unknown)
   await f.shutdownAll()
 })
 

@@ -68,6 +68,13 @@ export class ClaudeWorker implements Worker {
 
   async runAgent(spec: AgentSpec, ctx: WorkerContext): Promise<AgentResult> {
     if (ctx.signal.aborted) throw new AgentInterrupted()
+    if (spec.serviceTier !== undefined) {
+      throw new AgentError({
+        provider: "claude-code",
+        code: "unsupported_option",
+        message: "serviceTier is codex-only; omit it or use the codex provider",
+      })
+    }
     if (spec.schema) {
       // Surface author schema errors (bad $ref, typo'd type) BEFORE the paid turn.
       try {

@@ -21,9 +21,9 @@ export interface Worker {
   shutdown(): Promise<void>
 }
 
-/** Lazily constructs and caches one worker per provider. */
+/** Lazily constructs and caches workers by provider and provider-wide launch options. */
 export interface WorkerFactory {
-  get(id: ProviderId): Worker
+  get(id: ProviderId, serviceTier?: string): Worker
   shutdownAll(): Promise<void>
 }
 

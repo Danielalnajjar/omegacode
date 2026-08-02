@@ -61,6 +61,16 @@ function tick(): Promise<void> {
   return new Promise((r) => setImmediate(r))
 }
 
+test("serviceTier is rejected before starting a non-codex provider turn", async () => {
+  const calls: QueryCall[] = []
+  const worker = new ClaudeWorker({ queryFn: scripted([resultMsg()], calls) })
+  await assert.rejects(
+    worker.runAgent(spec({ serviceTier: "fast" }), ctx()),
+    (error: unknown) => error instanceof AgentError && error.code === "unsupported_option",
+  )
+  assert.equal(calls.length, 0)
+})
+
 // ===========================================================================
 // canUseTool wiring — deleting the canUseTool option must fail these tests
 // ===========================================================================

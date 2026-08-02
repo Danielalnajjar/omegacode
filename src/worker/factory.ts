@@ -20,19 +20,20 @@ export interface FactoryOpts {
 }
 
 export class DefaultWorkerFactory implements WorkerFactory {
-  private readonly cache = new Map<ProviderId, Worker>()
+  private readonly cache = new Map<string, Worker>()
   constructor(private readonly opts: FactoryOpts = {}) {}
 
-  get(id: ProviderId): Worker {
-    let w = this.cache.get(id)
+  get(id: ProviderId, serviceTier?: string): Worker {
+    const cacheKey = `${id}::${serviceTier ?? ""}`
+    let w = this.cache.get(cacheKey)
     if (!w) {
-      w = this.create(id)
-      this.cache.set(id, w)
+      w = this.create(id, serviceTier)
+      this.cache.set(cacheKey, w)
     }
     return w
   }
 
-  private create(id: ProviderId): Worker {
+  private create(id: ProviderId, serviceTier?: string): Worker {
     if (this.opts.fake) return new FakeWorker()
     switch (id) {
       case "codex":
@@ -40,6 +41,7 @@ export class DefaultWorkerFactory implements WorkerFactory {
           bin: this.opts.codexBin,
           appServerSocket: this.opts.codexAppServerSocket,
           disableLocalMcps: this.opts.codexDisableLocalMcps,
+          serviceTier,
         })
       case "claude-code":
         return new ClaudeWorker({

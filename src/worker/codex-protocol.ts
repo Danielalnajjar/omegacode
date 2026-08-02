@@ -113,9 +113,9 @@ export type CodexSandboxPolicy =
 
 export type CodexAskForApproval = "untrusted" | "on-failure" | "on-request" | "never"
 
-// Keep this narrower than the app-server's open string: OmegaCode is already the
-// orchestrator, so it exposes single-agent reasoning tiers through `max` but not
-// Codex's nested-orchestration `ultra` mode.
+// Keep this narrower than the app-server's open string: the full ladder including
+// Codex's nested-orchestration `ultra` mode passes through — workflows opt units
+// into subagent fan-out deliberately (e.g. review units at ultra).
 export type CodexReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
 
 export function toCodexSandboxMode(sandbox: Sandbox): CodexSandboxMode {

@@ -450,7 +450,7 @@ describe("one coherent package-manager story (L19)", () => {
   test("one root pnpm workspace and lockfile own root plus viewer", () => {
     assert.ok(existsSync(join(root, "pnpm-workspace.yaml")), "root pnpm-workspace.yaml must exist")
     assert.ok(existsSync(join(root, "pnpm-lock.yaml")), "root pnpm-lock.yaml must exist")
-    assert.match(workspace, /packages:\n\s+- "\."\n\s+- "viewer"/)
+    assert.match(workspace, /packages:\r?\n\s+- "\."\r?\n\s+- "viewer"/)
     assert.match(workspace, /minimumReleaseAge:\s*1440/)
     assert.match(workspace, /strictDepBuilds:\s*true/)
     assert.match(workspace, /trustPolicy:\s*no-downgrade/)

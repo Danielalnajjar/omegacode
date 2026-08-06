@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Amp orb setup hook: prepare omegacode so .amp/plugins/omegacode.ts can spawn
+# node dist/cli.js. Runs from the repo root while the orb is being prepared.
+set -euo pipefail
+
+pnpm install --frozen-lockfile
+pnpm build

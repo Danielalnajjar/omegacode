@@ -7,7 +7,8 @@ import { join } from "node:path"
 import { existsSync } from "node:fs"
 
 import { CodexWorker, DEFAULT_REQUEST_TIMEOUT_MS, DEFAULT_THREAD_EPHEMERAL, DEFAULT_TURN_STALL_TIMEOUT_MS, buildCodexAppServerArgs } from "../src/worker/codex.js"
-import { JsonRpcStdioClient, StdioTransportError, JsonRpcResponseError } from "../src/worker/jsonrpc-stdio.js"
+import { JsonRpcResponseError } from "../src/worker/jsonrpc-core.js"
+import { JsonRpcStdioClient, StdioTransportError } from "../src/worker/jsonrpc-stdio.js"
 import { AgentError, AgentInterrupted, type WorkerProgress } from "../src/worker/index.js"
 import type { AgentSpec } from "../src/dsl/types.js"
 

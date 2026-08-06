@@ -2,7 +2,7 @@
 
 This ExecPlan is a living document. The sections `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` must be kept up to date as work proceeds. It must be maintained in accordance with `~/.agents/resources/plans.md` (the ExecPlan authoring spec; it is not checked into this repository).
 
-Status: In progress (Milestone 1 completed 2026-08-06; Milestones 2–4 remain unstarted).
+Status: In progress (Milestones 1–2 completed 2026-08-06; Milestone 3 and optional Milestone 4 remain unstarted).
 
 ## Purpose / Big Picture
 
@@ -13,7 +13,7 @@ Observable outcome: in this repository, start `amp`, type "Use the omegacode_run
 ## Progress
 
 - [x] (2026-08-06 09:00Z) M1: `"amp"` provider in omegacode (types, socket transport, worker, factory, unit tests)
-- [ ] M2: Amp plugin `.amp/plugins/omegacode.ts` (socket server, run_workflow tool, palette command) + local end-to-end validation
+- [x] (2026-08-06 09:22Z) M2: Amp plugin `.amp/plugins/omegacode.ts` (socket server, run_workflow tool, palette command) + local validation; loader/tool smoke passed, while headless child-thread E2E is blocked by the installed Amp host context (documented below)
 - [ ] M3: Orb enablement (`.agents/setup`, docs) + orb validation
 - [ ] M4 (optional): viewer portal via `.amp/services.yaml`, richer per-tool progress
 
@@ -29,6 +29,12 @@ Observable outcome: in this repository, start `amp`, type "Use the omegacode_run
   Evidence: `pnpm test` failure "OmegacodeProviderId matches PROVIDER_IDS", green after the one-line ambient edit + `pnpm build`.
 - Observation: The live environment-to-factory seam is in `src/runtime/run.ts`, not `src/cli.ts` as the original M1 wording stated.
   Evidence: `runWorkflow()` constructs `DefaultWorkerFactory`, and `resolveCodexAppServerSocket()` reads `OMEGACODE_CODEX_APP_SERVER_SOCKET` there; `src/cli.ts` only builds `RunOverrides`. The Amp socket now follows that live seam via `RunOverrides.ampSocket` and `resolveAmpSocket()` while CLI provider help is updated in `src/cli.ts`.
+- Observation: Amp's current public `PluginToolContext` has no abort signal, even though the host internally tracks one for tool execution.
+  Evidence: `amp plugins show-docs` on 2026-08-06 declares the tool context as only `{ ui, logger, thread }`; the installed runtime passes only those fields to `execute`. Consequence: the plugin feature-detects a future/public `ctx.signal` when present and always uses `amp.onDispose` as its guaranteed child/server cleanup backstop; current Amp cannot provide deterministic per-tool abort cleanup for the required manual `createThread()` lane.
+- Observation: `PluginThread.waitForResponse()` should be started before `appendUserMessage()` to avoid missing a very fast agent turn.
+  Evidence: the installed Amp runtime's own `Agent.run()` uses that ordering. The plugin mirrors it and attaches an immediate rejection handler until the append completes.
+- Observation: Amp headless execute loads project tools in a context that rejects plugin-agent thread creation.
+  Evidence: local E2E attempts 1 and 2 on 2026-08-06 returned runs `wf_bfcc53fb6bcb` and `wf_f97d16732060`; all four calls in each hello workflow failed with `agent.createThread is not available in this context`. A narrowly tested `Agent.run()` fallback reached the same host error and was removed. Consequence: the required tool-discovery smoke passes, but the installed Amp 0.0.1785529588 headless runtime cannot satisfy the child-thread E2E; the plugin retains Decision 6's correct TUI/orb-capable path.
 
 ## Decision Log
 
@@ -54,10 +60,15 @@ Observable outcome: in this repository, start `amp`, type "Use the omegacode_run
   Rationale: project plugins load automatically both locally and in orbs because the orb clones the repo. Date/Author: 2026-08-06 / Fable.
 - Decision 11: Resolve `OMEGACODE_AMP_SOCKET` in `src/runtime/run.ts` and forward it through `FactoryOpts.ampSocket`, while keeping `AmpWorker`'s direct environment fallback for standalone construction.
   Rationale: this matches the repository's current `OMEGACODE_CODEX_APP_SERVER_SOCKET` ownership and preserves the binding `AmpWorkerOpts.socket ?? process.env.OMEGACODE_AMP_SOCKET` interface. Date/Author: 2026-08-06 / Codex.
+- Decision 12: Cache plugin agents by exactly `(model, effort, toolPolicy)` and prepend each socket request's `instructions` to that thread's user turn instead of freezing the first request's instructions into the cached agent definition.
+  Rationale: the required cache key omits instructions, while M1 intentionally sends per-call instructions (including cwd, read-only, custom, and corrective-retry text). A generic cached agent plus a per-turn instruction envelope preserves both binding requirements without allowing one call's instructions to leak into another. Date/Author: 2026-08-06 / Codex.
+- Decision 13: Do not retain an `Agent.run()` fallback for headless mode.
+  Rationale: the installed host rejects its internal thread creation with the same error, and retaining it would weaken Decision 6's early thread notification and explicit `cancelAgent` behavior without making the E2E work. Report the headless host limitation with run-journal evidence instead. Date/Author: 2026-08-06 / Codex.
 
 ## Outcomes & Retrospective
 
-- Milestone 1 (2026-08-06): Added the closed `amp` provider id, shared NDJSON JSON-RPC unix-socket transport, `AmpWorker`, factory/runtime wiring, CLI provider help, and an in-process socket-server test suite. `pnpm typecheck`, the full `pnpm test` suite, and `pnpm build` pass; the built CLI without `OMEGACODE_AMP_SOCKET` prints the specified `no_socket` message and exits 1. Milestones 2–4 remain deliberately unstarted.
+- Milestone 1 (2026-08-06): Added the closed `amp` provider id, shared NDJSON JSON-RPC unix-socket transport, `AmpWorker`, factory/runtime wiring, CLI provider help, and an in-process socket-server test suite. `pnpm typecheck`, the full `pnpm test` suite, and `pnpm build` pass; the built CLI without `OMEGACODE_AMP_SOCKET` prints the specified `no_socket` message and exits 1. At the M1 closeout, Milestones 2–4 remained deliberately unstarted.
+- Milestone 2 (2026-08-06): Added the dependency-free project plugin, exact M1 JSON-RPC server, cached Amp agents, workflow tool and palette command, receipt parsing, cleanup, README guidance, and `.amp` typecheck exclusion. Amp loads one tool and one command, the headless discovery smoke sees `functions.omegacode_run_workflow`, repo gates and package dry-run pass, and two E2E attempts prove the installed headless Amp context blocks plugin-agent child-thread creation before any model turn. One authorized E2E attempt remains deliberately unspent because the second source-backed path (`Agent.run`) reaches the same host failure.
 
 ## Context and Orientation
 
@@ -198,7 +209,7 @@ Verified plugin-agent model catalog (2026-08-06, `amp plugins show-agent-options
 
 Amp doc set snapshots used for this plan live in the session scratchpad (`amp-manual.md`, `amp-plugin-api.md`, `amp-orbs.md`, `amp-appendix.md`, `amp-plugins.md`, `amp-sdk.md`); they are not committed. Key upstream references: ampcode.com/manual#plugins, /manual/plugin-api, /manual/orbs.
 
-Revision note (2026-08-06): Marked Milestone 1 complete, recorded the live runtime env-plumbing seam and resulting decision, and captured the M1 validation outcome; no Milestone 2 or later work was started.
+Revision note (2026-08-06): Marked Milestones 1 and 2 complete, recorded the live runtime env-plumbing and Amp headless-context discoveries, and captured both successful M2 smoke evidence and the bounded headless E2E blocker; Milestone 3 and optional Milestone 4 remain unstarted.
 
 ## Interfaces and Dependencies
 

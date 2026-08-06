@@ -76,6 +76,8 @@ test("pi: overrides.piBin drives a real spawn with the exact argv/stdin contract
       "--mode",
       "json",
       "--no-session",
+      "-ns",
+      "--no-extensions",
       "--model",
       "openrouter/foo/bar",
       "--thinking",

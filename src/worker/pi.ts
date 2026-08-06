@@ -126,6 +126,11 @@ export class PiWorker implements Worker {
       "json",
       "--no-session",
       "--no-tools",
+      // omegacode prompts carry all context — machine-local skill manifests and
+      // extensions must never inflate or perturb worker context. Skills suppression
+      // uses the short flag: 0.79.1 parses only "--c"/"-ns" (long "--no-skills" came later).
+      "-ns",
+      "--no-extensions",
       ...(spec.model ? ["--model", spec.model] : []),
       "--thinking",
       "off",
@@ -159,6 +164,11 @@ export class PiWorker implements Worker {
       "json",
       // omegacode owns history/resume — never litter ~/.pi/agent/sessions.
       "--no-session",
+      // omegacode prompts carry all context — machine-local skill manifests and
+      // extensions must never inflate or perturb worker context. Skills suppression
+      // uses the short flag: 0.79.1 parses only "--c"/"-ns" (long "--no-skills" came later).
+      "-ns",
+      "--no-extensions",
       // Model passes through verbatim (provider/model prefixes and slashes included). Authors
       // should use effort, not ":<thinking>" model suffixes — the worker always controls thinking
       // via the flag when effort is set.

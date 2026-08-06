@@ -2,7 +2,7 @@
 
 This ExecPlan is a living document. The sections `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` must be kept up to date as work proceeds. It must be maintained in accordance with `~/.agents/resources/plans.md` (the ExecPlan authoring spec; it is not checked into this repository).
 
-Status: In progress (Milestones 1–2 completed 2026-08-06; Milestone 3 and optional Milestone 4 remain unstarted).
+Status: In progress (Milestones 1–2 completed and interactive-TUI E2E validated 2026-08-06; Milestone 3 files landed, orb validation pending a push to the git remote; optional Milestone 4 unstarted).
 
 ## Purpose / Big Picture
 
@@ -14,7 +14,8 @@ Observable outcome: in this repository, start `amp`, type "Use the omegacode_run
 
 - [x] (2026-08-06 09:00Z) M1: `"amp"` provider in omegacode (types, socket transport, worker, factory, unit tests)
 - [x] (2026-08-06 09:22Z) M2: Amp plugin `.amp/plugins/omegacode.ts` (socket server, run_workflow tool, palette command) + local validation; loader/tool smoke passed, while headless child-thread E2E is blocked by the installed Amp host context (documented below)
-- [ ] M3: Orb enablement (`.agents/setup`, docs) + orb validation
+- [x] (2026-08-06 09:45Z) M3 files: `.agents/setup` (install + build) and `AGENTS.md` Amp-lane guidance committed
+- [ ] M3 orb validation: requires the branch pushed to the git remote (orbs clone the repo) and an Amp project; user decision pending
 - [ ] M4 (optional): viewer portal via `.amp/services.yaml`, richer per-tool progress
 
 ## Surprises & Discoveries
@@ -69,6 +70,8 @@ Observable outcome: in this repository, start `amp`, type "Use the omegacode_run
 
 - Milestone 1 (2026-08-06): Added the closed `amp` provider id, shared NDJSON JSON-RPC unix-socket transport, `AmpWorker`, factory/runtime wiring, CLI provider help, and an in-process socket-server test suite. `pnpm typecheck`, the full `pnpm test` suite, and `pnpm build` pass; the built CLI without `OMEGACODE_AMP_SOCKET` prints the specified `no_socket` message and exits 1. At the M1 closeout, Milestones 2–4 remained deliberately unstarted.
 - Milestone 2 (2026-08-06): Added the dependency-free project plugin, exact M1 JSON-RPC server, cached Amp agents, workflow tool and palette command, receipt parsing, cleanup, README guidance, and `.amp` typecheck exclusion. Amp loads one tool and one command, the headless discovery smoke sees `functions.omegacode_run_workflow`, repo gates and package dry-run pass, and two E2E attempts prove the installed headless Amp context blocks plugin-agent child-thread creation before any model turn. One authorized E2E attempt remains deliberately unspent because the second source-backed path (`Agent.run`) reaches the same host failure.
+- Interactive-TUI E2E (2026-08-06, Fable review): the full lane works end to end. Driving the real `amp` TUI in this repo with "Use the omegacode_run_workflow tool to run examples/hello.workflow.js with model xai/grok-4.5" produced run `wf_575cc9c0e19f`, `status: completed`, four child Amp threads (three parallel agents + one synthesis, e.g. https://ampcode.com/threads/T-019fd669-e28a-742c-ab02-0079038d84cc) on Grok 4.5, and a synthesis result persisted in the run's `result.json`. This confirms `agent.createThread` is available in the interactive plugin context, validating Decision 6; the earlier block is specific to headless `amp -x`.
+- Milestone 3 files (2026-08-06): committed executable `.agents/setup` (frozen install + build so `dist/cli.js` exists before the plugin spawns it) and `AGENTS.md` Amp-lane guidance. Orb validation remains: orbs clone from the git remote, so the commits must be pushed and an Amp project selected before an orb thread can exercise the plugin — that push is a user decision.
 
 ## Context and Orientation
 

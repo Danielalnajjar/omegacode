@@ -716,12 +716,16 @@ test("H6: a persistent schema miss nulls only ITS parallel item — siblings and
 test("L6: a failed turn's provider-reported usage reaches totalUsage and the journal", async () => {
   const b = build({
     hooks: {
-      run: async () => {
+      run: async (_spec, ctx) => {
+        ctx.onProgress({
+          kind: "usage",
+          usage: { inputTokens: 3, outputTokens: 7, cacheReadInputTokens: 2, cacheCreationInputTokens: 1 },
+        })
         throw new AgentError({
           provider: "codex",
           code: "boom",
           message: "failed turn",
-          usage: { inputTokens: 3, outputTokens: 7, costUsd: 0.01 },
+          usage: { inputTokens: 3, outputTokens: 7, costUsd: 0.01, cacheReadInputTokens: 2, cacheCreationInputTokens: 1 },
         })
       },
     },
@@ -735,6 +739,15 @@ test("L6: a failed turn's provider-reported usage reaches totalUsage and the jou
     const [entry] = [...Journal.load("run_test").results.values()]
     assert.equal(entry.status, "failed")
     assert.equal(entry.usage.outputTokens, 7)
+    assert.equal(entry.usage.cacheReadInputTokens, 2)
+    assert.equal(entry.usage.cacheCreationInputTokens, 1)
+    const usageEvents = b.sink.events.filter((e) => e.type === "agent" && e.inputTokens !== undefined)
+    assert.equal(usageEvents.length, 2)
+    for (const event of usageEvents) {
+      assert.equal(event.type, "agent")
+      assert.equal(event.cacheReadInputTokens, 2)
+      assert.equal(event.cacheCreationInputTokens, 1)
+    }
   } finally {
     b.cleanup()
   }

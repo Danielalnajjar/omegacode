@@ -352,7 +352,13 @@ test("runAgent happy path (served before spawn): resolves with usage", async () 
     reply({
       jsonrpc: "2.0",
       method: "thread/tokenUsage/updated",
-      params: { threadId: "thread-1", tokenUsage: { total: { inputTokens: 50, outputTokens: 10 }, last: { inputTokens: 50, outputTokens: 10 } } },
+      params: {
+        threadId: "thread-1",
+        tokenUsage: {
+          total: { inputTokens: 50, cachedInputTokens: 40, outputTokens: 10 },
+          last: { inputTokens: 50, cachedInputTokens: 40, outputTokens: 10 },
+        },
+      },
     })
     reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
   })
@@ -360,6 +366,8 @@ test("runAgent happy path (served before spawn): resolves with usage", async () 
   assert.equal(res.text, "done")
   assert.equal(res.usage.inputTokens, 50)
   assert.equal(res.usage.outputTokens, 10)
+  assert.equal(res.usage.cacheReadInputTokens, 40)
+  assert.equal(res.usage.cacheCreationInputTokens, undefined)
   await worker.shutdown()
 })
 

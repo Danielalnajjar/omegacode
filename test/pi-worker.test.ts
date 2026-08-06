@@ -158,7 +158,13 @@ test("happy path: argv shape, stdin prompt, delta + tool mapping, usage folding"
   assert.equal(result.text, "Hello world")
   assert.equal(result.status, "completed")
   // input + cacheRead + cacheWrite = 56; output = 10; cost.total = 0.02
-  assert.deepEqual(result.usage, { inputTokens: 56, outputTokens: 10, costUsd: 0.02 })
+  assert.deepEqual(result.usage, {
+    inputTokens: 56,
+    outputTokens: 10,
+    costUsd: 0.02,
+    cacheReadInputTokens: 5,
+    cacheCreationInputTokens: 1,
+  })
 
   assert.deepEqual(
     c.events.map((e) => e.kind),
@@ -348,7 +354,13 @@ test("schema: silent tool-less extraction replays the working answer; usage sums
   assert.match(extraction.proc.stdin.chunks[0]!, /JSON Schema/)
 
   assert.deepEqual(result.structured, { answer: 42 })
-  assert.deepEqual(result.usage, { inputTokens: 112, outputTokens: 20, costUsd: 0.04 })
+  assert.deepEqual(result.usage, {
+    inputTokens: 112,
+    outputTokens: 20,
+    costUsd: 0.04,
+    cacheReadInputTokens: 10,
+    cacheCreationInputTokens: 2,
+  })
   // Extraction is silent — the working turn's two text deltas are the only text progress.
   assert.equal(c.events.filter((e) => e.kind === "text").length, 2)
 })

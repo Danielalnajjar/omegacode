@@ -143,7 +143,13 @@ test("happy path: argv shape, stdin prompt, event mapping, usage normalization",
   assert.equal(result.text, "Hello world")
   assert.equal(result.status, "completed")
   // input + cache.read + cache.write; output + reasoning
-  assert.deepEqual(result.usage, { inputTokens: 112, outputTokens: 25, costUsd: 0.01 })
+  assert.deepEqual(result.usage, {
+    inputTokens: 112,
+    outputTokens: 25,
+    costUsd: 0.01,
+    cacheReadInputTokens: 10,
+    cacheCreationInputTokens: 2,
+  })
 
   const kinds = c.events.map((e) => e.kind)
   assert.deepEqual(kinds, ["reasoning", "tool", "tool-result", "text", "usage"])
@@ -336,7 +342,13 @@ test("schema: silent extraction turn reuses the working session; usage sums; str
   assert.match(extraction.proc.stdin.chunks[0]!, /JSON Schema/)
 
   assert.deepEqual(result.structured, { answer: 42 })
-  assert.deepEqual(result.usage, { inputTokens: 122, outputTokens: 30, costUsd: 0.012 })
+  assert.deepEqual(result.usage, {
+    inputTokens: 122,
+    outputTokens: 30,
+    costUsd: 0.012,
+    cacheReadInputTokens: 10,
+    cacheCreationInputTokens: 2,
+  })
   // The extraction turn is silent: no text/tool progress after the working turn's events.
   assert.equal(c.events.filter((e) => e.kind === "text").length, 1)
 })

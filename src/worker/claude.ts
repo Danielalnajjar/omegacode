@@ -444,11 +444,15 @@ function expandHome(p: string): string {
  */
 export function usageFromResult(last: { usage?: unknown; total_cost_usd?: unknown }): AgentUsage {
   const u = (last.usage && typeof last.usage === "object" ? last.usage : {}) as Record<string, unknown>
+  const cacheReadInputTokens = optionalNumber(u.cache_read_input_tokens)
+  const cacheCreationInputTokens = optionalNumber(u.cache_creation_input_tokens)
   return {
     ...emptyUsage(),
-    inputTokens: numOr(u.input_tokens) + numOr(u.cache_read_input_tokens) + numOr(u.cache_creation_input_tokens),
+    inputTokens: numOr(u.input_tokens) + (cacheReadInputTokens ?? 0) + (cacheCreationInputTokens ?? 0),
     outputTokens: numOr(u.output_tokens),
     costUsd: numOr(last.total_cost_usd),
+    ...(cacheReadInputTokens === undefined ? {} : { cacheReadInputTokens }),
+    ...(cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens }),
   }
 }
 
@@ -460,4 +464,8 @@ function asBlocks(content: unknown): Array<Record<string, unknown>> {
 
 function numOr(v: unknown): number {
   return typeof v === "number" && Number.isFinite(v) ? v : 0
+}
+
+function optionalNumber(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined
 }

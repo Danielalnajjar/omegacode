@@ -249,13 +249,25 @@ export class OpencodeWorker implements Worker {
             const cost = numOf(part?.cost) ?? numOf(value.cost) ?? 0
             if (tokens) {
               const cache = isObject(tokens.cache) ? tokens.cache : undefined
-              usage = {
+              const cacheReadInputTokens = numOf(cache?.read)
+              const cacheCreationInputTokens = numOf(cache?.write)
+              usage = addUsage(usage, {
                 // Cache reads/writes fold into input (Claude precedent).
-                inputTokens: usage.inputTokens + (numOf(tokens.input) ?? 0) + (numOf(cache?.read) ?? 0) + (numOf(cache?.write) ?? 0),
-                outputTokens: usage.outputTokens + (numOf(tokens.output) ?? 0) + (numOf(tokens.reasoning) ?? 0),
-                costUsd: usage.costUsd + cost,
-              }
-              forward({ kind: "usage", usage: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens } })
+                inputTokens: (numOf(tokens.input) ?? 0) + (cacheReadInputTokens ?? 0) + (cacheCreationInputTokens ?? 0),
+                outputTokens: (numOf(tokens.output) ?? 0) + (numOf(tokens.reasoning) ?? 0),
+                costUsd: cost,
+                ...(cacheReadInputTokens === undefined ? {} : { cacheReadInputTokens }),
+                ...(cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens }),
+              })
+              forward({
+                kind: "usage",
+                usage: {
+                  inputTokens: usage.inputTokens,
+                  outputTokens: usage.outputTokens,
+                  ...(usage.cacheReadInputTokens === undefined ? {} : { cacheReadInputTokens: usage.cacheReadInputTokens }),
+                  ...(usage.cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens: usage.cacheCreationInputTokens }),
+                },
+              })
             }
             return
           }

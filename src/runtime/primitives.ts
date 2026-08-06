@@ -395,7 +395,20 @@ export class Runtime {
                 transcript.write({ kind: "tool-result", id: e.id, name: e.name, output: e.output, isError: e.isError })
                 break
               case "usage":
-                this.o.events.emit({ type: "agent", index, phaseIndex, phaseTitle, label, provider: spec.provider, model: spec.model, state: "running", inputTokens: e.usage.inputTokens, outputTokens: e.usage.outputTokens })
+                this.o.events.emit({
+                  type: "agent",
+                  index,
+                  phaseIndex,
+                  phaseTitle,
+                  label,
+                  provider: spec.provider,
+                  model: spec.model,
+                  state: "running",
+                  inputTokens: e.usage.inputTokens,
+                  outputTokens: e.usage.outputTokens,
+                  cacheReadInputTokens: e.usage.cacheReadInputTokens,
+                  cacheCreationInputTokens: e.usage.cacheCreationInputTokens,
+                })
                 break
             }
           },
@@ -442,7 +455,23 @@ export class Runtime {
           transcript.write({ kind: "text", text: "\n\n```json\n" + JSON.stringify(value, null, 2) + "\n```\n" })
         }
         transcript.write({ kind: "status", state: "done" })
-        this.o.events.emit({ type: "agent", index, phaseIndex, phaseTitle, label, provider: spec.provider, model: spec.model, state: "done", durationMs, inputTokens: attemptUsage.inputTokens, outputTokens: attemptUsage.outputTokens, costUsd: attemptUsage.costUsd, resultPreview: preview(value) })
+        this.o.events.emit({
+          type: "agent",
+          index,
+          phaseIndex,
+          phaseTitle,
+          label,
+          provider: spec.provider,
+          model: spec.model,
+          state: "done",
+          durationMs,
+          inputTokens: attemptUsage.inputTokens,
+          outputTokens: attemptUsage.outputTokens,
+          cacheReadInputTokens: attemptUsage.cacheReadInputTokens,
+          cacheCreationInputTokens: attemptUsage.cacheCreationInputTokens,
+          costUsd: attemptUsage.costUsd,
+          resultPreview: preview(value),
+        })
         succeeded = true
         return value as T
       } catch (err) {
@@ -464,7 +493,23 @@ export class Runtime {
           durationMs,
         })
         transcript.write({ kind: "status", state: "failed", error: message })
-        this.o.events.emit({ type: "agent", index, phaseIndex, phaseTitle, label, provider: spec.provider, model: spec.model, state: "failed", durationMs, inputTokens: attemptUsage.inputTokens, outputTokens: attemptUsage.outputTokens, costUsd: attemptUsage.costUsd, error: message })
+        this.o.events.emit({
+          type: "agent",
+          index,
+          phaseIndex,
+          phaseTitle,
+          label,
+          provider: spec.provider,
+          model: spec.model,
+          state: "failed",
+          durationMs,
+          inputTokens: attemptUsage.inputTokens,
+          outputTokens: attemptUsage.outputTokens,
+          cacheReadInputTokens: attemptUsage.cacheReadInputTokens,
+          cacheCreationInputTokens: attemptUsage.cacheCreationInputTokens,
+          costUsd: attemptUsage.costUsd,
+          error: message,
+        })
         throw err instanceof AgentError || err instanceof AgentInterrupted ? err : new AgentFailedError(`agent failed: ${message}`)
       } finally {
         await transcript.close().catch(() => {})

@@ -279,12 +279,24 @@ export class PiWorker implements Worker {
             const u = isObject(message.usage) ? message.usage : undefined
             if (u) {
               const cost = isObject(u.cost) ? u.cost : undefined
-              usage = {
-                inputTokens: usage.inputTokens + (numOf(u.input) ?? 0) + (numOf(u.cacheRead) ?? 0) + (numOf(u.cacheWrite) ?? 0),
-                outputTokens: usage.outputTokens + (numOf(u.output) ?? 0),
-                costUsd: usage.costUsd + (numOf(cost?.total) ?? 0),
-              }
-              forward({ kind: "usage", usage: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens } })
+              const cacheReadInputTokens = numOf(u.cacheRead)
+              const cacheCreationInputTokens = numOf(u.cacheWrite)
+              usage = addUsage(usage, {
+                inputTokens: (numOf(u.input) ?? 0) + (cacheReadInputTokens ?? 0) + (cacheCreationInputTokens ?? 0),
+                outputTokens: numOf(u.output) ?? 0,
+                costUsd: numOf(cost?.total) ?? 0,
+                ...(cacheReadInputTokens === undefined ? {} : { cacheReadInputTokens }),
+                ...(cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens }),
+              })
+              forward({
+                kind: "usage",
+                usage: {
+                  inputTokens: usage.inputTokens,
+                  outputTokens: usage.outputTokens,
+                  ...(usage.cacheReadInputTokens === undefined ? {} : { cacheReadInputTokens: usage.cacheReadInputTokens }),
+                  ...(usage.cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens: usage.cacheCreationInputTokens }),
+                },
+              })
             }
             readAssistantTerminal(message)
             return

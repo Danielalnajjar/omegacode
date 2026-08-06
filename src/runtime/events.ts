@@ -31,6 +31,8 @@ export type WorkflowEvent =
       durationMs?: number
       inputTokens?: number
       outputTokens?: number
+      cacheReadInputTokens?: number
+      cacheCreationInputTokens?: number
       costUsd?: number
       lastTool?: string
       promptPreview?: string

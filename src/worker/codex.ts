@@ -608,15 +608,21 @@ export class CodexWorker implements Worker {
         // only covers the most recent model request.
         const total = params.tokenUsage.total
         if (isObject(total)) {
+          const cacheReadInputTokens = optionalNumber(total.cachedInputTokens) ?? state.usage.cacheReadInputTokens
           state.usage = {
             inputTokens: numberOr(total.inputTokens, state.usage.inputTokens),
             outputTokens: numberOr(total.outputTokens, state.usage.outputTokens),
             costUsd: state.usage.costUsd,
+            ...(cacheReadInputTokens === undefined ? {} : { cacheReadInputTokens }),
           }
           if (state.forwardProgress)
             state.ctx.onProgress({
               kind: "usage",
-              usage: { inputTokens: state.usage.inputTokens, outputTokens: state.usage.outputTokens },
+              usage: {
+                inputTokens: state.usage.inputTokens,
+                outputTokens: state.usage.outputTokens,
+                ...(cacheReadInputTokens === undefined ? {} : { cacheReadInputTokens }),
+              },
             })
         }
         return
@@ -826,6 +832,10 @@ export class CodexWorker implements Worker {
 
 function numberOr(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined
 }
 
 function toolName(item: Record<string, unknown>): string | undefined {

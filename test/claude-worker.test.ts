@@ -119,6 +119,8 @@ test("happy path: result text + usage (cache tokens fold into inputTokens)", asy
   assert.equal(res.usage.inputTokens, 240)
   assert.equal(res.usage.outputTokens, 4)
   assert.equal(res.usage.costUsd, 0.05)
+  assert.equal(res.usage.cacheReadInputTokens, 200)
+  assert.equal(res.usage.cacheCreationInputTokens, 30)
   assert.equal(calls[0]!.prompt, "do the thing")
 })
 
@@ -309,6 +311,8 @@ test("no-result recovery sums assistant usage deduped by API message id (cost un
   assert.equal(res.usage.inputTokens, 1160)
   assert.equal(res.usage.outputTokens, 10)
   assert.equal(res.usage.costUsd, 0)
+  assert.equal(res.usage.cacheReadInputTokens, 1000)
+  assert.equal(res.usage.cacheCreationInputTokens, 10)
 })
 
 test("a post-answer NOTIFICATION turn's result lacking structured_output → recovered from the tool payload", async () => {

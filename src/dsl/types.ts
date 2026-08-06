@@ -67,6 +67,10 @@ export interface AgentUsage {
   inputTokens: number
   outputTokens: number
   costUsd: number
+  /** Cache-hit input tokens, already included in inputTokens. Omitted when unreported. */
+  cacheReadInputTokens?: number
+  /** Cache-creation input tokens, already included in inputTokens. Omitted when unreported. */
+  cacheCreationInputTokens?: number
 }
 
 export function emptyUsage(): AgentUsage {
@@ -74,11 +78,19 @@ export function emptyUsage(): AgentUsage {
 }
 
 export function addUsage(a: AgentUsage, b: AgentUsage): AgentUsage {
+  const cacheReadInputTokens = addOptional(a.cacheReadInputTokens, b.cacheReadInputTokens)
+  const cacheCreationInputTokens = addOptional(a.cacheCreationInputTokens, b.cacheCreationInputTokens)
   return {
     inputTokens: a.inputTokens + b.inputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
     costUsd: a.costUsd + b.costUsd,
+    ...(cacheReadInputTokens === undefined ? {} : { cacheReadInputTokens }),
+    ...(cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens }),
   }
+}
+
+function addOptional(a: number | undefined, b: number | undefined): number | undefined {
+  return a === undefined && b === undefined ? undefined : (a ?? 0) + (b ?? 0)
 }
 
 export type AgentStatus = "completed" | "failed" | "interrupted"

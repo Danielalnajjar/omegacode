@@ -14,6 +14,7 @@ import { WorkflowError } from "./runtime/primitives.js"
 import { startViewer } from "./server/serve.js"
 import { AgentError, AgentInterrupted } from "./worker/index.js"
 import { DEFAULTS, PROVIDER_IDS, type Effort, type Sandbox } from "./dsl/types.js"
+import { postOtlpTraces, projectRunToOtlp } from "./otel/export.js"
 
 export interface Flags {
   _: string[]
@@ -170,6 +171,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       return cmdStatus(flags)
     case "wait":
       return cmdWait(flags)
+    case "otel-export":
+      return cmdOtelExport(flags)
     case "serve":
       return cmdServe(flags)
     case "runs":
@@ -651,6 +654,24 @@ async function cmdWait(flags: Flags): Promise<void> {
   }
 }
 
+async function cmdOtelExport(flags: Flags): Promise<void> {
+  const runId = (flags._ as string[])[1]
+  if (!runId) return commandError(flags, "usage: omegacode otel-export <runId> [--endpoint <url|->]")
+  if (!isValidRunId(runId)) return commandError(flags, `invalid runId: ${runId}`)
+  const endpoint = str(flags.endpoint) ?? "-"
+  const payload = projectRunToOtlp(runId)
+  if (endpoint === "-") {
+    process.stdout.write(JSON.stringify(payload, null, 2) + "\n")
+    return
+  }
+  try {
+    new URL(endpoint)
+  } catch {
+    throw new UsageError(`--endpoint must be a URL or -, got "${endpoint}"`)
+  }
+  await postOtlpTraces(endpoint, payload)
+}
+
 function isTerminalStatus(status: RunStatusSnapshot["status"]): boolean {
   return status === "completed" || status === "failed" || status === "interrupted" || status === "stale"
 }
@@ -879,6 +900,7 @@ Usage:
   omegacode serve [--port 4123] [--host h] [--idle-shutdown]   Live read-only web viewer of all runs
   omegacode status <runId> [--json]             Read native status from events.jsonl + heartbeat
   omegacode wait <runId> [--json] [--poll-ms N] [--timeout-ms N] [--stale-debounce-ms N]   Wait for a terminal native status
+  omegacode otel-export <runId> [--endpoint <url|->]   Export OTLP/HTTP JSON (default: stdout)
   omegacode runs [--prune --keep <N>] [--prune-stale]   List runs (--prune old, --prune-stale dead)
   omegacode workflows [--json]                  List saved/named workflows (project, user, builtin)
   omegacode save <file.workflow.js> [--project] [--force]   Save a workflow under its meta.name

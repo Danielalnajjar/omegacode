@@ -7,7 +7,8 @@ import { randomUUID } from "node:crypto"
 import { emptyUsage, type AgentResult, type AgentSpec, type Effort, type ProviderId } from "../dsl/types.js"
 import type { Worker, WorkerContext } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
-import { JsonRpcSocketClient, SocketRpcResponseError, SocketTransportError } from "./jsonrpc-socket.js"
+import { JsonRpcResponseError } from "./jsonrpc-core.js"
+import { JsonRpcSocketClient, SocketTransportError } from "./jsonrpc-socket.js"
 import { assertValidSchema, parseJsonLoose } from "./schema.js"
 
 const PROVIDER = "amp" as const
@@ -45,6 +46,33 @@ export class AmpWorker implements Worker {
     if (!spec.model) {
       throw new AgentError({ provider: PROVIDER, code: "missing_model", message: "amp provider requires a model" })
     }
+    // Fail closed on everything this backend cannot honestly enforce. The Amp plugin runs the turn
+    // inside the user's Amp CLI: there is no OS confinement to hand it, no approval channel back to
+    // omegacode, and no turn cap — so accept only the spec that matches what actually happens.
+    if (spec.sandbox !== "danger-full-access") {
+      throw new AgentError({
+        provider: PROVIDER,
+        code: "sandbox_unsupported",
+        message: `amp cannot enforce sandbox "${spec.sandbox}": Amp agent tools are not OS-confined; set sandbox danger-full-access explicitly to accept unconfined execution`,
+        retryable: false,
+      })
+    }
+    if (spec.approval !== "never") {
+      throw new AgentError({
+        provider: PROVIDER,
+        code: "unsupported_option",
+        message: `amp turns run inside the Amp CLI and cannot surface approval requests to omegacode — use approval: "never" with provider "amp"`,
+        retryable: false,
+      })
+    }
+    if (spec.maxTurns !== undefined) {
+      throw new AgentError({
+        provider: PROVIDER,
+        code: "unsupported_option",
+        message: "amp does not support maxTurns; omit it or use the claude-code provider",
+        retryable: false,
+      })
+    }
     if (spec.schema) {
       try {
         assertValidSchema(spec.schema)
@@ -59,7 +87,6 @@ export class AmpWorker implements Worker {
       model: spec.model,
       effort: mapEffort(spec.effort),
       instructions: composeInstructions(spec),
-      toolPolicy: spec.sandbox === "read-only" ? "no-edit" : "all",
     }, ctx)
     if (!spec.schema) return { text: working, status: "completed", usage: emptyUsage() }
 
@@ -69,7 +96,6 @@ export class AmpWorker implements Worker {
       model: spec.model,
       effort: "low",
       instructions: composeInstructions(spec),
-      toolPolicy: "no-edit",
     }, ctx)
     let structured: unknown
     try {
@@ -93,7 +119,6 @@ export class AmpWorker implements Worker {
       model: string
       effort?: AmpEffort
       instructions?: string
-      toolPolicy: "all" | "no-edit"
     },
     ctx: WorkerContext,
   ): Promise<string> {
@@ -125,7 +150,7 @@ export class AmpWorker implements Worker {
       if (err instanceof SocketTransportError) {
         throw new AgentError({ provider: PROVIDER, code: "transport", message: err.message, retryable: true })
       }
-      if (err instanceof SocketRpcResponseError) {
+      if (err instanceof JsonRpcResponseError) {
         throw new AgentError({ provider: PROVIDER, code: "agent_failed", message: err.message })
       }
       throw new AgentError({ provider: PROVIDER, code: "agent_failed", message: err instanceof Error ? err.message : String(err) })
@@ -136,14 +161,21 @@ export class AmpWorker implements Worker {
   }
 
   private getClient(): JsonRpcSocketClient {
-    if (!this.client) {
-      this.client = new JsonRpcSocketClient({
-        socketPath: this.socket!,
-        requestTimeoutMs: AGENT_TIMEOUT_MS + 5000,
-        onNotification: (method, params) => this.onNotification(method, params),
-      })
-    }
-    return this.client
+    if (this.client) return this.client
+    const client: JsonRpcSocketClient = new JsonRpcSocketClient({
+      socketPath: this.socket!,
+      requestTimeoutMs: AGENT_TIMEOUT_MS + 5000,
+      onNotification: (method, params) => this.onNotification(method, params),
+      // A dead connection must not poison the worker (mirrors CodexWorker.onProcessGone): drop the
+      // client so the NEXT runAgent dials the socket again. Without this, every later turn hits the
+      // same dead client and the retryable transport error we report can never actually recover.
+      // Guarded on identity so a late 'close' from a superseded client cannot clear a live one.
+      onConnectionGone: () => {
+        if (this.client === client) this.client = null
+      },
+    })
+    this.client = client
+    return client
   }
 
   private onNotification(method: string, params: unknown): void {
@@ -173,7 +205,6 @@ function composeInstructions(spec: AgentSpec): string {
   const lines = [
     spec.instructions,
     `Operate only within \`${spec.cwd}\`; treat it as your working directory for every command and file operation.`,
-    spec.sandbox === "read-only" ? "This is a read-only task. Do not write, edit, create, move, or delete files." : undefined,
   ]
   return lines.filter((line): line is string => line !== undefined && line.length > 0).join("\n")
 }

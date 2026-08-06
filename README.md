@@ -102,8 +102,11 @@ When Amp opens this repository, it automatically loads the project plugin at
 Node process and turns each workflow `agent()` call into a child Amp thread. The default model is
 `xai/grok-4.5`; pass another Amp plugin-agent model such as `openai/gpt-5.6-sol` when needed.
 
-Amp's plugin API does not expose token usage for plugin-created threads, so omegacode reports zero
-usage for this provider and `budget.spent()` under-counts Amp work. Consult Amp's thread dashboard
-for actual usage. Also, omegacode's `read-only` mode is advisory in Amp: the plugin removes Amp's
-editing tools and instructs the agent not to write, but Amp does not provide an OS-level sandbox
-and a shell command could still modify files.
+Amp gives plugin threads no OS-level sandbox, so the amp provider is full-access-only: the plugin
+launches the run with `--sandbox danger-full-access`, child threads get the full Amp tool set, and
+`read-only`/`workspace-write` are rejected outright rather than faked by hiding a few edit tools
+while `bash` stays open.
+
+Amp's plugin API also does not expose token usage for plugin-created threads, so omegacode reports
+zero usage for this provider — `budget.spent()` under-counts Amp work, and a `--budget` ceiling
+never stops an Amp fan-out. Consult Amp's thread dashboard for actual usage.

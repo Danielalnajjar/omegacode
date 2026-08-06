@@ -16,6 +16,7 @@ Observable outcome: in this repository, start `amp`, type "Use the omegacode_run
 - [x] (2026-08-06 09:22Z) M2: Amp plugin `.amp/plugins/omegacode.ts` (socket server, run_workflow tool, palette command) + local validation; loader/tool smoke passed, while headless child-thread E2E is blocked by the installed Amp host context (documented below)
 - [x] (2026-08-06 09:45Z) M3 files: `.agents/setup` (install + build) and `AGENTS.md` Amp-lane guidance committed
 - [ ] M3 orb validation: requires the branch pushed to the git remote (orbs clone the repo) and an Amp project; user decision pending
+- [x] (2026-08-06 11:30Z) Review-fix round: /code-review (8 finder angles, 19 verified candidates) confirmed 10 findings; all 10 fixed across three opus lanes (worker/runtime, plugin/docs, transport dedup). Gates green at 601 tests.
 - [ ] M4 (optional): viewer portal via `.amp/services.yaml`, richer per-tool progress
 
 ## Surprises & Discoveries
@@ -65,6 +66,12 @@ Observable outcome: in this repository, start `amp`, type "Use the omegacode_run
   Rationale: the required cache key omits instructions, while M1 intentionally sends per-call instructions (including cwd, read-only, custom, and corrective-retry text). A generic cached agent plus a per-turn instruction envelope preserves both binding requirements without allowing one call's instructions to leak into another. Date/Author: 2026-08-06 / Codex.
 - Decision 13: Do not retain an `Agent.run()` fallback for headless mode.
   Rationale: the installed host rejects its internal thread creation with the same error, and retaining it would weaken Decision 6's early thread notification and explicit `cancelAgent` behavior without making the E2E work. Report the headless host limitation with run-journal evidence instead. Date/Author: 2026-08-06 / Codex.
+- Decision 14 (supersedes Decision 8): The amp provider fails closed like pi/opencode — sandbox must be `danger-full-access`, and `approval: "on-request"` / `maxTurns` are rejected with `unsupported_option`. The advisory read-only mapping (`toolPolicy`, edit-tool exclusion, no-writes prose) is deleted end-to-end; the plugin passes `--sandbox danger-full-access` explicitly.
+  Rationale: an adversarial review confirmed the advisory mapping left `shell_command` live under a sandbox contract workflow authors believed enforced, breaking the repo's fail-closed convention. Rejecting is less code and an honest contract. Date/Author: 2026-08-06 / Fable (review adjudication).
+- Decision 15: Budget stays unfabricated on the amp lane — no token estimation. Instead the runtime emits one loud log event per budgeted run when an amp agent dispatches, and README/AGENTS/SKILL state that the `--budget` ceiling cannot trip on amp turns.
+  Rationale: estimated usage would corrupt cost reporting and OTLP export; the reviewed defect was the silence, not the zero. Date/Author: 2026-08-06 / Fable (review adjudication).
+- Decision 16: Worker `phase` progress events are journaled by the runtime (new `phase` chunk in the per-agent transcript), fixing the dropped `amp-thread:<id>` dash links at the mechanism layer — codex's working/extraction phases benefit too. The shared NDJSON JSON-RPC pending/timeout/death core now lives once in `src/worker/jsonrpc-core.ts`, with stdio and socket clients as thin transports and a single `JsonRpcResponseError`.
+  Rationale: review confirmed the phase events never reached any sink and the socket client was a ~56%-identical drifted clone of the stdio client. Date/Author: 2026-08-06 / Fable (review adjudication).
 
 ## Outcomes & Retrospective
 
@@ -236,7 +243,7 @@ Socket protocol (NDJSON JSON-RPC 2.0; client = AmpWorker, server = plugin):
 
     → request  "runAgent"    { callId: string, prompt: string, model: string,
                                effort?: "none"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max",
-                               instructions?: string, toolPolicy: "all"|"no-edit", timeoutMs: number }
+                               instructions?: string, timeoutMs: number }   // toolPolicy removed by Decision 14
     ← response               { text: string }
     ← notification "agentThread" { callId: string, threadID: string }
     ← notification "progress"    { callId: string, kind: "text"|"tool", ... }   // optional, tolerate absence

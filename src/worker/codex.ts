@@ -12,7 +12,8 @@ import { emptyUsage } from "../dsl/types.js"
 import type { Worker, WorkerContext } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
 import { toCodexOutputSchema, parseJsonLoose } from "./schema.js"
-import { JsonRpcStdioClient, StdioTransportError, JsonRpcResponseError, type SpawnChild } from "./jsonrpc-stdio.js"
+import { JsonRpcResponseError } from "./jsonrpc-core.js"
+import { JsonRpcStdioClient, StdioTransportError, type SpawnChild } from "./jsonrpc-stdio.js"
 import {
   encodeNotification,
   encodeRequest,

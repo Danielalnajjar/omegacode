@@ -10,11 +10,11 @@ export const description = "Run omegacode workflows; each agent() becomes an Amp
 const DEFAULT_MODEL = "xai/grok-4.5"
 const DEFAULT_EFFORT = "medium"
 const MAX_RESULT_CHARS = 10_000
+const STOP_GRACE_MS = 10_000
 const EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"])
-const EDIT_TOOLS = ["apply_patch", "create_file", "edit_file"] as const
 
-type ToolPolicy = "all" | "no-edit"
 type RpcId = string | number
+type AgentThread = Awaited<ReturnType<ReturnType<PluginAPI["createAgent"]>["createThread"]>>
 
 interface RunAgentParams {
   callId: string
@@ -22,7 +22,6 @@ interface RunAgentParams {
   model: string
   effort?: string
   instructions?: string
-  toolPolicy: ToolPolicy
   timeoutMs: number
 }
 
@@ -44,6 +43,12 @@ interface RunOutput {
   error?: unknown
 }
 
+/** The `run.started` line the CLI writes to stderr under `--start-json`, at launch. */
+interface RunStarted {
+  runId?: string
+  runDir?: string
+}
+
 export default function omegacodePlugin(amp: PluginAPI): void {
   const activeRuns = new Set<RunResource>()
   const agentCache = new Map<string, ReturnType<PluginAPI["createAgent"]>>()
@@ -54,8 +59,11 @@ export default function omegacodePlugin(amp: PluginAPI): void {
     throw new Error("This Amp version does not expose createAgent")
   }
 
-  const cachedAgent = (model: string, effort: string | undefined, toolPolicy: ToolPolicy) => {
-    const key = JSON.stringify([model, effort ?? null, toolPolicy])
+  // Amp threads always run with the full tool set: the worker requires sandbox
+  // "danger-full-access" precisely because Amp offers no enforceable confinement,
+  // so a partial tool exclusion would only pretend to be a sandbox.
+  const cachedAgent = (model: string, effort: string | undefined) => {
+    const key = JSON.stringify([model, effort ?? null])
     let agent = agentCache.get(key)
     if (!agent) {
       agent = createAgent({
@@ -63,7 +71,7 @@ export default function omegacodePlugin(amp: PluginAPI): void {
         model,
         ...(effort ? { reasoningEffort: effort as Parameters<PluginAPI["createAgent"]>[0]["reasoningEffort"] } : {}),
         instructions: "Follow the per-turn instructions and task exactly.",
-        tools: toolPolicy === "no-edit" ? { exclude: EDIT_TOOLS } : "all",
+        tools: "all",
         display: { label: "omega", color: "#7c3aed" },
       })
       agentCache.set(key, agent)
@@ -73,7 +81,8 @@ export default function omegacodePlugin(amp: PluginAPI): void {
 
   amp.registerTool({
     name: "omegacode_run_workflow",
-    description: "Run an omegacode workflow locally. Each workflow agent() call becomes a child Amp thread.",
+    description:
+      "Run an omegacode workflow locally. Workflow agent() calls whose opts pin provider \"amp\" — or omit provider and so inherit this run's default — become child Amp threads. Agents that pin another provider (codex, claude-code, opencode, pi) spawn that CLI instead and need it installed and authenticated on this machine. Amp threads run with the full Amp tool set and no sandbox confinement: omegacode's read-only/workspace-write modes are rejected for the amp provider rather than faked.",
     inputSchema: {
       type: "object",
       properties: {
@@ -101,7 +110,7 @@ export default function omegacodePlugin(amp: PluginAPI): void {
       const socketDir = await mkdtemp(join(tmpdir(), "omegacode-amp-"))
       const socketPath = join(socketDir, "rpc.sock")
       const threadIDs: string[] = []
-      const activeThreads = new Map<string, Awaited<ReturnType<ReturnType<PluginAPI["createAgent"]>["createThread"]>>>()
+      const activeThreads = new Map<string, AgentThread>()
       const cancelledCalls = new Set<string>()
       const sockets = new Set<Socket>()
       let child: ReturnType<typeof Bun.spawn> | undefined
@@ -112,8 +121,19 @@ export default function omegacodePlugin(amp: PluginAPI): void {
         stop(): Promise<void> {
           if (stopped) return stopped
           stopped = (async () => {
-            if (child && child.exitCode === null) child.kill("SIGTERM")
+            // Cancel the child threads first so they stop billing before the CLI dies, then
+            // wait for the CLI itself: tearing the socket down under a live child would only
+            // strand it. SIGTERM lets it flush its journal; SIGKILL is the 10s backstop.
             for (const thread of activeThreads.values()) void thread.cancel().catch(() => undefined)
+            const proc = child
+            if (proc) {
+              if (proc.exitCode === null) proc.kill("SIGTERM")
+              await raceExit(proc.exited, STOP_GRACE_MS)
+              if (proc.exitCode === null) {
+                proc.kill("SIGKILL")
+                await proc.exited.catch(() => undefined)
+              }
+            }
             for (const socket of sockets) socket.destroy()
             await closeServer(server)
             await rm(socketDir, { recursive: true, force: true })
@@ -163,11 +183,16 @@ export default function omegacodePlugin(amp: PluginAPI): void {
           return
         }
 
+        // Every exit path after createThread must cancel the thread it made: an
+        // appendUserMessage throw or a waitForResponse rejection (timeout included) would
+        // otherwise leave a live, billing Amp thread behind once the finally drops our handle.
+        let created: AgentThread | undefined
         try {
           const params = parseRunAgentParams(message.params)
-          const agent = cachedAgent(params.model, params.effort, params.toolPolicy)
+          const agent = cachedAgent(params.model, params.effort)
           const prompt = params.instructions ? `${params.instructions}\n\n${params.prompt}` : params.prompt
           const thread = await agent.createThread({ parentThreadID: ctx.thread.id })
+          created = thread
           activeThreads.set(params.callId, thread)
           threadIDs.push(thread.id)
           writeRpc(socket, {
@@ -175,7 +200,12 @@ export default function omegacodePlugin(amp: PluginAPI): void {
             method: "agentThread",
             params: { callId: params.callId, threadID: thread.id },
           })
-          if (cancelledCalls.has(params.callId)) await thread.cancel()
+          if (cancelledCalls.has(params.callId)) {
+            // Cancelled while the thread was being created — never send it a turn.
+            void thread.cancel().catch(() => undefined)
+            writeRpc(socket, { jsonrpc: "2.0", id: message.id, error: { code: -32000, message: "cancelled before start" } })
+            return
+          }
           const responsePromise = thread.waitForResponse({ timeoutMs: params.timeoutMs })
           void responsePromise.catch(() => undefined)
           await thread.appendUserMessage({ type: "user-message", content: prompt })
@@ -186,6 +216,7 @@ export default function omegacodePlugin(amp: PluginAPI): void {
             .join("\n")
           writeRpc(socket, { jsonrpc: "2.0", id: message.id, result: { text } })
         } catch (error) {
+          if (created) void created.cancel().catch(() => undefined)
           writeRpc(socket, {
             jsonrpc: "2.0",
             id: message.id,
@@ -217,7 +248,11 @@ export default function omegacodePlugin(amp: PluginAPI): void {
           model,
           "--effort",
           effort,
+          // The amp worker fails closed on anything narrower — Amp threads have no OS sandbox.
+          "--sandbox",
+          "danger-full-access",
           "--json",
+          "--start-json",
           "--no-serve",
         ]
         if (args !== undefined) cliArgs.push("--args", JSON.stringify(args))
@@ -235,7 +270,7 @@ export default function omegacodePlugin(amp: PluginAPI): void {
           child.exited,
         ])
         const output = parseRunOutput(stdout)
-        return formatReceipt({ output, stdout, stderr, exitCode, threadIDs })
+        return formatReceipt({ workflow, output, started: parseRunStarted(stderr), stdout, stderr, exitCode, threadIDs })
       } finally {
         signal?.removeEventListener("abort", onAbort)
         activeRuns.delete(resource)
@@ -323,11 +358,11 @@ function parseRunAgentParams(value: unknown): RunAgentParams {
   const effort = optionalString(params.effort, "effort")
   if (effort && !EFFORTS.has(effort)) throw new Error("invalid effort")
   const instructions = optionalString(params.instructions, "instructions")
-  const toolPolicy = params.toolPolicy
-  if (toolPolicy !== "all" && toolPolicy !== "no-edit") throw new Error("invalid toolPolicy")
   const timeoutMs = params.timeoutMs
   if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("invalid timeoutMs")
-  return { callId, prompt, model, effort, instructions, toolPolicy, timeoutMs }
+  // Anything else on the request (a toolPolicy from an older worker, say) is ignored:
+  // Amp threads are always created with the full tool set.
+  return { callId, prompt, model, effort, instructions, timeoutMs }
 }
 
 function writeRpc(socket: Socket, message: unknown): void {
@@ -345,6 +380,17 @@ function listen(server: Server, socketPath: string): Promise<void> {
   })
 }
 
+/** Wait for the child to exit, giving up after `graceMs` so a wedged CLI can't block teardown. */
+function raceExit(exited: Promise<number>, graceMs: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const grace = new Promise<void>((resolvePromise) => {
+    timer = setTimeout(resolvePromise, graceMs)
+  })
+  return Promise.race([exited.then(() => undefined, () => undefined), grace]).finally(() => {
+    if (timer) clearTimeout(timer)
+  })
+}
+
 function closeServer(server: Server): Promise<void> {
   if (!server.listening) return Promise.resolve()
   return new Promise((resolvePromise) => server.close(() => resolvePromise()))
@@ -359,14 +405,51 @@ function parseRunOutput(stdout: string): RunOutput {
   }
 }
 
+/**
+ * Recover the run's identity from the `--start-json` line the CLI emits on stderr at launch.
+ * Terminal stdout JSON is absent whenever the run is aborted, killed, or crashes — that is
+ * exactly when the receipt still needs a runId to point at.
+ */
+function parseRunStarted(stderr: string): RunStarted {
+  for (const line of stderr.split("\n")) {
+    if (!line.includes("run.started")) continue
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(line.trim()) as unknown
+    } catch {
+      continue
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) continue
+    const record = parsed as Record<string, unknown>
+    if (record.type !== "run.started") continue
+    return {
+      ...(typeof record.runId === "string" ? { runId: record.runId } : {}),
+      ...(typeof record.runDir === "string" ? { runDir: record.runDir } : {}),
+    }
+  }
+  return {}
+}
+
+/** stderr is diagnostics, not output — the machine-readable launch line never belongs in `result`. */
+function stripStartJson(stderr: string): string {
+  return stderr
+    .split("\n")
+    .filter((line) => !(line.includes("run.started") && line.trim().startsWith("{")))
+    .join("\n")
+    .trim()
+}
+
 function formatReceipt(input: {
+  workflow: string
   output: RunOutput
+  started: RunStarted
   stdout: string
   stderr: string
   exitCode: number
   threadIDs: string[]
 }): string {
-  const runId = typeof input.output.runId === "string" ? input.output.runId : "unknown"
+  const knownRunId = typeof input.output.runId === "string" ? input.output.runId : input.started.runId
+  const runId = knownRunId ?? "unknown"
   const status = typeof input.output.status === "string"
     ? input.output.status
     : input.exitCode === 0 ? "unknown" : `failed (exit ${input.exitCode})`
@@ -374,8 +457,9 @@ function formatReceipt(input: {
     ? printable(input.output.result)
     : input.output.error !== undefined
       ? printable(input.output.error)
-      : input.stdout.trim() || input.stderr.trim() || "(no result)"
+      : input.stdout.trim() || stripStartJson(input.stderr) || "(no result)"
   const root = process.env.OMEGACODE_HOME ?? join(homedir(), ".omegacode")
+  const journalDir = input.started.runDir ?? (knownRunId ? join(root, "runs", knownRunId) : "unknown")
   const uniqueThreads = [...new Set(input.threadIDs)]
   return [
     "OmegaCode workflow receipt",
@@ -385,7 +469,8 @@ function formatReceipt(input: {
     ...(uniqueThreads.length > 0 ? uniqueThreads.map((id) => `- https://ampcode.com/threads/${id}`) : ["- (none)"]),
     "result:",
     truncate(result, MAX_RESULT_CHARS),
-    `journal dir: ${runId === "unknown" ? "unknown" : join(root, "runs", runId)}`,
+    `journal dir: ${journalDir}`,
+    ...(status !== "completed" && knownRunId ? [`resume: omegacode run ${input.workflow} --resume ${knownRunId}`] : []),
   ].join("\n")
 }
 

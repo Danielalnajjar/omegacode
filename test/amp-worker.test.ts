@@ -2,10 +2,11 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { createServer, type Server, type Socket } from "node:net"
 
 import { AmpWorker } from "../src/worker/amp.js"
+import { JsonRpcSocketClient, SocketTransportError } from "../src/worker/jsonrpc-socket.js"
 import { DefaultWorkerFactory } from "../src/worker/factory.js"
 import { AgentError, AgentInterrupted, type WorkerProgress } from "../src/worker/index.js"
 import type { AgentSpec } from "../src/dsl/types.js"
@@ -26,9 +27,15 @@ interface ServerHarness {
 
 type Handler = (message: RpcMessage, socket: Socket) => void
 
-async function startServer(handler: Handler): Promise<ServerHarness> {
-  const dir = mkdtempSync(join(tmpdir(), "omegacode-amp-test-"))
-  const socketPath = join(dir, "rpc.sock")
+/**
+ * Start a plugin-side JSON-RPC server. Pass `socketPath` to bind a caller-owned path (the restart
+ * test needs two server lifetimes on ONE path); the harness then leaves the directory alone.
+ */
+async function startServer(handler: Handler, opts: { socketPath?: string } = {}): Promise<ServerHarness> {
+  const ownsDir = opts.socketPath === undefined
+  const dir = opts.socketPath === undefined ? mkdtempSync(join(tmpdir(), "omegacode-amp-test-")) : dirname(opts.socketPath)
+  const socketPath = opts.socketPath ?? join(dir, "rpc.sock")
+  rmSync(socketPath, { force: true })
   const sockets = new Set<Socket>()
   const requests: RpcMessage[] = []
   const notifications: RpcMessage[] = []
@@ -64,7 +71,7 @@ async function startServer(handler: Handler): Promise<ServerHarness> {
     async close(): Promise<void> {
       for (const socket of sockets) socket.destroy()
       await new Promise<void>((resolve) => server.close(() => resolve()))
-      rmSync(dir, { recursive: true, force: true })
+      if (ownsDir) rmSync(dir, { recursive: true, force: true })
     },
   }
 }
@@ -84,7 +91,8 @@ function spec(overrides: Partial<AgentSpec> = {}): AgentSpec {
     model: "xai/grok-4.5",
     effort: "high",
     cwd: "/tmp/project",
-    sandbox: "read-only",
+    // amp fails closed on anything but danger-full-access: its tools are not OS-confined.
+    sandbox: "danger-full-access",
     approval: "never",
     ...overrides,
   }
@@ -134,13 +142,12 @@ test("happy path composes confinement instructions and surfaces the Amp thread",
   assert.equal(params.prompt, "Investigate the repository")
   assert.equal(params.model, "xai/grok-4.5")
   assert.equal(params.effort, "high")
-  assert.equal(params.toolPolicy, "no-edit")
+  assert.equal(params.toolPolicy, undefined)
   assert.equal(params.timeoutMs, 30 * 60 * 1000)
   assert.equal(
     params.instructions,
     "Keep the answer concise.\n" +
-      "Operate only within `/tmp/project`; treat it as your working directory for every command and file operation.\n" +
-      "This is a read-only task. Do not write, edit, create, move, or delete files.",
+      "Operate only within `/tmp/project`; treat it as your working directory for every command and file operation.",
   )
   assert.deepEqual(ctx.events, [
     { kind: "phase", phase: "amp-thread:T-happy" },
@@ -149,7 +156,7 @@ test("happy path composes confinement instructions and surfaces the Amp thread",
   ])
 })
 
-test("schema output uses a second no-edit extraction turn and returns parsed JSON", async (t) => {
+test("schema output uses a second low-effort extraction turn and returns parsed JSON", async (t) => {
   let turn = 0
   const server = await startServer((message, socket) => {
     if (message.method !== "runAgent" || message.id === undefined) return
@@ -169,7 +176,7 @@ test("schema output uses a second no-edit extraction turn and returns parsed JSO
   assert.match(String(server.requests[1]!.params!.prompt), /Earlier you produced this answer:\n\nThe answer is 42\./)
   assert.match(String(server.requests[1]!.params!.prompt), /"answer"/)
   assert.equal(server.requests[1]!.params!.effort, "low")
-  assert.equal(server.requests[1]!.params!.toolPolicy, "no-edit")
+  assert.equal(server.requests[1]!.params!.toolPolicy, undefined)
   assert.equal(result.text, "```json\n{\"answer\":42}\n```")
   assert.deepEqual(result.structured, { answer: 42 })
 })
@@ -206,13 +213,69 @@ test("abort sends cancelAgent and rejects with AgentInterrupted", async (t) => {
   assert.equal(cancel.params?.callId, server.requests[0]!.params?.callId)
 })
 
-test("server death mid-request becomes a retryable transport AgentError", async (t) => {
-  let requests = 0
+test("notify never silently drops a frame: it delivers or it throws", async (t) => {
   const server = await startServer((message, socket) => {
-    if (message.method === "runAgent" && ++requests === 2) socket.destroy()
+    if (message.method === "ping" && message.id !== undefined) reply(socket, message.id, {})
   })
   t.after(() => server.close())
-  const worker = new AmpWorker({ socket: server.socketPath })
+  let gone = false
+  const client = new JsonRpcSocketClient({ socketPath: server.socketPath, onConnectionGone: () => (gone = true) })
+  t.after(() => client.close())
+
+  // Before the dial completes there is nothing to write to. A queued-and-forgotten
+  // cancel is exactly the drop this transport must not have, so notify fails loudly
+  // (same as JsonRpcStdioClient.send) — and a refused frame must not kill the client.
+  assert.throws(
+    () => client.notify("cancelAgent", { callId: "c0" }),
+    (err: unknown) => err instanceof SocketTransportError && err.code === "not_writable",
+  )
+
+  await client.request("ping")
+  // A live connection delivers without throwing — the abort path AmpWorker uses.
+  client.notify("cancelAgent", { callId: "c1" })
+  await waitFor(() => server.notifications.some((message) => message.params?.callId === "c1"))
+  assert.equal(gone, false)
+
+  await server.close()
+  await waitFor(() => gone)
+
+  assert.throws(
+    () => client.notify("cancelAgent", { callId: "c2" }),
+    (err: unknown) => err instanceof SocketTransportError && err.code === "not_writable",
+  )
+})
+
+test("the socket client routes server-initiated requests to onServerRequest", async (t) => {
+  const seen: Array<[string | number, string, unknown]> = []
+  const server = await startServer((message, socket) => {
+    if (message.method !== "ping" || message.id === undefined) return
+    socket.write(JSON.stringify({ jsonrpc: "2.0", id: 7, method: "permission/request", params: { callId: "c1" } }) + "\n")
+    reply(socket, message.id, { ok: true })
+  })
+  t.after(() => server.close())
+  const client = new JsonRpcSocketClient({
+    socketPath: server.socketPath,
+    onServerRequest: (id, method, params) => seen.push([id, method, params]),
+  })
+  t.after(() => client.close())
+
+  await client.request("ping")
+
+  assert.deepEqual(seen, [[7, "permission/request", { callId: "c1" }]])
+})
+
+test("server death is retryable and the next run reconnects to a restarted plugin", async (t) => {
+  // The test owns the socket path so the plugin can be restarted on it — the retryable transport
+  // error we hand the runtime is only honest if a later turn can actually dial a fresh connection.
+  const dir = mkdtempSync(join(tmpdir(), "omegacode-amp-restart-"))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const socketPath = join(dir, "rpc.sock")
+
+  let requests = 0
+  const dying = await startServer((message, socket) => {
+    if (message.method === "runAgent" && ++requests === 2) socket.destroy()
+  }, { socketPath })
+  const worker = new AmpWorker({ socket: dying.socketPath })
   t.after(() => worker.shutdown())
 
   const first = worker.runAgent(spec({ prompt: "first" }), context())
@@ -221,7 +284,55 @@ test("server death mid-request becomes a retryable transport AgentError", async 
     err instanceof AgentError && err.code === "transport" && err.retryable
   await assert.rejects(first, isRetryableTransport)
   await assert.rejects(second, isRetryableTransport)
-  await assert.rejects(worker.runAgent(spec({ prompt: "after death" }), context()), isRetryableTransport)
+  await dying.close()
+
+  const restarted = await startServer((message, socket) => {
+    if (message.method === "runAgent" && message.id !== undefined) reply(socket, message.id, { text: "reconnected" })
+  }, { socketPath })
+  t.after(() => restarted.close())
+
+  const result = await worker.runAgent(spec({ prompt: "after death" }), context())
+
+  assert.equal(result.text, "reconnected")
+  assert.equal(restarted.requests.length, 1)
+  assert.equal(restarted.requests[0]!.params!.prompt, "after death")
+})
+
+test("a sandbox amp cannot enforce fails closed before any RPC", async (t) => {
+  const server = await startServer(() => {})
+  t.after(() => server.close())
+  const worker = new AmpWorker({ socket: server.socketPath })
+  t.after(() => worker.shutdown())
+
+  for (const sandbox of ["read-only", "workspace-write"] as const) {
+    await assert.rejects(
+      worker.runAgent(spec({ sandbox }), context()),
+      (err: unknown) =>
+        err instanceof AgentError &&
+        err.code === "sandbox_unsupported" &&
+        !err.retryable &&
+        err.message ===
+          `amp cannot enforce sandbox "${sandbox}": Amp agent tools are not OS-confined; set sandbox danger-full-access explicitly to accept unconfined execution`,
+    )
+  }
+  assert.equal(server.requests.length, 0)
+})
+
+test("approval on-request and maxTurns fail closed before any RPC", async (t) => {
+  const server = await startServer(() => {})
+  t.after(() => server.close())
+  const worker = new AmpWorker({ socket: server.socketPath })
+  t.after(() => worker.shutdown())
+
+  await assert.rejects(
+    worker.runAgent(spec({ approval: "on-request" }), context()),
+    (err: unknown) => err instanceof AgentError && err.code === "unsupported_option" && !err.retryable && /approval requests/.test(err.message),
+  )
+  await assert.rejects(
+    worker.runAgent(spec({ maxTurns: 3 }), context()),
+    (err: unknown) => err instanceof AgentError && err.code === "unsupported_option" && !err.retryable && /does not support maxTurns/.test(err.message),
+  )
+  assert.equal(server.requests.length, 0)
 })
 
 test("JSON-RPC errors preserve the server message as agent_failed", async (t) => {

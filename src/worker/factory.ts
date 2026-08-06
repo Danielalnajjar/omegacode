@@ -5,6 +5,7 @@ import { CodexWorker } from "./codex.js"
 import { ClaudeWorker } from "./claude.js"
 import { OpencodeWorker } from "./opencode.js"
 import { PiWorker } from "./pi.js"
+import { AmpWorker } from "./amp.js"
 
 export interface FactoryOpts {
   /** Use the in-process FakeWorker for every provider (smoke tests, --fake). */
@@ -17,6 +18,7 @@ export interface FactoryOpts {
   pathToClaudeCodeExecutable?: string
   opencodeBin?: string
   piBin?: string
+  ampSocket?: string
 }
 
 export class DefaultWorkerFactory implements WorkerFactory {
@@ -52,6 +54,8 @@ export class DefaultWorkerFactory implements WorkerFactory {
         return new OpencodeWorker({ bin: this.opts.opencodeBin })
       case "pi":
         return new PiWorker({ bin: this.opts.piBin })
+      case "amp":
+        return new AmpWorker({ socket: this.opts.ampSocket })
       default: {
         // Exhaustive: a new ProviderId must be handled here, and an unknown runtime value
         // must fail loudly instead of silently routing to a billed provider.

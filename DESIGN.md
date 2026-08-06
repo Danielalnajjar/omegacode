@@ -709,7 +709,10 @@ omegacode/
       schema.ts           # JSON Schema → per-provider output format; client-side validate
       codex.ts            # CodexWorker: spawn app-server, JSON-RPC, thread/turn, two-turn structured output
       codex-protocol.ts   # method + param/result types + sandbox/approval/effort mappers (hand-typed)
-      jsonrpc-stdio.ts    # JSON-RPC-over-stdio client (child process + framing + pending-request lifecycle)
+      jsonrpc-core.ts     # shared JSON-RPC peer core (pending map, timeouts, framing, death invariant) + JsonRpcResponseError
+      jsonrpc-stdio.ts    # JSON-RPC-over-stdio transport (child process lifecycle + stderr ring buffer) on the core
+      jsonrpc-socket.ts   # JSON-RPC-over-unix-socket transport (amp plugin lane) on the core
+      amp.ts              # AmpWorker: socket RPC to the Amp plugin; fail-closed sandbox; extraction turn for schema
       claude.ts           # ClaudeWorker: query() loop, outputFormat, canUseTool sandbox gate
       fake.ts             # in-process FakeWorker (--fake): synthesizes deterministic text/structured output
       errors.ts           # normalize codexErrorInfo / SDKResultError → AgentError; retry classification

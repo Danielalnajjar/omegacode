@@ -93,3 +93,20 @@ same task in isolated worktrees, blind cross-provider judges pick a winner),
 to deep effort and adjudicates). Try `omegacode run deep-research --args '"your
 question"'`, or `omegacode workflows` to list them. See `omegacode guide` for the
 complete authoring reference.
+
+## Running inside Amp
+
+When Amp opens this repository, it automatically loads the project plugin at
+`.amp/plugins/omegacode.ts`. Ask Amp to use `omegacode_run_workflow`, or run
+`omegacode: run workflow` from the command palette. The plugin starts the built CLI as a local
+Node process and turns each workflow `agent()` call into a child Amp thread. The default model is
+`xai/grok-4.5`; pass another Amp plugin-agent model such as `openai/gpt-5.6-sol` when needed.
+
+Amp gives plugin threads no OS-level sandbox, so the amp provider is full-access-only: the plugin
+launches the run with `--sandbox danger-full-access`, child threads get the full Amp tool set, and
+`read-only`/`workspace-write` are rejected outright rather than faked by hiding a few edit tools
+while `bash` stays open.
+
+Amp's plugin API also does not expose token usage for plugin-created threads, so omegacode reports
+zero usage for this provider — `budget.spent()` under-counts Amp work, and a `--budget` ceiling
+never stops an Amp fan-out. Consult Amp's thread dashboard for actual usage.

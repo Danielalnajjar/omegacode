@@ -144,6 +144,10 @@ test("happy path: argv shape, stdin prompt, delta + tool mapping, usage folding"
     "--mode",
     "json",
     "--no-session",
+    "-ns",
+    "--no-extensions",
+    "-nc",
+    "-na",
     "--model",
     "openrouter/moonshotai/kimi-k2.6",
     "--thinking",
@@ -178,7 +182,7 @@ test("happy path: argv shape, stdin prompt, delta + tool mapping, usage folding"
 test("flag omission: no --model/--thinking/--append-system-prompt when unset", async () => {
   const h = harness([versionOk, happyRun])
   await h.worker.runAgent(spec(), ctx())
-  assert.deepEqual(h.spawned[1]!.args, ["--mode", "json", "--no-session"])
+  assert.deepEqual(h.spawned[1]!.args, ["--mode", "json", "--no-session", "-ns", "--no-extensions", "-nc", "-na"])
 })
 
 test("model strings pass through verbatim, including colon thinking suffixes", async () => {

@@ -391,7 +391,7 @@ function dirSize(dir: string): number {
 async function cmdRun(flags: Flags): Promise<void> {
   const file = (flags._ as string[])[1]
   if (!file) {
-    console.error("usage: omegacode run <file.workflow.js | name> [--args <json>] [--provider codex|claude-code|opencode|pi] [--fake] [--json] [--start-json]")
+    console.error("usage: omegacode run <file.workflow.js | name> [--args <json>] [--provider codex|claude-code|opencode|pi|amp] [--fake] [--json] [--start-json]")
     process.exitCode = 1
     return
   }
@@ -871,7 +871,7 @@ Each agent() spawns a real Codex (gpt-5.x) or Claude Code agent; you pick the pr
 Usage:
   omegacode run <file.workflow.js | name> [options]   Run a workflow (by path or saved name)
       --args '<json>' | --args-file <f>    input exposed as the \`args\` global
-      --provider codex|claude-code|opencode|pi   default provider (per-agent opts override)
+      --provider codex|claude-code|opencode|pi|amp   default provider (per-agent opts override)
       --model <m>                          default model — set together with --provider (both or neither)
       --effort <e>  --sandbox read-only|workspace-write|danger-full-access
       --cwd <dir>  --concurrency <N>       working dir; max concurrent agents (default ${DEFAULTS.concurrency})

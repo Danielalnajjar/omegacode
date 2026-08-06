@@ -459,6 +459,64 @@ test("L12: transcripts live at agents/<index>.jsonl for the index the agent's ev
   }
 })
 
+test("a worker phase marker is journaled into that agent's transcript", async () => {
+  // amp's only handle on the provider-side thread is its phase progress event; dropping it on the
+  // floor left the run with no durable record of WHICH Amp thread an agent ran on.
+  const b = build({
+    defaults: { provider: "amp", model: "xai/grok-4.5" },
+    hooks: {
+      run: async (_spec, ctx) => {
+        ctx.onProgress({ kind: "phase", phase: "amp-thread:T-123" })
+        ctx.onProgress({ kind: "text", text: "hello" })
+        return { text: "hello", status: "completed", usage: emptyUsage() }
+      },
+    },
+  })
+  try {
+    await runBody(b, `return await agent("hi")`)
+    const done = b.sink.events.find((e) => e.type === "agent" && e.state === "done") as { index: number }
+    const lines = readFileSync(join(b.home, "runs", "run_test", "agents", `${done.index}.jsonl`), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { kind: string; phase?: string })
+    assert.ok(
+      lines.some((line) => line.kind === "phase" && line.phase === "amp-thread:T-123"),
+      `transcript has no phase entry: ${JSON.stringify(lines)}`,
+    )
+  } finally {
+    b.cleanup()
+  }
+})
+
+test("a budgeted run warns once that amp turns are not accounted", async () => {
+  // amp reports no usage, so totalUsage never moves and the ceiling can never trip on amp turns.
+  const budgeted = build({ defaults: { provider: "amp", model: "xai/grok-4.5", budget: 1000 } })
+  const isAmpWarning = (e: WorkflowEventInput): boolean =>
+    e.type === "log" && e.message === "amp reports no token usage; budget will not account amp turns and the --budget ceiling cannot trip on them"
+  try {
+    await runBody(budgeted, `await agent("one"); return await agent("two")`)
+    assert.equal(budgeted.sink.events.filter(isAmpWarning).length, 1)
+  } finally {
+    budgeted.cleanup()
+  }
+
+  // No ceiling, nothing to mis-account; a non-amp provider under a ceiling reports its own usage.
+  const unbudgeted = build({ defaults: { provider: "amp", model: "xai/grok-4.5" } })
+  try {
+    await runBody(unbudgeted, `return await agent("one")`)
+    assert.equal(unbudgeted.sink.events.filter(isAmpWarning).length, 0)
+  } finally {
+    unbudgeted.cleanup()
+  }
+  const codex = build({ defaults: { budget: 1000 } })
+  try {
+    await runBody(codex, `return await agent("one")`)
+    assert.equal(codex.sink.events.filter(isAmpWarning).length, 0)
+  } finally {
+    codex.cleanup()
+  }
+})
+
 test("maxAgents cap throws a WorkflowError", async () => {
   const b = build({ defaults: { maxAgents: 2 } })
   try {

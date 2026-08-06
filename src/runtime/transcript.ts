@@ -15,6 +15,9 @@ export type ChatChunk =
   | { t: number; kind: "tool"; id?: string; name: string; input?: unknown }
   | { t: number; kind: "tool-result"; id?: string; name?: string; output?: string; isError?: boolean }
   | { t: number; kind: "status"; state: "running" | "done" | "failed"; error?: string; cached?: boolean }
+  // Worker-internal phase marker (amp's thread id, codex's working/extraction turns): journaled for
+  // observability so the provider-side thread an agent ran on stays recoverable after the run.
+  | { t: number; kind: "phase"; phase: string }
 
 /** A ChatChunk without the `t` timestamp — distributive so each variant keeps its own fields. */
 export type ChatChunkInput = ChatChunk extends infer E ? (E extends unknown ? Omit<E, "t"> : never) : never

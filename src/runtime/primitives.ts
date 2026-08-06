@@ -142,6 +142,8 @@ export class Runtime {
   // In-flight agent() promises so the run loop can await settlement and a fire-and-forget agent()
   // (launched without `await`) can't turn into an unhandledRejection crash after "completed".
   private readonly inFlight = new Set<Promise<unknown>>()
+  /** One-shot latch for the amp-vs-budget warning (see warnAmpBudget). */
+  private ampBudgetWarned = false
   totalUsage = emptyUsage()
 
   constructor(private readonly o: RuntimeOpts) {
@@ -224,6 +226,20 @@ export class Runtime {
     this.o.events.emit({ type: "log", message: String(msg) })
   }
 
+  /**
+   * amp turns report no token usage (the Amp plugin surfaces none), so they add nothing to
+   * totalUsage — a budgeted run silently under-counts and the ceiling can never trip on them.
+   * Say so once per run rather than let the number look authoritative.
+   */
+  private warnAmpBudget(provider: string): void {
+    if (this.ampBudgetWarned || provider !== "amp" || this.o.defaults.budget == null) return
+    this.ampBudgetWarned = true
+    this.o.events.emit({
+      type: "log",
+      message: "amp reports no token usage; budget will not account amp turns and the --budget ceiling cannot trip on them",
+    })
+  }
+
   private resolveSpec(prompt: string, opts: AgentOpts | undefined): AgentSpec {
     const d = this.o.defaults
     const spec: AgentSpec = {
@@ -287,6 +303,7 @@ export class Runtime {
     const localIndex = ctx.agentIndex++
     const promptStr = String(prompt)
     const spec = this.resolveSpec(promptStr, opts)
+    this.warnAmpBudget(spec.provider)
     // Key off the RESOLVED spec (not raw opts) so defaults/CLI overrides invalidate the cache (H8).
     const key = opts?.key
       ? explicitKey(opts.key)
@@ -393,6 +410,9 @@ export class Runtime {
                 break
               case "tool-result":
                 transcript.write({ kind: "tool-result", id: e.id, name: e.name, output: e.output, isError: e.isError })
+                break
+              case "phase":
+                transcript.write({ kind: "phase", phase: e.phase })
                 break
               case "usage":
                 this.o.events.emit({

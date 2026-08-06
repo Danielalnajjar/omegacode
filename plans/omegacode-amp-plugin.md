@@ -2,7 +2,7 @@
 
 This ExecPlan is a living document. The sections `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` must be kept up to date as work proceeds. It must be maintained in accordance with `~/.agents/resources/plans.md` (the ExecPlan authoring spec; it is not checked into this repository).
 
-Status: In progress (Milestones 1–2 completed and interactive-TUI E2E validated 2026-08-06; Milestone 3 files landed, orb validation pending a push to the git remote; optional Milestone 4 unstarted).
+Status: Complete except optional M4 (2026-08-06). TUI E2E validated; orb validation ran and hit an Amp host gate — orbs refuse plugin child-thread creation on the current Amp release, so the supported surface is the interactive TUI until Amp lifts it (or the plugin grows an `executor: 'orb'` fallback, deliberately not built yet).
 
 ## Purpose / Big Picture
 
@@ -15,7 +15,7 @@ Observable outcome: in this repository, start `amp`, type "Use the omegacode_run
 - [x] (2026-08-06 09:00Z) M1: `"amp"` provider in omegacode (types, socket transport, worker, factory, unit tests)
 - [x] (2026-08-06 09:22Z) M2: Amp plugin `.amp/plugins/omegacode.ts` (socket server, run_workflow tool, palette command) + local validation; loader/tool smoke passed, while headless child-thread E2E is blocked by the installed Amp host context (documented below)
 - [x] (2026-08-06 09:45Z) M3 files: `.agents/setup` (install + build) and `AGENTS.md` Amp-lane guidance committed
-- [ ] M3 orb validation: requires the branch pushed to the git remote (orbs clone the repo) and an Amp project; user decision pending
+- [x] (2026-08-06 16:40Z) M3 orb validation: run in a real orb twice (execute-mode thread `wf_63dabf29d057`, interactive orb thread `wf_78e1882b9d10`). The full lane works in orbs — branch checkout, Node fix, build, plugin load, socket bridge, receipt with run id and `--resume` line — but Amp's orb host refuses plugin child threads in BOTH flavors ("Custom agent thread creation is not supported in headless mode"), so workflow agents cannot execute there on Amp 0.0.1785529588. Validated surface: local interactive TUI. `.agents/setup` now upgrades the orb's Node (image ships Node 20.9 with a pnpm needing node:sqlite/Node 22.5+).
 - [x] (2026-08-06 11:30Z) Review-fix round: /code-review (8 finder angles, 19 verified candidates) confirmed 10 findings; all 10 fixed across three opus lanes (worker/runtime, plugin/docs, transport dedup). Gates green at 601 tests.
 - [ ] M4 (optional): viewer portal via `.amp/services.yaml`, richer per-tool progress
 

@@ -110,3 +110,8 @@ while `bash` stays open.
 Amp's plugin API also does not expose token usage for plugin-created threads, so omegacode reports
 zero usage for this provider — `budget.spent()` under-counts Amp work, and a `--budget` ceiling
 never stops an Amp fan-out. Consult Amp's thread dashboard for actual usage.
+
+Run this from the interactive Amp TUI. Headless execute mode and orb-hosted Amp (as of Amp
+0.0.1785529588, both `amp -ox` and interactive orb threads) refuse plugin child-thread creation
+("Custom agent thread creation is not supported in headless mode"); in orbs, everything up to that
+host gate — plugin load, the socket bridge, receipts with `--resume` identity — works.

@@ -3,5 +3,14 @@
 # node dist/cli.js. Runs from the repo root while the orb is being prepared.
 set -euo pipefail
 
+# The orb image (Debian 12) ships Node 20.9 with a global pnpm that requires
+# node:sqlite (Node >= 22.5), so pnpm crashes before it can do anything.
+# Probe pnpm itself and upgrade Node via `n` only when it is actually broken.
+if ! pnpm --version >/dev/null 2>&1; then
+  sudo npm install -g n
+  sudo n 22
+  hash -r
+fi
+
 pnpm install --frozen-lockfile
 pnpm build

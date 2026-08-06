@@ -131,6 +131,11 @@ export class PiWorker implements Worker {
       // uses the short flag: 0.79.1 parses only "--c"/"-ns" (long "--no-skills" came later).
       "-ns",
       "--no-extensions",
+      // -nc: pi walks cwd ANCESTORS to / injecting every AGENTS.md/CLAUDE.md as
+      // <project_context>; workflows inject instruction files deliberately instead.
+      // -na: never honor project-local .pi resources or previously saved trust.
+      "-nc",
+      "-na",
       ...(spec.model ? ["--model", spec.model] : []),
       "--thinking",
       "off",
@@ -169,6 +174,11 @@ export class PiWorker implements Worker {
       // uses the short flag: 0.79.1 parses only "--c"/"-ns" (long "--no-skills" came later).
       "-ns",
       "--no-extensions",
+      // -nc: pi walks cwd ANCESTORS to / injecting every AGENTS.md/CLAUDE.md as
+      // <project_context>; workflows inject instruction files deliberately instead.
+      // -na: never honor project-local .pi resources or previously saved trust.
+      "-nc",
+      "-na",
       // Model passes through verbatim (provider/model prefixes and slashes included). Authors
       // should use effort, not ":<thinking>" model suffixes — the worker always controls thinking
       // via the flag when effort is set.
@@ -257,8 +267,9 @@ export class PiWorker implements Worker {
       // Runs deliberately inherit the user's env UN-isolated: pi's auth lives inside the agent
       // dir (~/.pi/agent/auth.json), so a scratch PI_CODING_AGENT_DIR would break every run.
       // --no-session keeps run state out of the user's session history; only the --version
-      // probe (which needs no auth) gets the scratch-dir treatment.
-      env: process.env,
+      // probe (which needs no auth) gets the scratch-dir treatment. Startup network
+      // (update checks, telemetry) is disabled — workers must not dial out at spawn.
+      env: { ...process.env, PI_OFFLINE: "1", PI_TELEMETRY: "0" },
       stdin: prompt,
       signal: ctx.signal,
       stallTimeoutMs: this.stallTimeoutMs,

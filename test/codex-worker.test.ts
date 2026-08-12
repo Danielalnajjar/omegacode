@@ -6,7 +6,14 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { existsSync } from "node:fs"
 
-import { CodexWorker, DEFAULT_REQUEST_TIMEOUT_MS, DEFAULT_THREAD_EPHEMERAL, DEFAULT_TURN_STALL_TIMEOUT_MS, buildCodexAppServerArgs } from "../src/worker/codex.js"
+import {
+  CodexWorker,
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  DEFAULT_THREAD_EPHEMERAL,
+  DEFAULT_TURN_STALL_TIMEOUT_MS,
+  buildCodexAppServerArgs,
+  selectCodexMcpServersToDisable,
+} from "../src/worker/codex.js"
 import { JsonRpcStdioClient, StdioTransportError, JsonRpcResponseError } from "../src/worker/jsonrpc-stdio.js"
 import { AgentError, AgentInterrupted, type WorkerProgress } from "../src/worker/index.js"
 import type { AgentSpec } from "../src/dsl/types.js"
@@ -116,6 +123,17 @@ function spec(over: Partial<AgentSpec> = {}): AgentSpec {
   }
 }
 
+function mcpInventoryEntry(
+  name: string,
+  options: { enabled?: boolean; type?: string } = {},
+): Record<string, unknown> {
+  return {
+    name,
+    enabled: options.enabled ?? true,
+    transport: { type: options.type ?? "stdio" },
+  }
+}
+
 test("buildCodexAppServerArgs defaults to a fresh stdio app-server", () => {
   assert.deepEqual(buildCodexAppServerArgs(), ["app-server"])
 })
@@ -135,12 +153,12 @@ test("buildCodexAppServerArgs prefers an explicit per-worker service tier", () =
   assert.deepEqual(buildCodexAppServerArgs({ serviceTier: "fast" }), ["-c", "service_tier=fast", "app-server"])
 })
 
-test("buildCodexAppServerArgs can disable expensive user MCPs for worker fanout", () => {
-  assert.deepEqual(buildCodexAppServerArgs({ disableLocalMcps: true }), [
+test("buildCodexAppServerArgs disables only the resolved local MCP names", () => {
+  assert.deepEqual(buildCodexAppServerArgs({ disabledLocalMcpServerNames: ["onepassword", "paos-recall-mcp"] }), [
     "-c",
     "mcp_servers.onepassword.enabled=false",
     "-c",
-    "mcp_servers.node_repl.enabled=false",
+    "mcp_servers.paos-recall-mcp.enabled=false",
     "app-server",
   ])
 })
@@ -149,8 +167,8 @@ test("buildCodexAppServerArgs can proxy through an existing app-server socket", 
   assert.deepEqual(buildCodexAppServerArgs({ appServerSocket: "/tmp/codex.sock" }), ["app-server", "proxy", "--sock", "/tmp/codex.sock"])
 })
 
-test("buildCodexAppServerArgs combines local-MCP disablement with app-server proxy", () => {
-  assert.deepEqual(buildCodexAppServerArgs({ disableLocalMcps: true, appServerSocket: "/tmp/codex.sock" }), [
+test("buildCodexAppServerArgs combines resolved local-MCP disablement with app-server proxy", () => {
+  assert.deepEqual(buildCodexAppServerArgs({ disabledLocalMcpServerNames: ["onepassword", "node_repl"], appServerSocket: "/tmp/codex.sock" }), [
     "-c",
     "mcp_servers.onepassword.enabled=false",
     "-c",
@@ -160,6 +178,39 @@ test("buildCodexAppServerArgs combines local-MCP disablement with app-server pro
     "--sock",
     "/tmp/codex.sock",
   ])
+})
+
+test("selectCodexMcpServersToDisable returns configured enabled stdio targets in policy order", () => {
+  const inventory = JSON.stringify([
+    mcpInventoryEntry("paos-recall-mcp"),
+    mcpInventoryEntry("openaiDeveloperDocs", { type: "streamable_http" }),
+    mcpInventoryEntry("node_repl"),
+    mcpInventoryEntry("onepassword"),
+  ])
+  assert.deepEqual(selectCodexMcpServersToDisable(inventory), ["onepassword", "node_repl", "paos-recall-mcp"])
+})
+
+test("selectCodexMcpServersToDisable ignores absent, disabled, and non-stdio targets", () => {
+  const inventory = JSON.stringify([
+    mcpInventoryEntry("onepassword"),
+    mcpInventoryEntry("node_repl", { enabled: false }),
+    mcpInventoryEntry("paos-recall-mcp", { type: "streamable_http" }),
+  ])
+  assert.deepEqual(selectCodexMcpServersToDisable(inventory), ["onepassword"])
+  assert.deepEqual(selectCodexMcpServersToDisable("[]"), [])
+})
+
+test("selectCodexMcpServersToDisable rejects inventory schema drift", () => {
+  assert.throws(() => selectCodexMcpServersToDisable("{"), /invalid JSON/)
+  assert.throws(() => selectCodexMcpServersToDisable("{}"), /non-array inventory/)
+  assert.throws(
+    () => selectCodexMcpServersToDisable(JSON.stringify([{ name: "onepassword", enabled: true }])),
+    /no transport type/,
+  )
+  assert.throws(
+    () => selectCodexMcpServersToDisable(JSON.stringify([mcpInventoryEntry("onepassword"), mcpInventoryEntry("onepassword")])),
+    /duplicate name/,
+  )
 })
 
 // ===========================================================================
@@ -306,6 +357,11 @@ test("JsonRpcStdioClient: dispatches notifications and server requests", () => {
 function makeServedWorker(
   turnScript: (req: any, reply: (obj: unknown) => void, turnIndex: number) => void,
   opts: {
+    bin?: string
+    appServerArgs?: string[]
+    disableLocalMcps?: boolean
+    serviceTier?: string
+    readMcpInventory?: (bin: string) => Promise<string>
     requestTimeoutMs?: number
     turnStallTimeoutMs?: number
     threadEphemeral?: boolean
@@ -317,6 +373,11 @@ function makeServedWorker(
   let child!: FakeChild
   let turnIndex = 0
   const worker = new CodexWorker({
+    bin: opts.bin,
+    appServerArgs: opts.appServerArgs,
+    disableLocalMcps: opts.disableLocalMcps,
+    serviceTier: opts.serviceTier,
+    readMcpInventory: opts.readMcpInventory,
     requestTimeoutMs: opts.requestTimeoutMs,
     turnStallTimeoutMs: opts.turnStallTimeoutMs,
     threadEphemeral: opts.threadEphemeral,
@@ -345,6 +406,96 @@ function makeServedWorker(
 function tick(): Promise<void> {
   return new Promise((r) => setImmediate(r))
 }
+
+test("lean worker discovers configured stdio targets once before app-server launch", async () => {
+  let inventoryReads = 0
+  const { worker } = makeServedWorker(
+    (_req, reply) => {
+      reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
+      reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
+    },
+    {
+      bin: "/custom/codex",
+      disableLocalMcps: true,
+      serviceTier: "default",
+      readMcpInventory: async (bin) => {
+        inventoryReads += 1
+        assert.equal(bin, "/custom/codex")
+        return JSON.stringify([
+          mcpInventoryEntry("paos-recall-mcp"),
+          mcpInventoryEntry("onepassword"),
+          mcpInventoryEntry("node_repl"),
+          mcpInventoryEntry("openaiDeveloperDocs", { type: "streamable_http" }),
+        ])
+      },
+    },
+  )
+
+  await worker.runAgent(spec(), ctx())
+  await worker.runAgent(spec(), ctx())
+  assert.equal(inventoryReads, 1)
+  const launchedArgs = (worker as any).appServerArgs as string[]
+  assert.deepEqual(launchedArgs, [
+    "-c",
+    "service_tier=default",
+    "-c",
+    "mcp_servers.onepassword.enabled=false",
+    "-c",
+    "mcp_servers.node_repl.enabled=false",
+    "-c",
+    "mcp_servers.paos-recall-mcp.enabled=false",
+    "app-server",
+  ])
+  assert.ok(!launchedArgs.some((arg) => /features\.(?:plugins|multi_agent)/.test(arg)))
+  await worker.shutdown()
+})
+
+test("lean worker inventory failure is pre-launch and names the existing opt-out", async () => {
+  let spawned = false
+  const worker = new CodexWorker({
+    disableLocalMcps: true,
+    readMcpInventory: async () => {
+      throw new Error("inventory timed out")
+    },
+    spawnChild: () => {
+      spawned = true
+      return new FakeChild() as any
+    },
+  })
+  await assert.rejects(
+    worker.runAgent(spec(), ctx()),
+    (error) =>
+      error instanceof AgentError &&
+      error.code === "mcp_inventory_failed" &&
+      error.retryable === false &&
+      /--codex-enable-local-mcps/.test(error.message) &&
+      /OMEGACODE_CODEX_DISABLE_LOCAL_MCPS=0/.test(error.message),
+  )
+  assert.equal(spawned, false)
+})
+
+test("local-MCP opt-out and explicit app-server args bypass inventory", async () => {
+  for (const options of [
+    { disableLocalMcps: false, serviceTier: "default", expected: ["-c", "service_tier=default", "app-server"] },
+    { disableLocalMcps: true, appServerArgs: ["app-server", "custom"], expected: ["app-server", "custom"] },
+  ]) {
+    const { worker } = makeServedWorker(
+      (_req, reply) => {
+        reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
+        reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
+      },
+      {
+        ...options,
+        readMcpInventory: async () => {
+          throw new Error("inventory must be bypassed")
+        },
+      },
+    )
+    await worker.runAgent(spec(), ctx())
+    assert.deepEqual((worker as any).appServerArgs, options.expected)
+    await worker.shutdown()
+  }
+})
 
 test("runAgent happy path (served before spawn): resolves with usage", async () => {
   const { worker } = makeServedWorker((_req, reply) => {

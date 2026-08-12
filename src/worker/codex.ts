@@ -4,8 +4,10 @@
 // the session semantics: thread/start → turn/start → stream notifications →
 // settle on turn/completed (or on an `error` notification, or on process death).
 
+import { execFile } from "node:child_process"
 import { copyFile, writeFile } from "node:fs/promises"
 import { basename, join } from "node:path"
+import { promisify } from "node:util"
 
 import type { AgentResult, AgentSpec, AgentUsage } from "../dsl/types.js"
 import { emptyUsage } from "../dsl/types.js"
@@ -45,6 +47,8 @@ export interface CodexWorkerOpts {
   appServerSocket?: string
   /** Disable local user MCPs that are expensive in high-fanout worker runs. */
   disableLocalMcps?: boolean
+  /** Override Codex MCP inventory loading (tests inject a hermetic result). */
+  readMcpInventory?: (bin: string) => Promise<string>
   /** Codex service tier for every turn served by this worker's app-server. */
   serviceTier?: string
   /** Override the underlying spawn (tests inject a scripted fake child). */
@@ -95,13 +99,17 @@ export const DEFAULT_EXTRACTION_TURN_TIMEOUT_MS = 15 * 60_000
  *  events/journal/transcripts/result files. */
 export const DEFAULT_THREAD_EPHEMERAL = true
 
-const MCP_SERVER_NAMES_DISABLED_BY_DEFAULT = ["onepassword", "node_repl"] as const
+const exec = promisify(execFile)
+
+const MCP_SERVER_NAMES_DISABLED_BY_DEFAULT = ["onepassword", "node_repl", "paos-recall-mcp"] as const
+
+const MCP_INVENTORY_TIMEOUT_MS = 30_000
 
 export const CODEX_SERVICE_TIERS = ["default", "flex", "priority", "fast"] as const
 
 export interface CodexAppServerArgsOptions {
   appServerSocket?: string
-  disableLocalMcps?: boolean
+  disabledLocalMcpServerNames?: readonly string[]
   /** Codex service tier for every turn served by this app-server ("fast" canonicalizes to
    *  "priority" on the wire, codex-side). Falls back to OMEGACODE_CODEX_SERVICE_TIER. */
   serviceTier?: string
@@ -116,14 +124,53 @@ export function buildCodexAppServerArgs(options: CodexAppServerArgsOptions = {})
     }
     args.push("-c", `service_tier=${tier}`)
   }
-  if (options.disableLocalMcps === true) {
-    for (const name of MCP_SERVER_NAMES_DISABLED_BY_DEFAULT) {
+  if (options.disabledLocalMcpServerNames) {
+    for (const name of options.disabledLocalMcpServerNames) {
       args.push("-c", `mcp_servers.${name}.enabled=false`)
     }
   }
   args.push("app-server")
   if (options.appServerSocket) args.push("proxy", "--sock", options.appServerSocket)
   return args
+}
+
+export function selectCodexMcpServersToDisable(stdout: string): string[] {
+  let value: unknown
+  try {
+    value = JSON.parse(stdout)
+  } catch {
+    throw new Error("codex mcp list --json returned invalid JSON")
+  }
+  if (!Array.isArray(value)) throw new Error("codex mcp list --json returned a non-array inventory")
+
+  const seen = new Set<string>()
+  const enabledStdio = new Set<string>()
+  for (const [index, entry] of value.entries()) {
+    if (!isObject(entry)) throw new Error(`codex MCP inventory entry ${index} is not an object`)
+    if (typeof entry.name !== "string" || entry.name.length === 0) {
+      throw new Error(`codex MCP inventory entry ${index} has no valid name`)
+    }
+    if (seen.has(entry.name)) throw new Error(`codex MCP inventory contains duplicate name "${entry.name}"`)
+    seen.add(entry.name)
+    if (typeof entry.enabled !== "boolean") {
+      throw new Error(`codex MCP inventory entry "${entry.name}" has no boolean enabled field`)
+    }
+    if (!isObject(entry.transport) || typeof entry.transport.type !== "string") {
+      throw new Error(`codex MCP inventory entry "${entry.name}" has no transport type`)
+    }
+    if (entry.enabled && entry.transport.type === "stdio") enabledStdio.add(entry.name)
+  }
+
+  return MCP_SERVER_NAMES_DISABLED_BY_DEFAULT.filter((name) => enabledStdio.has(name))
+}
+
+async function readCodexMcpInventory(bin: string): Promise<string> {
+  const { stdout } = await exec(bin, ["mcp", "list", "--json"], {
+    encoding: "utf8",
+    timeout: MCP_INVENTORY_TIMEOUT_MS,
+    maxBuffer: 4 * 1024 * 1024,
+  })
+  return stdout
 }
 
 /** The silent second-turn prompt that extracts the final structured answer. */
@@ -163,7 +210,11 @@ interface TurnState {
 export class CodexWorker implements Worker {
   readonly id = PROVIDER
   private readonly bin: string
-  private readonly appServerArgs: string[]
+  private appServerArgs: string[] | null
+  private readonly appServerSocket?: string
+  private readonly disableLocalMcps: boolean
+  private readonly serviceTier?: string
+  private readonly readMcpInventory: (bin: string) => Promise<string>
   private readonly spawnChild?: SpawnChild
   private readonly requestTimeoutMs: number
   private readonly turnStallTimeoutMs: number
@@ -179,14 +230,11 @@ export class CodexWorker implements Worker {
 
   constructor(opts: CodexWorkerOpts = {}) {
     this.bin = opts.bin ?? "codex"
-    this.appServerArgs = [
-      ...(opts.appServerArgs ??
-        buildCodexAppServerArgs({
-          appServerSocket: opts.appServerSocket,
-          disableLocalMcps: opts.disableLocalMcps,
-          serviceTier: opts.serviceTier,
-        })),
-    ]
+    this.appServerArgs = opts.appServerArgs === undefined ? null : [...opts.appServerArgs]
+    this.appServerSocket = opts.appServerSocket
+    this.disableLocalMcps = opts.disableLocalMcps === true
+    this.serviceTier = opts.serviceTier ?? process.env.OMEGACODE_CODEX_SERVICE_TIER
+    this.readMcpInventory = opts.readMcpInventory ?? readCodexMcpInventory
     this.spawnChild = opts.spawnChild
     this.requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
     this.turnStallTimeoutMs = opts.turnStallTimeoutMs ?? DEFAULT_TURN_STALL_TIMEOUT_MS
@@ -396,9 +444,10 @@ export class CodexWorker implements Worker {
   }
 
   private async startAndHandshake(): Promise<void> {
+    const appServerArgs = await this.resolveAppServerArgs()
     const client = new JsonRpcStdioClient({
       bin: this.bin,
-      args: this.appServerArgs,
+      args: appServerArgs,
       spawnChild: this.spawnChild,
       requestTimeoutMs: this.requestTimeoutMs,
       onServerRequest: (id, method, params) => this.handleServerRequest(id, method, params),
@@ -444,6 +493,32 @@ export class CodexWorker implements Worker {
     } catch (err) {
       throw this.toAgentError(err)
     }
+  }
+
+  private async resolveAppServerArgs(): Promise<string[]> {
+    if (this.appServerArgs) return this.appServerArgs
+
+    let disabledLocalMcpServerNames: string[] = []
+    if (this.disableLocalMcps) {
+      try {
+        disabledLocalMcpServerNames = selectCodexMcpServersToDisable(await this.readMcpInventory(this.bin))
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        throw new AgentError({
+          provider: PROVIDER,
+          code: "mcp_inventory_failed",
+          message: `cannot inspect Codex MCP configuration before launching a lean app-server: ${message}. Use --codex-enable-local-mcps or OMEGACODE_CODEX_DISABLE_LOCAL_MCPS=0 only when worker agents need the full local MCP set.`,
+          retryable: false,
+        })
+      }
+    }
+
+    this.appServerArgs = buildCodexAppServerArgs({
+      appServerSocket: this.appServerSocket,
+      disabledLocalMcpServerNames,
+      serviceTier: this.serviceTier,
+    })
+    return this.appServerArgs
   }
 
   /** Classify any spawn/process error. A missing or non-executable binary

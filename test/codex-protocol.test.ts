@@ -20,6 +20,8 @@ import {
   isTurnCompleted,
   readErrorNotificationThreadId,
   readErrorNotificationMessage,
+  readErrorNotificationCode,
+  readErrorNotificationWillRetry,
 } from "../src/worker/codex-protocol.js"
 
 // ---------------------------------------------------------------------------
@@ -189,7 +191,6 @@ test("codexErrorCode: empty/invalid → undefined", () => {
 
 test("isRetryableCodexError: retryable set", () => {
   for (const c of [
-    "usageLimitExceeded",
     "serverOverloaded",
     "internalServerError",
     "httpConnectionFailed",
@@ -202,8 +203,17 @@ test("isRetryableCodexError: retryable set", () => {
 })
 
 test("isRetryableCodexError: non-retryable / unknown / undefined", () => {
+  assert.equal(isRetryableCodexError("usageLimitExceeded"), false)
   assert.equal(isRetryableCodexError("badRequest"), false)
   assert.equal(isRetryableCodexError(undefined), false)
+})
+
+test("readErrorNotificationCode: reads ErrorNotification.error.codexErrorInfo", () => {
+  assert.equal(
+    readErrorNotificationCode({ error: { message: "limit reached", codexErrorInfo: "usageLimitExceeded" } }),
+    "usageLimitExceeded",
+  )
+  assert.equal(readErrorNotificationCode({ error: { message: "unknown" } }), undefined)
 })
 
 // ---------------------------------------------------------------------------
@@ -266,4 +276,8 @@ test("readErrorNotification helpers", () => {
   assert.equal(readErrorNotificationMessage({ error: "estr" }), "estr")
   assert.equal(readErrorNotificationMessage({ error: { message: "eobj" } }), "eobj")
   assert.equal(readErrorNotificationMessage({}), "codex error")
+  assert.equal(readErrorNotificationWillRetry({ threadId: "t", turnId: "turn", willRetry: true }), true)
+  assert.equal(readErrorNotificationWillRetry({ willRetry: true }), false)
+  assert.equal(readErrorNotificationWillRetry({ willRetry: false }), false)
+  assert.equal(readErrorNotificationWillRetry({}), false)
 })

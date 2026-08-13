@@ -11,6 +11,7 @@ import { promisify } from "node:util"
 
 import type { AgentResult, AgentSpec, AgentUsage } from "../dsl/types.js"
 import { emptyUsage } from "../dsl/types.js"
+import { Semaphore } from "../runtime/semaphore.js"
 import type { Worker, WorkerContext } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
 import { toCodexOutputSchema, parseJsonLoose } from "./schema.js"
@@ -33,6 +34,8 @@ import {
   isTurnCompleted,
   readErrorNotificationThreadId,
   readErrorNotificationMessage,
+  readErrorNotificationCode,
+  readErrorNotificationWillRetry,
   type JsonRpcId,
   type InitializeParams,
   type ThreadStartParams,
@@ -49,6 +52,9 @@ export interface CodexWorkerOpts {
   disableLocalMcps?: boolean
   /** Override Codex MCP inventory loading (tests inject a hermetic result). */
   readMcpInventory?: (bin: string) => Promise<string>
+  /** Maximum concurrent thread/start requests. Model turns remain governed by
+   *  workflow concurrency; this only prevents app-server boot stampedes. */
+  threadStartConcurrency?: number
   /** Codex service tier for every turn served by this worker's app-server. */
   serviceTier?: string
   /** Override the underlying spawn (tests inject a scripted fake child). */
@@ -98,6 +104,10 @@ export const DEFAULT_EXTRACTION_TURN_TIMEOUT_MS = 15 * 60_000
  *  user's normal Codex Desktop thread store while preserving OmegaCode's own
  *  events/journal/transcripts/result files. */
 export const DEFAULT_THREAD_EPHEMERAL = true
+
+/** Keep thread initialization below the measured local app-server saturation
+ *  point while still allowing the workflow's full model-turn concurrency. */
+export const DEFAULT_THREAD_START_CONCURRENCY = 16
 
 const exec = promisify(execFile)
 
@@ -219,6 +229,7 @@ export class CodexWorker implements Worker {
   private readonly requestTimeoutMs: number
   private readonly turnStallTimeoutMs: number
   private readonly threadEphemeral: boolean
+  private readonly threadStartSemaphore: Semaphore
   private client: JsonRpcStdioClient | null = null
   private initPromise: Promise<void> | null = null
   /** The handshaked server's userAgent ("…/0.137.0 (…)") — quoted in drift and
@@ -239,6 +250,7 @@ export class CodexWorker implements Worker {
     this.requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
     this.turnStallTimeoutMs = opts.turnStallTimeoutMs ?? DEFAULT_TURN_STALL_TIMEOUT_MS
     this.threadEphemeral = opts.threadEphemeral ?? DEFAULT_THREAD_EPHEMERAL
+    this.threadStartSemaphore = new Semaphore(opts.threadStartConcurrency ?? DEFAULT_THREAD_START_CONCURRENCY)
   }
 
   async runAgent(spec: AgentSpec, ctx: WorkerContext): Promise<AgentResult> {
@@ -265,7 +277,26 @@ export class CodexWorker implements Worker {
       persistExtendedHistory: false,
       ephemeral: this.threadEphemeral,
     }
-    const startResult = await this.request("thread/start", startParams)
+    let startResult: unknown
+    try {
+      startResult = await this.threadStartSemaphore.run(async () => {
+        if (ctx.signal.aborted) throw new AgentInterrupted()
+        return await this.request("thread/start", startParams)
+      })
+    } catch (err) {
+      // thread/start has no idempotency key. After a timeout, the app-server may
+      // still finish the original request, so retrying can create duplicate or
+      // orphaned threads and amplify the overload that caused the timeout.
+      if (err instanceof AgentError && err.code === "request_timeout") {
+        throw new AgentError({
+          provider: PROVIDER,
+          code: "thread_start_unknown",
+          message: `${err.message}; outcome is unknown, so OmegaCode will not retry this non-idempotent thread/start`,
+          retryable: false,
+        })
+      }
+      throw err
+    }
     const threadId = readThreadId(startResult)
     if (!threadId) {
       throw new AgentError({
@@ -713,12 +744,23 @@ export class CodexWorker implements Worker {
         return
       }
       case "error": {
-        // An `error` notification with no following turn/completed would leave
-        // the turn forever unsettled. Settle the matching turn (or all live
-        // turns if no threadId is carried). (H2)
+        // Codex owns transient response-stream reconnection. A `willRetry`
+        // notification is progress, not a terminal result; settling here would
+        // race Codex's retry and amplify one reconnect into many new threads.
         const threadId = readErrorNotificationThreadId(params)
+        if (readErrorNotificationWillRetry(params) && threadId && this.turns.has(threadId)) return
+        // A terminal `error` notification with no following turn/completed
+        // would leave the turn forever unsettled. Settle the matching turn (or
+        // all live turns if no threadId is carried). (H2)
         const message = readErrorNotificationMessage(params)
-        const err = new AgentError({ provider: PROVIDER, code: "codex_error", message, retryable: true })
+        const notificationCode = readErrorNotificationCode(params)
+        const usageLimitExceeded = notificationCode === "usageLimitExceeded"
+        const err = new AgentError({
+          provider: PROVIDER,
+          code: usageLimitExceeded ? notificationCode : "codex_error",
+          message,
+          retryable: !usageLimitExceeded,
+        })
         if (threadId && this.turns.has(threadId)) {
           this.settleReject(threadId, err)
         } else {
@@ -886,7 +928,13 @@ export class CodexWorker implements Worker {
   private toAgentError(err: unknown): AgentError {
     if (err instanceof AgentError) return err
     if (err instanceof JsonRpcResponseError) {
-      return new AgentError({ provider: PROVIDER, code: "rpc_error", message: err.message })
+      const overloaded = err.rpc.code === -32001
+      return new AgentError({
+        provider: PROVIDER,
+        code: overloaded ? "server_overloaded" : "rpc_error",
+        message: err.message,
+        retryable: overloaded,
+      })
     }
     if (err instanceof StdioTransportError) {
       // A missing/non-executable binary surfacing through any transport path is a

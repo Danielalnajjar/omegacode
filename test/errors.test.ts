@@ -59,6 +59,22 @@ test("withRetry: reports retryable failures before backing off", async () => {
   assert.deepEqual(retryEvents, [{ attempt: 2, maxAttempts: 3, delayMs: 1, code: "turn_stalled", message: "no progress" }])
 })
 
+test("withRetry: jitters app-server overload backoff within the exponential cap", async () => {
+  let calls = 0
+  let observedDelay = 0
+  const result = await withRetry(
+    async () => {
+      calls++
+      if (calls === 1) throw new AgentError({ provider: "codex", code: "server_overloaded", message: "busy", retryable: true })
+      return "ok"
+    },
+    new AbortController().signal,
+    { baseMs: 20, maxMs: 20, onRetry: ({ delayMs }) => { observedDelay = delayMs } },
+  )
+  assert.equal(result, "ok")
+  assert.ok(observedDelay >= 1 && observedDelay <= 20)
+})
+
 test("withRetry: does NOT retry a non-retryable AgentError", async () => {
   let calls = 0
   await assert.rejects(

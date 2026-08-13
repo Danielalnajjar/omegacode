@@ -363,6 +363,21 @@ export function readErrorNotificationMessage(params: unknown): string {
   return "codex error"
 }
 
+/** Extract the provider-owned code from an app-server ErrorNotification. */
+export function readErrorNotificationCode(params: unknown): string | undefined {
+  if (!isObject(params) || !isObject(params.error)) return undefined
+  return codexErrorCode(params.error.codexErrorInfo)
+}
+
+/** Codex emits transient `error` notifications while it is internally
+ *  reconnecting. When true, the turn is still live and will retry itself. */
+export function readErrorNotificationWillRetry(params: unknown): boolean {
+  return isObject(params)
+    && params.willRetry === true
+    && typeof params.threadId === "string"
+    && typeof params.turnId === "string"
+}
+
 // ---------------------------------------------------------------------------
 // codexErrorInfo → retry classification
 // ---------------------------------------------------------------------------
@@ -377,11 +392,10 @@ export function codexErrorCode(info: unknown): string | undefined {
   return undefined
 }
 
-/** Rate/usage/overload/connection failures are worth retrying. */
+/** Transient overload/connection failures are worth retrying. */
 export function isRetryableCodexError(code: string | undefined): boolean {
   if (!code) return false
   switch (code) {
-    case "usageLimitExceeded":
     case "serverOverloaded":
     case "internalServerError":
     case "httpConnectionFailed":

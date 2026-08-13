@@ -10,6 +10,7 @@ import {
   CodexWorker,
   DEFAULT_REQUEST_TIMEOUT_MS,
   DEFAULT_THREAD_EPHEMERAL,
+  DEFAULT_THREAD_START_CONCURRENCY,
   DEFAULT_TURN_STALL_TIMEOUT_MS,
   buildCodexAppServerArgs,
   selectCodexMcpServersToDisable,
@@ -584,6 +585,82 @@ test("CodexWorker can explicitly disable ephemeral thread/start for debugging", 
   await worker.shutdown()
 })
 
+test("CodexWorker gates thread/start without reducing concurrent model turns", async () => {
+  let child!: FakeChild
+  let activeStarts = 0
+  let maxActiveStarts = 0
+  const worker = new CodexWorker({
+    threadStartConcurrency: 2,
+    spawnChild: () => {
+      child = new FakeChild()
+      child.onWrite = (req: any) => {
+        if (req.method === "initialize") return child.pushLine({ jsonrpc: "2.0", id: req.id, result: INIT_OK })
+        if (req.method === "thread/start") {
+          activeStarts++
+          maxActiveStarts = Math.max(maxActiveStarts, activeStarts)
+          setTimeout(() => {
+            activeStarts--
+            child.pushLine({ jsonrpc: "2.0", id: req.id, result: { thread: { id: `t-${req.id}` } } })
+          }, 10)
+          return
+        }
+        if (req.method === "turn/start") {
+          const threadId = req.params.threadId
+          child.pushLine({ jsonrpc: "2.0", id: req.id, result: {} })
+          child.pushLine({ jsonrpc: "2.0", method: "item/completed", params: { threadId, item: { type: "agentMessage", text: "done" } } })
+          child.pushLine({ jsonrpc: "2.0", method: "turn/completed", params: { threadId, turn: { status: "completed" } } })
+        }
+      }
+      return child as any
+    },
+  })
+
+  assert.equal(DEFAULT_THREAD_START_CONCURRENCY, 16)
+  await Promise.all(Array.from({ length: 6 }, () => worker.runAgent(spec(), ctx())))
+  assert.equal(maxActiveStarts, 2)
+  await worker.shutdown()
+})
+
+test("CodexWorker does not retry an ambiguously timed-out thread/start", async () => {
+  const worker = new CodexWorker({
+    requestTimeoutMs: 10,
+    spawnChild: () => {
+      const child = new FakeChild()
+      child.onWrite = (req: any) => {
+        if (req.method === "initialize") child.pushLine({ jsonrpc: "2.0", id: req.id, result: INIT_OK })
+      }
+      return child as any
+    },
+  })
+
+  await assert.rejects(
+    worker.runAgent(spec(), ctx()),
+    (error) => error instanceof AgentError && error.code === "thread_start_unknown" && error.retryable === false,
+  )
+  await worker.shutdown()
+})
+
+test("CodexWorker classifies app-server ingress overload as retryable", async () => {
+  const worker = new CodexWorker({
+    spawnChild: () => {
+      const child = new FakeChild()
+      child.onWrite = (req: any) => {
+        if (req.method === "initialize") child.pushLine({ jsonrpc: "2.0", id: req.id, result: INIT_OK })
+        if (req.method === "thread/start") {
+          child.pushLine({ jsonrpc: "2.0", id: req.id, error: { code: -32001, message: "Server overloaded; retry later." } })
+        }
+      }
+      return child as any
+    },
+  })
+
+  await assert.rejects(
+    worker.runAgent(spec(), ctx()),
+    (error) => error instanceof AgentError && error.code === "server_overloaded" && error.retryable === true,
+  )
+  await worker.shutdown()
+})
+
 // ===========================================================================
 // H5 — schema two-turn usage. Verified semantics (codex-rs TokenUsageInfo):
 // `last` = the last model REQUEST (one of many per tool-using turn);
@@ -684,6 +761,53 @@ test("H2: an `error` notification (no turn/completed) rejects the turn", async (
     // deliberately NO turn/completed
   })
   await assert.rejects(worker.runAgent(spec(), ctx()), (e) => e instanceof AgentError && /model exploded/.test(e.message) && e.retryable === true)
+  await worker.shutdown()
+})
+
+test("a usage-limit `error` notification is terminal and non-retryable", async () => {
+  const { worker } = makeServedWorker((_req, reply) => {
+    reply({
+      jsonrpc: "2.0",
+      method: "error",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        willRetry: false,
+        error: {
+          message: "You've hit your usage limit.",
+          codexErrorInfo: "usageLimitExceeded",
+          additionalDetails: null,
+        },
+      },
+    })
+  })
+  await assert.rejects(
+    worker.runAgent(spec(), ctx()),
+    (e) => e instanceof AgentError && e.code === "usageLimitExceeded" && e.retryable === false,
+  )
+  await worker.shutdown()
+})
+
+test("a transient `error` notification with willRetry keeps the turn alive", async () => {
+  const { worker } = makeServedWorker((_req, reply) => {
+    reply({
+      jsonrpc: "2.0",
+      method: "error",
+      params: { threadId: "thread-1", turnId: "turn-1", willRetry: true, error: { message: "Reconnecting... 1/5" } },
+    })
+    reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "recovered" } } })
+    reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
+  })
+  const result = await worker.runAgent(spec(), ctx())
+  assert.equal(result.text, "recovered")
+  await worker.shutdown()
+})
+
+test("a malformed willRetry notification without correlation fails the live turn", async () => {
+  const { worker } = makeServedWorker((_req, reply) => {
+    reply({ jsonrpc: "2.0", method: "error", params: { willRetry: true, error: { message: "uncorrelated retry" } } })
+  })
+  await assert.rejects(worker.runAgent(spec(), ctx()), (e) => e instanceof AgentError && /uncorrelated retry/.test(e.message))
   await worker.shutdown()
 })
 

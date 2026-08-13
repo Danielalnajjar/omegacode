@@ -429,6 +429,8 @@ async function cmdRun(flags: Flags): Promise<void> {
   const codexDisableLocalMcps = flags["codex-disable-local-mcps"]
   if (typeof codexDisableLocalMcps === "boolean") overrides.codexDisableLocalMcps = codexDisableLocalMcps
   if (flags["codex-enable-local-mcps"] === true) overrides.codexDisableLocalMcps = false
+  const codexThreadStartConcurrency = positiveIntFlag(flags, "codex-thread-start-concurrency")
+  if (codexThreadStartConcurrency !== undefined) overrides.codexThreadStartConcurrency = codexThreadStartConcurrency
 
   // --resume, if present, must carry a runId — a bare `--resume` used to silently start a fresh run.
   const resumeRunId = str(flags.resume)
@@ -598,6 +600,7 @@ function buildDetachedChildArgs(
   if (opts.overrides.codexNoAppServerProxy) out.push("--codex-no-app-server-proxy")
   if (opts.overrides.codexDisableLocalMcps) out.push("--codex-disable-local-mcps")
   if (opts.overrides.codexDisableLocalMcps === false) out.push("--codex-enable-local-mcps")
+  appendValue(out, "codex-thread-start-concurrency", opts.overrides.codexThreadStartConcurrency)
   return out
 }
 
@@ -878,6 +881,7 @@ Usage:
       --budget <N>                         output-token ceiling (enables budget.*)
       --codex-enable-local-mcps            opt into selected local stdio MCPs in Codex worker app-servers
       --codex-disable-local-mcps           explicit default: keep selected local MCPs disabled for worker fanout
+      --codex-thread-start-concurrency <N> cap simultaneous thread initialization, not model turns (default 16)
       --codex-app-server-socket <path>     opt into proxying Codex workers through an existing app-server socket
       --codex-no-app-server-proxy          force a fresh stdio app-server even when env selects a proxy socket
       --resume <runId>                     replay unchanged prefix, re-run the rest
@@ -894,9 +898,9 @@ Usage:
   prints launch JSON immediately; use \`wait --json\` for terminal detached JSON.
   Codex workers use a fresh stdio app-server per OmegaCode run by default. Use
   --codex-app-server-socket or OMEGACODE_CODEX_APP_SERVER_SOCKET only when intentionally sharing
-  an existing app-server daemon across runs. CodeDB remains enabled; the default local-MCP
-  suppression only targets configured, enabled stdio instances of onepassword, node_repl, and
-  paos-recall-mcp for fresh worker app-servers.
+  an existing app-server daemon across runs. CodeDB, plugins, apps, and native multi-agent
+  capability remain enabled; the default suppression targets only configured, enabled stdio
+  instances of onepassword, node_repl, and paos-recall-mcp for fresh worker app-servers.
 
   omegacode serve [--port 4123] [--host h] [--idle-shutdown]   Live read-only web viewer of all runs
   omegacode status <runId> [--json]             Read native status from events.jsonl + heartbeat

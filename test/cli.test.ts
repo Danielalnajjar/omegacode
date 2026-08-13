@@ -117,11 +117,14 @@ describe("parseArgs — boolean flags never consume the next token (M18)", () =>
       "wf.js",
       "--codex-app-server-socket",
       "/tmp/codex.sock",
+      "--codex-thread-start-concurrency",
+      "12",
     ])
     assert.equal(f["codex-disable-local-mcps"], true)
     assert.equal(f["codex-enable-local-mcps"], true)
     assert.equal(f["codex-no-app-server-proxy"], true)
     assert.equal(f["codex-app-server-socket"], "/tmp/codex.sock")
+    assert.equal(f["codex-thread-start-concurrency"], "12")
     assert.deepEqual(f._, ["run", "wf.js"])
   })
 })
@@ -492,6 +495,12 @@ describe("CLI end-to-end (--fake)", () => {
     const r = await runCli(["run", wf, "--concurrency", "abc", "--fake", "--no-serve"], { OMEGACODE_HOME: home })
     assert.equal(r.code, 1)
     assert.match(r.stderr, /--concurrency must be/)
+  })
+
+  test("invalid --codex-thread-start-concurrency is rejected", async () => {
+    const r = await runCli(["run", wf, "--codex-thread-start-concurrency", "0", "--fake", "--no-serve"], { OMEGACODE_HOME: home })
+    assert.equal(r.code, 1)
+    assert.match(r.stderr, /--codex-thread-start-concurrency must be a positive integer/)
   })
 
   test("invalid --budget (abc → NaN) is rejected instead of silently disabling the budget (M20)", async () => {

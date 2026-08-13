@@ -17,7 +17,8 @@ export interface RetryEvent {
   error: AgentError
 }
 
-/** Run `fn`, retrying on retryable AgentErrors with exponential backoff. */
+/** Run `fn`, retrying on retryable AgentErrors with exponential backoff.
+ *  App-server ingress overloads use full jitter to avoid synchronized retry waves. */
 export async function withRetry<T>(
   fn: () => Promise<T>,
   signal: AbortSignal,
@@ -34,7 +35,10 @@ export async function withRetry<T>(
     } catch (err) {
       lastErr = err
       if (!(err instanceof AgentError) || !err.retryable || i === attempts - 1) throw err
-      const delay = Math.min(max, base * 2 ** i)
+      const cappedDelay = Math.min(max, base * 2 ** i)
+      const delay = err.code === "server_overloaded"
+        ? Math.max(1, Math.floor(Math.random() * cappedDelay) + 1)
+        : cappedDelay
       await opts.onRetry?.({ attempt: i + 2, maxAttempts: attempts, delayMs: delay, error: err })
       await sleep(delay, signal)
     }

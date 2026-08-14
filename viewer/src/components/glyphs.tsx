@@ -53,13 +53,14 @@ function MonogramBadge({ label, className }: { label: string; className?: string
   )
 }
 
-/** Provider mark: brand icons for codex/claude-code, monogram badges for opencode/pi.
+/** Provider mark: brand icons for codex/claude-code, monogram badges for other known providers.
  *  Unknown provider ids render a neutral badge — never someone else's brand. */
 export function ProviderIcon({ provider, className }: { provider: ProviderId; className?: string }) {
   if (provider === "claude-code") return <ClaudeIcon className={cn("size-3.5 shrink-0 text-muted-foreground", className)} />
   if (provider === "codex") return <OpenAiIcon className={cn("size-3.5 shrink-0 text-muted-foreground", className)} />
   if (provider === "opencode") return <MonogramBadge label="OC" className={className} />
   if (provider === "pi") return <MonogramBadge label="π" className={className} />
+  if (provider === "grok") return <MonogramBadge label="G" className={className} />
   return <MonogramBadge label="·" className={className} />
 }
 

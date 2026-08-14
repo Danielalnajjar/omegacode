@@ -18,15 +18,19 @@ interface.
 > --help` disagree, SKILL.md and the CLI win. §12 below lists the actual shipped CLI surface; §13 the
 > actual repo layout.
 >
-> **Provider-set amendment (2026-06):** the shipped provider set is now **four**, not two. `opencode`
-> (OpenCode CLI ≥ 1.16.2) and `pi` (`@earendil-works/pi-coding-agent` ≥ 0.79.1) joined as
-> spawn-per-call subprocess workers (`src/worker/opencode.ts`, `src/worker/pi.ts`, shared mechanics in
-> `src/worker/subprocess-jsonl.ts`). Both are **full-access-only**: neither CLI can enforce a confined
+> **Provider-set amendment (2026-08):** the shipped provider set is now **five**, not two. `opencode`
+> (OpenCode CLI ≥ 1.16.2), `pi` (`@earendil-works/pi-coding-agent` ≥ 0.79.1), and `grok`
+> (Grok CLI ≥ 0.2.112) joined as spawn-per-call subprocess workers (`src/worker/opencode.ts`,
+> `src/worker/pi.ts`, `src/worker/grok.ts`; shared transport in `src/worker/subprocess-jsonl.ts`).
+> OpenCode and pi are **full-access-only**:
+> neither CLI can enforce a confined
 > sandbox, so `read-only`/`workspace-write` are rejected pre-spawn and calls require an explicit
-> `sandbox: "danger-full-access"`. Both reject `maxTurns`; opencode maps `effort` onto `--variant`
-> while pi maps it onto `--thinking`. `instructions` maps to pi's `--append-system-prompt` and to a delimited prompt
-> preamble on opencode. Structured output uses a silent extraction turn plus the central validation
-> path. Bin overrides: `OPENCODE_BIN` / `PI_BIN`. Outdated binaries are refused (`provider_outdated`).
+> `sandbox: "danger-full-access"`. Grok maps all three sandbox modes and requires noninteractive
+> `approval: "never"`. OpenCode and pi reject `maxTurns`; opencode maps `effort` onto `--variant`
+> while pi maps it onto `--thinking`, and Grok maps it onto `--reasoning-effort`. `instructions`
+> maps to pi's `--append-system-prompt` and to a delimited prompt preamble on opencode. Structured
+> output uses a silent extraction turn plus the central validation
+> path. Bin overrides: `OPENCODE_BIN` / `PI_BIN` / `GROK_BIN`. Outdated binaries are refused (`provider_outdated`).
 > The "two providers" framing below is historical.
 
 ---
@@ -240,7 +244,7 @@ and typechecking. Schemas are **JSON Schema** (the portable default that maps st
 | `random` | `() => number` | Journal-seeded RNG (deterministic across resume, unlike `Math.random()`). |
 | `budget` | `{ total, spent(), remaining() }` | The run's output-token ceiling (`--budget`, §8); `total` is `null` when no ceiling is set. |
 
-**`AgentOpts`:** `{ provider?: "codex" | "claude-code", label?, phase?, model?, effort?:
+**`AgentOpts`:** `{ provider?: "codex" | "claude-code" | "opencode" | "pi" | "grok", label?, phase?, model?, effort?:
 "none"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max" (the shared provider union; each worker maps
 only the levels its backend does not support), cwd?, sandbox?:
 "read-only"|"workspace-write"|"danger-full-access", approval?: "never"|"on-request", instructions?,
@@ -321,7 +325,7 @@ see the normalized result.
 
 ```ts
 interface Worker {
-  id: "codex" | "claude-code"
+  id: ProviderId
   runAgent(spec: AgentSpec, ctx: { signal: AbortSignal; onProgress: (e) => void }): Promise<AgentResult>
 }
 type AgentResult = {
@@ -596,7 +600,7 @@ already reads files). Noted as a future direction.
 - **Auth:** each worker inherits the host's existing provider auth — Codex login for `CodexWorker`,
   `ANTHROPIC_API_KEY` / Claude Code login for `ClaudeWorker`. A workflow only needs auth for the
   provider(s) it actually uses. *(As shipped, `omegacode doctor` is a lightweight binary check — it runs
-  `codex --version` / `claude --version` and reports the data dir; it does **not** do the live
+  each provider's version command and reports the data dir; it does **not** do live
   `model/list` / `query()` round-trips the original design described.)*
 - **Config:** there is **no config file** (`omegacode.config.{ts,json}` was designed but **not
   shipped**). Per-run defaults resolve in decreasing precedence: CLI flags
@@ -604,7 +608,8 @@ already reads files). Noted as a future direction.
   (`defaultProvider`/`defaultModel`/`defaultSandbox`), then the built-in `DEFAULTS`
   (`provider: codex`, `sandbox: read-only`, `approval: never`, `concurrency: 100`,
   `maxAgents: 1000`, `maxFanout: 4096`). The codex app-server binary can be overridden via the `CODEX_BIN`
-  environment variable, and the data dir (default `~/.omegacode`) via `OMEGACODE_HOME`.
+  environment variable; subprocess-worker binaries use `OPENCODE_BIN`, `PI_BIN`, and `GROK_BIN`.
+  The data dir (default `~/.omegacode`) uses `OMEGACODE_HOME`.
 
 ---
 
@@ -618,7 +623,7 @@ estimate — were **not shipped**. `validate` only parses the file and prints it
 
 ```
 omegacode run <file.workflow.js | name> [--args <json> | --args-file f.json]
-                                 [--provider codex|claude-code|opencode|pi] [--model m] [--effort e]
+                                 [--provider codex|claude-code|opencode|pi|grok] [--model m] [--effort e]
                                  [--sandbox read-only|workspace-write|danger-full-access] [--cwd <dir>]
                                  [--concurrency N] [--budget N] [--resume <runId>]
                                  [--fake] [--json] [--start-json] [--open] [--no-serve] [--port N]
@@ -627,7 +632,7 @@ omegacode runs [--prune --keep N] [--prune-stale]            # list runs (or pru
 omegacode workflows [--json]            # list saved/named workflows (project, user, builtin tiers)
 omegacode save <file> [--project] [--force]   # save a workflow into the user (or project) registry
 omegacode validate <file.workflow.js | name>  # parse the file + print its meta (no plan / no run)
-omegacode doctor                        # check codex/claude binary presence + print the data dir
+omegacode doctor                        # check provider binaries/versions + print the data dir
 omegacode guide                         # print the authoring guide (the body of skill/SKILL.md)
 omegacode install-skill [--claude] [--agents]   # install skill/SKILL.md into agent skill dirs
 ```
@@ -705,12 +710,16 @@ omegacode/
       tail.ts             # jsonl tail/offset helpers for the server (dependency-free, testable)
     worker/
       index.ts            # Worker interface + WorkerContext + AgentError/AgentInterrupted
-      factory.ts          # provider → worker resolution (fake / codex / claude); caches per provider
+      factory.ts          # provider → worker resolution; caches per provider
       schema.ts           # JSON Schema → per-provider output format; client-side validate
       codex.ts            # CodexWorker: spawn app-server, JSON-RPC, thread/turn, two-turn structured output
       codex-protocol.ts   # method + param/result types + sandbox/approval/effort mappers (hand-typed)
       jsonrpc-stdio.ts    # JSON-RPC-over-stdio client (child process + framing + pending-request lifecycle)
       claude.ts           # ClaudeWorker: query() loop, outputFormat, canUseTool sandbox gate
+      opencode.ts         # OpenCode CLI subprocess worker
+      pi.ts               # pi CLI subprocess worker
+      grok.ts             # Grok CLI subprocess worker
+      subprocess-jsonl.ts # shared subprocess JSONL transport and version checks
       fake.ts             # in-process FakeWorker (--fake): synthesizes deterministic text/structured output
       errors.ts           # normalize codexErrorInfo / SDKResultError → AgentError; retry classification
   viewer/                 # the web viewer — a React + Vite pnpm workspace package (built into a

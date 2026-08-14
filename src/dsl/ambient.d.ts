@@ -7,7 +7,7 @@
 // of the ones in ./types.ts; keep them in sync (a packaging test asserts the union members).
 
 declare global {
-  type OmegacodeProviderId = "codex" | "claude-code" | "opencode" | "pi"
+  type OmegacodeProviderId = "codex" | "claude-code" | "opencode" | "pi" | "grok"
 
   type OmegacodeSandbox = "read-only" | "workspace-write" | "danger-full-access"
 
@@ -47,7 +47,7 @@ declare global {
     index: number,
   ) => unknown | Promise<unknown>
 
-  /** Run one agent turn (Codex or Claude Code, per opts.provider). Returns final text, or a
+  /** Run one agent turn through the selected provider. Returns final text, or a
    *  validated object when opts.schema is set. */
   function agent<T = string>(prompt: string, opts?: OmegacodeAgentOpts): Promise<T>
 

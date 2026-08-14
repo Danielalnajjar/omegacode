@@ -1,6 +1,6 @@
-// Shared mechanics for spawn-per-call CLI workers (opencode, pi): spawn with an injectable seam,
-// prompt on stdin, strict-LF stdout framing with per-line JSON parse, a stderr ring buffer, a
-// no-output stall watchdog, abort via SIGTERM→SIGKILL, and spawn-failure normalization into
+// Shared mechanics for spawn-per-call CLI workers (opencode, pi, grok): spawn with an injectable
+// seam, optional prompt stdin, strict-LF stdout framing with per-line JSON parse, a stderr ring
+// buffer, a no-output stall watchdog, abort via SIGTERM→SIGKILL, and spawn-failure normalization into
 // AgentError. Event SEMANTICS (what each JSON line means) stay in each worker — this module never
 // interprets payloads.
 

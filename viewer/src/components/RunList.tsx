@@ -1,5 +1,5 @@
 import type { ReactNode } from "react"
-import { NavLink } from "react-router-dom"
+import { NavLink, type NavLinkRenderProps } from "react-router-dom"
 
 import { StatusGlyph } from "@/components/glyphs"
 import { OmegaIcon } from "@/components/icons/OmegaIcon"
@@ -38,7 +38,7 @@ export function RunList({ headerAction, onSelectRun }: RunListProps) {
             key={r.runId}
             to={`/run/${r.runId}`}
             onClick={onSelectRun}
-            className={({ isActive }) =>
+            className={({ isActive }: NavLinkRenderProps) =>
               cn(
                 "flex flex-col gap-0.5 rounded-md px-2 py-1.5 transition-colors hover:bg-state-hover",
                 isActive && "bg-surface-selected"

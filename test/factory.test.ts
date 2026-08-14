@@ -9,6 +9,7 @@ import { ClaudeWorker, bashWriteOutsideCwd, checkTool, isReadOnlyBash, usageFrom
 import { CodexWorker } from "../src/worker/codex.ts"
 import { OpencodeWorker } from "../src/worker/opencode.ts"
 import { PiWorker } from "../src/worker/pi.ts"
+import { GrokWorker } from "../src/worker/grok.ts"
 import { AgentError, AgentInterrupted, type WorkerContext } from "../src/worker/index.ts"
 import type { AgentSpec, ProviderId } from "../src/dsl/types.ts"
 
@@ -34,6 +35,9 @@ test("returns an OpencodeWorker for 'opencode' and a PiWorker for 'pi'", () => {
   const pi = f.get("pi")
   assert.ok(pi instanceof PiWorker)
   assert.equal(pi.id, "pi")
+  const grok = f.get("grok")
+  assert.ok(grok instanceof GrokWorker)
+  assert.equal(grok.id, "grok")
 })
 
 test("M5: unknown provider id throws instead of silently returning ClaudeWorker", () => {
@@ -65,6 +69,7 @@ test("caches workers by provider id and codex service tier", () => {
   assert.equal(f.get("claude-code"), f.get("claude-code"))
   assert.equal(f.get("opencode"), f.get("opencode"))
   assert.equal(f.get("pi"), f.get("pi"))
+  assert.equal(f.get("grok"), f.get("grok"))
   assert.notEqual(f.get("codex") as unknown, f.get("claude-code") as unknown)
   assert.notEqual(f.get("opencode") as unknown, f.get("pi") as unknown)
 })
@@ -91,12 +96,14 @@ test("codexBin is consumed by the CodexWorker", () => {
   assert.ok(w instanceof CodexWorker)
 })
 
-test("opencodeBin / piBin are consumed by their workers", () => {
-  const f = new DefaultWorkerFactory({ opencodeBin: "/opt/opencode", piBin: "/opt/pi" })
+test("opencodeBin / piBin / grokBin are consumed by their workers", () => {
+  const f = new DefaultWorkerFactory({ opencodeBin: "/opt/opencode", piBin: "/opt/pi", grokBin: "/opt/grok" })
   const oc = f.get("opencode")
   assert.equal((oc as unknown as { bin: string }).bin, "/opt/opencode")
   const pi = f.get("pi")
   assert.equal((pi as unknown as { bin: string }).bin, "/opt/pi")
+  const grok = f.get("grok")
+  assert.equal((grok as unknown as { bin: string }).bin, "/opt/grok")
 })
 
 test("shutdownAll shuts down every service-tier worker, clears the cache, and is repeatable", async () => {

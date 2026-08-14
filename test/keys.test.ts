@@ -77,7 +77,7 @@ test("keyedSpec captures RESOLVED provider/model so default/CLI overrides invali
 
 test("keyedSpec distinguishes every provider id", () => {
   const b = branchKey(ROOT_KEY, "root", 0)
-  const keys = (["codex", "claude-code", "opencode", "pi"] as const).map((provider) =>
+  const keys = (["codex", "claude-code", "opencode", "pi", "grok"] as const).map((provider) =>
     chainKey(b, 0, "p", keyedSpec({ provider, model: "m1" }, undefined)),
   )
   assert.equal(new Set(keys).size, keys.length)

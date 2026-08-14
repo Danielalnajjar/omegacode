@@ -36,7 +36,7 @@ export interface RunOverrides {
   claudeModel?: string
   /** Path to the claude-code executable (forwarded to the Claude worker). */
   pathToClaudeCodeExecutable?: string
-  /** Binary overrides for the subprocess workers (programmatic equivalent of OPENCODE_BIN/PI_BIN). */
+  /** Binary overrides for subprocess workers (programmatic equivalent of their *_BIN env vars). */
   opencodeBin?: string
   piBin?: string
   grokBin?: string

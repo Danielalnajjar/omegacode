@@ -14,12 +14,14 @@ const posixOnly = { skip: process.platform === "win32" }
 interface Launch {
   argv: string[]
   stdin: string
+  prompt?: string
   cwd: string
   env: Record<string, string | undefined>
 }
 
-/** A fake provider CLI: answers --version, records the run invocation, emits one happy event. */
-function writeFakeBin(path: string, version: string, eventJson: string): void {
+/** A fake provider CLI: answers --version, records the run invocation, emits happy events. */
+function writeFakeBin(path: string, version: string, eventJson: string | string[]): void {
+  const events = Array.isArray(eventJson) ? eventJson : [eventJson]
   writeFileSync(
     path,
     [
@@ -31,8 +33,10 @@ function writeFakeBin(path: string, version: string, eventJson: string): void {
       'process.stdin.setEncoding("utf8");',
       'process.stdin.on("data", (c) => (stdin += c));',
       'process.stdin.on("end", () => {',
-      "  fs.writeFileSync(process.env.RECORD, JSON.stringify({ argv: args, stdin, cwd: process.cwd(), env: { OPENCODE_DISABLE_AUTOUPDATE: process.env.OPENCODE_DISABLE_AUTOUPDATE, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR } }));",
-      "  console.log('" + eventJson + "');",
+      '  const promptIndex = args.indexOf("--prompt-file");',
+      '  const prompt = promptIndex === -1 ? undefined : fs.readFileSync(args[promptIndex + 1], "utf8");',
+      "  fs.writeFileSync(process.env.RECORD, JSON.stringify({ argv: args, stdin, prompt, cwd: process.cwd(), env: { OPENCODE_DISABLE_AUTOUPDATE: process.env.OPENCODE_DISABLE_AUTOUPDATE, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, GROK_DISABLE_AUTOUPDATER: process.env.GROK_DISABLE_AUTOUPDATER } }));",
+      `  for (const event of ${JSON.stringify(events)}) console.log(event);`,
       "});",
     ].join("\n"),
   )
@@ -125,6 +129,64 @@ test("opencode: OPENCODE_BIN env drives a real spawn with the exact argv/stdin c
     restoreEnv("OMEGACODE_HOME", prev.OMEGACODE_HOME)
     restoreEnv("RECORD", prev.RECORD)
     restoreEnv("OPENCODE_BIN", prev.OPENCODE_BIN)
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("grok: GROK_BIN env drives a real spawn with prompt-file and policy flags", posixOnly, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "omega-grok-env-"))
+  const prev = { OMEGACODE_HOME: process.env.OMEGACODE_HOME, RECORD: process.env.RECORD, GROK_BIN: process.env.GROK_BIN }
+  try {
+    const record = join(dir, "record.json")
+    const bin = join(dir, "grok-fake.cjs")
+    writeFakeBin(bin, "grok 0.2.121", [
+      JSON.stringify({ type: "text", data: "ok" }),
+      JSON.stringify({ type: "end", stopReason: "end_turn", sessionId: "ses_grok", usage: { input_tokens: 1, output_tokens: 2 } }),
+    ])
+    const wf = join(dir, "grok-env.workflow.js")
+    writeFileSync(
+      wf,
+      `export const meta = { name: "grok-env-smoke", description: "e2e env wiring", defaultProvider: "grok", defaultModel: "grok-4.6" }\n` +
+        `return await agent("hello from workflow", { effort: "high", instructions: "be terse", cwd: ${JSON.stringify(dir)} })\n`,
+    )
+    process.env.OMEGACODE_HOME = join(dir, "home")
+    process.env.RECORD = record
+    process.env.GROK_BIN = bin
+
+    const outcome = await runWorkflow({ file: wf, quiet: true })
+    assert.equal(outcome.status, "completed", `error=${outcome.error}`)
+    assert.equal(outcome.result, "ok")
+
+    const launch = JSON.parse(readFileSync(record, "utf8")) as Launch
+    const promptPath = launch.argv.at(-1)
+    assert.deepEqual(launch.argv, [
+      "--cwd",
+      dir,
+      "--sandbox",
+      "read-only",
+      "--output-format",
+      "streaming-json",
+      "--no-auto-update",
+      "--no-subagents",
+      "-m",
+      "grok-4.6",
+      "--reasoning-effort",
+      "high",
+      "--rules",
+      "be terse",
+      "--permission-mode",
+      "plan",
+      "--prompt-file",
+      promptPath!,
+    ])
+    assert.equal(launch.stdin, "")
+    assert.equal(launch.prompt, "hello from workflow")
+    assert.equal(realpathSync(launch.cwd), realpathSync(dir))
+    assert.equal(launch.env.GROK_DISABLE_AUTOUPDATER, "1")
+  } finally {
+    restoreEnv("OMEGACODE_HOME", prev.OMEGACODE_HOME)
+    restoreEnv("RECORD", prev.RECORD)
+    restoreEnv("GROK_BIN", prev.GROK_BIN)
     rmSync(dir, { recursive: true, force: true })
   }
 })

@@ -106,11 +106,25 @@ export class GrokWorker implements Worker {
     const working = await this.runTurn(spec, spec.prompt, ctx, { forwardProgress: true })
     if (!spec.schema) return { text: working.text, status: "completed", usage: working.usage }
 
-    const extraction = await this.runTurn(spec, extractionPrompt(spec, working), ctx, {
-      forwardProgress: false,
-      resume: working.sessionId,
-      noTools: true,
-    })
+    let extraction: TurnOutcome
+    try {
+      extraction = await this.runTurn(spec, extractionPrompt(spec, working), ctx, {
+        forwardProgress: false,
+        resume: working.sessionId,
+        noTools: true,
+      })
+    } catch (err) {
+      if (err instanceof AgentError) {
+        throw new AgentError({
+          provider: err.provider,
+          code: err.code,
+          message: err.message,
+          retryable: err.retryable,
+          usage: addUsage(working.usage, err.usage ?? emptyUsage()),
+        })
+      }
+      throw err
+    }
     let structured: unknown
     try {
       structured = parseJsonLoose(extraction.text)
@@ -178,7 +192,7 @@ export class GrokWorker implements Worker {
     if (spec.effort) args.push("--reasoning-effort", EFFORT_TO_GROK[spec.effort])
     if (spec.instructions) args.push("--rules", spec.instructions)
     if (spec.maxTurns !== undefined) args.push("--max-turns", String(spec.maxTurns))
-    if (opts.noTools) args.push("--tools", "")
+    if (opts.noTools) args.push("--tools", "", "--deny", "MCPTool")
     if (spec.sandbox === "read-only") {
       args.push("--permission-mode", "plan")
     } else {
@@ -200,8 +214,12 @@ export class GrokWorker implements Worker {
 
     let text = ""
     let usage = emptyUsage()
+    let usageReported = false
     let sessionId: string | undefined
-    let streamError: AgentError | undefined
+    let streamErrorMessage: string | undefined
+    let sawEnd = false
+    let stopReason: string | undefined
+    let sawMaxTurns = false
     const forward = (e: WorkerProgress): void => {
       if (opts.forwardProgress) ctx.onProgress(e)
     }
@@ -254,11 +272,11 @@ export class GrokWorker implements Worker {
               })
               return
             }
-            case "usage":
-            case "end": {
+            case "usage": {
               const next = usageFromGrok(value)
               if (next) {
-                usage = value.type === "end" ? next : addUsage(usage, next)
+                usage = addUsage(usage, next)
+                usageReported = true
                 forward({
                   kind: "usage",
                   usage: {
@@ -271,14 +289,38 @@ export class GrokWorker implements Worker {
               }
               return
             }
-            case "error": {
-              if (!streamError) {
-                streamError = new AgentError({
-                  provider: PROVIDER,
-                  code: "provider_error",
-                  message: strOf(value.message) ?? "grok reported an error",
-                  retryable: false,
+            case "end": {
+              sawEnd = true
+              stopReason = strOf(value.stopReason)
+              const next = usageFromGrok(value)
+              if (next) {
+                // Terminal usage is aggregate for the whole prompt, so it supersedes the
+                // per-response usage events accumulated above.
+                usage = next
+                usageReported = true
+                forward({
+                  kind: "usage",
+                  usage: {
+                    inputTokens: usage.inputTokens,
+                    outputTokens: usage.outputTokens,
+                    ...(usage.cacheReadInputTokens === undefined ? {} : { cacheReadInputTokens: usage.cacheReadInputTokens }),
+                    ...(usage.cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens: usage.cacheCreationInputTokens }),
+                  },
                 })
+              }
+              return
+            }
+            case "max_turns_reached": {
+              sawMaxTurns = true
+              return
+            }
+            case "error": {
+              streamErrorMessage ??= strOf(value.message) ?? "grok reported an error"
+              const next = usageFromGrok(value)
+              if (next) {
+                // Error usage is also aggregate and is the best available billed total.
+                usage = next
+                usageReported = true
               }
               return
             }
@@ -288,9 +330,62 @@ export class GrokWorker implements Worker {
         },
       })
 
-      if (streamError) throw streamError
+      if (streamErrorMessage) {
+        throw new AgentError({
+          provider: PROVIDER,
+          code: "provider_error",
+          message: streamErrorMessage,
+          retryable: false,
+          ...(usageReported ? { usage } : {}),
+        })
+      }
       if (ctx.signal.aborted) throw new AgentInterrupted()
-      if (exit.code !== 0) throw exitError(PROVIDER, this.bin, exit)
+      if (sawMaxTurns) {
+        throw new AgentError({
+          provider: PROVIDER,
+          code: "error_max_turns",
+          message: "grok reached the configured maximum turn count before completing",
+          retryable: false,
+          ...(usageReported ? { usage } : {}),
+        })
+      }
+      if (sawEnd && stopReason === undefined) {
+        throw new AgentError({
+          provider: PROVIDER,
+          code: "protocol_drift",
+          message: "grok emitted a terminal end event without a stopReason",
+          retryable: false,
+          ...(usageReported ? { usage } : {}),
+        })
+      }
+      if (sawEnd && stopReason !== "end_turn") {
+        throw new AgentError({
+          provider: PROVIDER,
+          code: "incomplete_result",
+          message: `grok stopped with ${stopReason} before completing the turn`,
+          retryable: false,
+          ...(usageReported ? { usage } : {}),
+        })
+      }
+      if (exit.code !== 0) {
+        const err = exitError(PROVIDER, this.bin, exit)
+        throw new AgentError({
+          provider: err.provider,
+          code: err.code,
+          message: err.message,
+          retryable: err.retryable,
+          ...(usageReported ? { usage } : {}),
+        })
+      }
+      if (!sawEnd) {
+        throw new AgentError({
+          provider: PROVIDER,
+          code: "protocol_drift",
+          message: "grok exited 0 without a terminal end event",
+          retryable: false,
+          ...(usageReported ? { usage } : {}),
+        })
+      }
       if (text.length === 0) {
         throw new AgentError({ provider: PROVIDER, code: "no_result", message: "grok exited 0 without producing any assistant text" })
       }
@@ -317,7 +412,8 @@ function usageFromGrok(value: Record<string, unknown>): AgentUsage | undefined {
   const cacheRead = numOf(raw.cache_read_input_tokens)
   const cacheCreate = numOf(raw.cache_creation_input_tokens)
   const input = (numOf(raw.input_tokens) ?? 0) + (cacheRead ?? 0) + (cacheCreate ?? 0)
-  const output = (numOf(raw.output_tokens) ?? 0) + (numOf(raw.reasoning_tokens) ?? 0)
+  // Grok reports reasoning_tokens as a subset of output_tokens.
+  const output = numOf(raw.output_tokens) ?? 0
   const cost = numOf(value.total_cost_usd) ?? numOf(raw.cost_usd) ?? 0
   return {
     inputTokens: input,

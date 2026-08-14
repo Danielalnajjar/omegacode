@@ -7,7 +7,7 @@
 An **agent-agnostic implementation of Claude Code's Workflows**. omegacode runs JavaScript workflow
 files that orchestrate fleets of coding agents with a small deterministic DSL — `agent()` /
 `parallel()` / `pipeline()` / `phase()` — and the workers are pluggable: the same workflow can
-drive **Claude Code**, **Codex**, **OpenCode**, and **pi** in a single run.
+drive **Claude Code**, **Codex**, **OpenCode**, **pi**, and **Grok** in a single run.
 
 ## Install
 
@@ -21,7 +21,8 @@ omegacode install-skill
 `--claude` or `--agents` to install to just one.
 
 You'll need Node 20+ and at least one worker installed: `codex` (the default provider), `claude`,
-`opencode` (≥ 1.16.2), and/or `pi` (≥ 0.79.1, `bun add -g @earendil-works/pi-coding-agent`). Run
+`opencode` (≥ 1.16.2), `pi` (≥ 0.79.1, `bun add -g @earendil-works/pi-coding-agent`),
+and/or `grok` (≥ 0.2.112). Run
 `omegacode doctor` to check — it flags binaries below the minimum versions, which the workers
 refuse at runtime.
 
@@ -30,6 +31,10 @@ refuse at runtime.
 > `--sandbox`). The default `read-only` sandbox is rejected with an error naming the remedy —
 > a deliberate fail-closed choice. Model strings pass through verbatim to the backend (e.g.
 > `agent("…", { provider: "opencode", model: "openrouter/anthropic/claude-sonnet-4.5", sandbox: "danger-full-access" })`).
+
+> **Note on Grok:** Grok maps all three OmegaCode sandbox modes onto its OS sandbox profiles.
+> Its one-shot subprocess cannot surface approval prompts, so calls use `approval: "never"`
+> (the default). Structured output resumes the working session for a tool-less formatting turn.
 
 ## Use it
 
@@ -64,7 +69,7 @@ return await pipeline(
 ```
 
 Plain JavaScript, no imports — the DSL is injected. Each `agent()` spawns a real Codex, Claude
-Code, OpenCode, or pi agent; omit `provider`/`model` to inherit whatever the run was started with
+Code, OpenCode, pi, or Grok agent; omit `provider`/`model` to inherit whatever the run was started with
 (`--provider --model`, default `codex`), or pin them per call when you want cross-provider
 diversity. Provider and model are **both-or-neither** at every site (per-call, meta defaults,
 CLI flags): a lone `provider:` or `model:` is rejected, so a model meant for one provider can
@@ -79,7 +84,7 @@ omegacode run <name> --resume <runId>     # resume — only the changed suffix r
 omegacode run <name> --detach --json      # launch in background and print run metadata immediately
 omegacode status <runId> --json           # read native status from events.jsonl + heartbeat
 omegacode wait <runId> --json             # wait for terminal native JSON
-omegacode doctor                          # check codex/claude/opencode/pi availability + versions
+omegacode doctor                          # check all provider binaries + minimum versions
 omegacode guide                           # print the full authoring guide
 ```
 

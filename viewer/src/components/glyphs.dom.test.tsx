@@ -7,7 +7,7 @@
 import { cleanup, render } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest"
 
-import { StatusGlyph } from "./glyphs"
+import { ProviderIcon, StatusGlyph } from "./glyphs"
 import type { RunStatus } from "@/lib/types"
 
 ;(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true
@@ -56,5 +56,17 @@ describe("StatusGlyph (L26: unknown / future statuses must not look done)", () =
 
   it("renders nothing for skipped", () => {
     expect(glyph("skipped")).toBeNull()
+  })
+})
+
+describe("ProviderIcon", () => {
+  it("renders Grok with its own monogram instead of the unknown-provider mark", () => {
+    const { container } = render(<ProviderIcon provider="grok" />)
+    expect(container.textContent).toBe("G")
+  })
+
+  it("keeps unknown providers visually neutral", () => {
+    const { container } = render(<ProviderIcon provider="future-provider" />)
+    expect(container.textContent).toBe("·")
   })
 })

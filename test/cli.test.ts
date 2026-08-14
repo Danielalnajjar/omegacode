@@ -434,8 +434,8 @@ describe("CLI end-to-end (--fake)", () => {
     assert.doesNotMatch(r.stderr, /at \w+ \(/) // no stack frames
   })
 
-  test("--provider opencode and --provider pi are accepted (fake round-trip)", async () => {
-    for (const provider of ["opencode", "pi"]) {
+  test("subprocess providers are accepted by --provider (fake round-trip)", async () => {
+    for (const provider of ["opencode", "pi", "grok"]) {
       const r = await runCli(["run", wf, "--provider", provider, "--model", "openrouter/foo/bar", "--fake", "--no-serve", "--json"], { OMEGACODE_HOME: home })
       assert.equal(r.code, 0, `stderr=${r.stderr}`)
       assert.equal(JSON.parse(r.stdout).status, "completed")
@@ -453,18 +453,22 @@ describe("CLI end-to-end (--fake)", () => {
   })
 
   test("doctor resolves bins via env overrides and flags below-minimum versions as OUTDATED", { skip: process.platform === "win32" }, async () => {
-    // Stub binaries: opencode reports an outdated version, pi a current one.
+    // Stub binaries: opencode and grok report outdated versions, pi a current one.
     const ocStub = join(home, "fake-opencode")
     const piStub = join(home, "fake-pi")
+    const grokStub = join(home, "fake-grok")
     writeFileSync(ocStub, "#!/bin/sh\necho 1.15.0\n")
     writeFileSync(piStub, "#!/bin/sh\necho 0.79.1\n")
+    writeFileSync(grokStub, "#!/bin/sh\necho 'grok 0.2.100'\n")
     chmodSync(ocStub, 0o755)
     chmodSync(piStub, 0o755)
-    const r = await runCli(["doctor"], { OMEGACODE_HOME: home, OPENCODE_BIN: ocStub, PI_BIN: piStub })
+    chmodSync(grokStub, 0o755)
+    const r = await runCli(["doctor"], { OMEGACODE_HOME: home, OPENCODE_BIN: ocStub, PI_BIN: piStub, GROK_BIN: grokStub })
     assert.equal(r.code, 0, `stderr=${r.stderr}`)
     assert.match(r.stdout, /opencode\s+: 1\.15\.0 — OUTDATED \(< 1\.16\.2\)/)
     assert.match(r.stdout, /pi\s+: 0\.79\.1\n/)
     assert.doesNotMatch(r.stdout, /pi\s+: 0\.79\.1 — OUTDATED/)
+    assert.match(r.stdout, /grok\s+: grok 0\.2\.100 — OUTDATED \(< 0\.2\.112\)/)
   })
 
   test("a meta.defaultProvider typo is rejected at run setup, even under --fake", async () => {

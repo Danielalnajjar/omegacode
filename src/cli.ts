@@ -868,11 +868,11 @@ async function cmdInstallSkill(flags: Flags): Promise<void> {
 }
 
 function printHelp(): void {
-  console.log(`omegacode — run JS workflow files that orchestrate Codex and Claude Code agents
+  console.log(`omegacode — run JS workflow files that orchestrate coding agents
 
 A workflow is a .js file: \`export const meta = {...}\` then a body using the injected
 DSL — agent() / parallel() / pipeline() / phase() / log() / now() / random() / budget / args.
-Each agent() spawns a real Codex (gpt-5.x) or Claude Code agent; you pick the provider per call.
+Each agent() spawns a real provider agent; choose the provider per call or inherit the run default.
 
 Usage:
   omegacode run <file.workflow.js | name> [options]   Run a workflow (by path or saved name)
@@ -913,7 +913,7 @@ Usage:
   omegacode workflows [--json]                  List saved/named workflows (project, user, builtin)
   omegacode save <file.workflow.js> [--project] [--force]   Save a workflow under its meta.name
   omegacode validate <file.workflow.js | name>  Parse + check meta without running
-  omegacode doctor                              Check codex/claude availability + data dir
+  omegacode doctor                              Check provider availability, versions, and data dir
   omegacode guide                               Print the full authoring guide (the skill text)
   omegacode install-skill [--claude] [--agents] Install the authoring skill into agent skill dirs
 

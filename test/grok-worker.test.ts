@@ -154,7 +154,7 @@ test("happy path: argv shape, prompt file, event mapping, usage normalization", 
   assert.equal(result.status, "completed")
   assert.deepEqual(result.usage, {
     inputTokens: 112,
-    outputTokens: 25,
+    outputTokens: 20,
     costUsd: 0.01,
     cacheReadInputTokens: 10,
     cacheCreationInputTokens: 2,
@@ -220,6 +220,7 @@ test("schema extraction resumes the working session and does not use --json-sche
     (p, call) => {
       assert.equal(flagAfter(call.args, "--resume"), "ses_1")
       assert.equal(flagAfter(call.args, "--tools"), "")
+      assert.equal(flagAfter(call.args, "--deny"), "MCPTool")
       assert.ok(!call.args.includes("--json-schema"))
       const promptPath = flagAfter(call.args, "--prompt-file")
       assert.ok(promptPath)
@@ -227,7 +228,7 @@ test("schema extraction resumes the working session and does not use --json-sche
       assert.match(body, /Output ONLY the JSON/)
       assert.match(body, /"ok"/)
       p.pushLine({ type: "text", data: '{"ok":true}' })
-      p.pushLine({ type: "end", sessionId: "ses_1", usage: { input_tokens: 4, output_tokens: 2 } })
+      p.pushLine({ type: "end", stopReason: "end_turn", sessionId: "ses_1", usage: { input_tokens: 4, output_tokens: 2 } })
       p.end(0)
     },
   ])
@@ -235,20 +236,152 @@ test("schema extraction resumes the working session and does not use --json-sche
   assert.deepEqual(result.structured, { ok: true })
   assert.equal(result.text, '{"ok":true}')
   assert.equal(result.usage.inputTokens, 116)
-  assert.equal(result.usage.outputTokens, 27)
+  assert.equal(result.usage.outputTokens, 22)
 })
 
-test("stream error is fatal even on exit 0", async () => {
+test("stream error is fatal even on exit 0 and preserves aggregate usage", async () => {
   const h = harness([
     versionOk,
     (p) => {
-      p.pushLine({ type: "error", message: "AuthorizationRequired" })
+      p.pushLine({
+        type: "error",
+        message: "AuthorizationRequired",
+        usage: { input_tokens: 7, output_tokens: 3, reasoning_tokens: 2 },
+        total_cost_usd: 0.02,
+      })
       p.end(0)
     },
   ])
   await assert.rejects(
     () => h.worker.runAgent(spec(), ctx()),
-    (err: unknown) => err instanceof AgentError && err.code === "provider_error" && /AuthorizationRequired/.test(err.message),
+    (err: unknown) =>
+      err instanceof AgentError &&
+      err.code === "provider_error" &&
+      /AuthorizationRequired/.test(err.message) &&
+      err.usage?.inputTokens === 7 &&
+      err.usage.outputTokens === 3 &&
+      err.usage.costUsd === 0.02,
+  )
+})
+
+test("non-success terminal reasons reject partial text with aggregate usage", async () => {
+  for (const stopReason of ["max_tokens", "max_turn_requests", "refusal", "cancelled"]) {
+    const h = harness([
+      versionOk,
+      (p) => {
+        p.pushLine({ type: "text", data: "partial" })
+        p.pushLine({
+          type: "end",
+          stopReason,
+          usage: { input_tokens: 9, output_tokens: 4, reasoning_tokens: 1 },
+          total_cost_usd: 0.03,
+        })
+        p.end(0)
+      },
+    ])
+    await assert.rejects(
+      () => h.worker.runAgent(spec(), ctx()),
+      (err: unknown) =>
+        err instanceof AgentError &&
+        err.code === "incomplete_result" &&
+        err.retryable === false &&
+        err.message.includes(stopReason) &&
+        err.usage?.outputTokens === 4,
+      stopReason,
+    )
+  }
+})
+
+test("max_turns_reached wins over the cancelled end and nonzero exit", async () => {
+  const h = harness([
+    versionOk,
+    (p) => {
+      p.pushLine({ type: "text", data: "partial" })
+      p.pushLine({ type: "max_turns_reached" })
+      p.pushLine({ type: "end", stopReason: "cancelled", usage: { input_tokens: 11, output_tokens: 5 } })
+      p.end(1)
+    },
+  ])
+  await assert.rejects(
+    () => h.worker.runAgent(spec(), ctx()),
+    (err: unknown) =>
+      err instanceof AgentError &&
+      err.code === "error_max_turns" &&
+      err.retryable === false &&
+      err.usage?.inputTokens === 11 &&
+      err.usage.outputTokens === 5,
+  )
+})
+
+test("exit 0 with text but no end event fails as protocol drift", async () => {
+  const h = harness([
+    versionOk,
+    (p) => {
+      p.pushLine({ type: "text", data: "looks complete" })
+      p.end(0)
+    },
+  ])
+  await assert.rejects(
+    () => h.worker.runAgent(spec(), ctx()),
+    (err: unknown) => err instanceof AgentError && err.code === "protocol_drift" && /without a terminal end event/.test(err.message),
+  )
+})
+
+test("end event without stopReason fails closed as protocol drift", async () => {
+  const h = harness([
+    versionOk,
+    (p) => {
+      p.pushLine({ type: "text", data: "looks complete" })
+      p.pushLine({ type: "end", usage: { input_tokens: 2, output_tokens: 1 } })
+      p.end(0)
+    },
+  ])
+  await assert.rejects(
+    () => h.worker.runAgent(spec(), ctx()),
+    (err: unknown) =>
+      err instanceof AgentError &&
+      err.code === "protocol_drift" &&
+      /without a stopReason/.test(err.message) &&
+      err.usage?.outputTokens === 1,
+  )
+})
+
+test("nonzero exit preserves usage reported before termination", async () => {
+  const h = harness([
+    versionOk,
+    (p) => {
+      p.pushLine({ type: "usage", usage: { input_tokens: 13, output_tokens: 6 }, total_cost_usd: 0.04 })
+      p.end(2)
+    },
+  ])
+  await assert.rejects(
+    () => h.worker.runAgent(spec(), ctx()),
+    (err: unknown) =>
+      err instanceof AgentError &&
+      err.code === "provider_exit" &&
+      err.usage?.inputTokens === 13 &&
+      err.usage.outputTokens === 6 &&
+      err.usage.costUsd === 0.04,
+  )
+})
+
+test("schema extraction failure includes working-turn and failed-extraction usage", async () => {
+  const h = harness([
+    versionOk,
+    happyRun,
+    (p) => {
+      p.pushLine({ type: "error", message: "formatting failed", usage: { input_tokens: 4, output_tokens: 2 } })
+      p.end(1)
+    },
+  ])
+  await assert.rejects(
+    () => h.worker.runAgent(spec({ schema: { type: "object" } }), ctx()),
+    (err: unknown) =>
+      err instanceof AgentError &&
+      err.code === "provider_error" &&
+      err.usage?.inputTokens === 116 &&
+      err.usage.outputTokens === 22 &&
+      err.usage.costUsd === 0.01,
   )
 })
 

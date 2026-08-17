@@ -6,6 +6,7 @@ import { readFileSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { DEFAULTS, type Effort, type ProviderId, type RunDefaults, type Sandbox } from "../dsl/types.js"
 import { DefaultWorkerFactory } from "../worker/factory.js"
+import { writeBbOrigin } from "./bb-origin.js"
 import { type EventListener, FileEventSink } from "./event-sink.js"
 import { determinismLint, KEY_VERSION } from "./keys.js"
 import {
@@ -124,6 +125,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   const baseTimeMs = loaded.meta?.createdAt ?? Date.now()
 
   ensureRunDir(runId)
+  writeBbOrigin(runId, baseTimeMs)
   opts.onStart?.(runId)
   const journal = new Journal(runId)
   if (!loaded.meta) {

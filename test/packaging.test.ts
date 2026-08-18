@@ -271,12 +271,17 @@ describe("postbuild helper behavior (L19)", () => {
     rmSync(work, { recursive: true, force: true })
   })
 
-  test("copies viewer/dist -> dist/web, replacing a stale dir, and writes dist/ambient.d.ts", () => {
-    // Stage a fake project: scripts/, src/dsl/ambient.d.ts (the real one), viewer/dist, and a stale dist/web.
+  test("copies viewer, ambient types, and the Grok agent profile into dist", () => {
+    // Stage a fake project with all postbuild inputs and a stale dist/web.
     mkdirSync(join(work, "scripts"), { recursive: true })
     cpSync(join(root, "scripts", "postbuild.mjs"), join(work, "scripts", "postbuild.mjs"))
     mkdirSync(join(work, "src", "dsl"), { recursive: true })
     cpSync(join(root, "src", "dsl", "ambient.d.ts"), join(work, "src", "dsl", "ambient.d.ts"))
+    mkdirSync(join(work, "src", "worker", "agents"), { recursive: true })
+    cpSync(
+      join(root, "src", "worker", "agents", "fleet-omegacode-grok-worker.md"),
+      join(work, "src", "worker", "agents", "fleet-omegacode-grok-worker.md"),
+    )
     mkdirSync(join(work, "viewer", "dist", "assets"), { recursive: true })
     writeFileSync(join(work, "viewer", "dist", "index.html"), "<html></html>")
     writeFileSync(join(work, "viewer", "dist", "assets", "app.js"), "console.log(1)")
@@ -294,6 +299,10 @@ describe("postbuild helper behavior (L19)", () => {
     assert.ok(!existsSync(join(work, "dist", "web", "STALE.txt")), "stale web file not removed")
     const ambient = readFileSync(join(work, "dist", "ambient.d.ts"), "utf8")
     assert.ok(ambient.includes("function agent"), "ambient.d.ts not written to dist")
+    assert.equal(
+      readFileSync(join(work, "dist", "agents", "fleet-omegacode-grok-worker.md"), "utf8"),
+      read("src/worker/agents/fleet-omegacode-grok-worker.md"),
+    )
   })
 
   test("fails loudly when viewer/dist is missing", () => {
@@ -351,6 +360,11 @@ describe("pnpm pack tarball contract (M31)", () => {
     writeFileSync(join(stage, "dist", "cli.js"), "#!/usr/bin/env node\n")
     writeFileSync(join(stage, "dist", "index.d.ts"), "export type Effort = 'none'\n")
     writeFileSync(join(stage, "dist", "ambient.d.ts"), "declare global {}\nexport {}\n")
+    mkdirSync(join(stage, "dist", "agents"), { recursive: true })
+    writeFileSync(
+      join(stage, "dist", "agents", "fleet-omegacode-grok-worker.md"),
+      "---\nname: fleet-omegacode-grok-worker\ndescription: test\n---\n",
+    )
     writeFileSync(join(stage, "dist", "index.js.map"), "{}\n")
     writeFileSync(join(stage, "dist", "cli.js.map"), "{}\n")
     writeFileSync(join(stage, "dist", "web", "index.html"), "<html></html>")
@@ -383,6 +397,7 @@ describe("pnpm pack tarball contract (M31)", () => {
     assert.ok(has("dist/index.js"))
     assert.ok(has("dist/cli.js"))
     assert.ok(entries.some((e) => e.path.startsWith("dist/web/")), "viewer web assets must ship")
+    assert.ok(has("dist/agents/fleet-omegacode-grok-worker.md"), "Grok fleet profile must ship")
   })
 
   test("includes LICENSE, the skill, and the builtin workflows", () => {
@@ -401,7 +416,8 @@ describe("pnpm pack tarball contract (M31)", () => {
 describe("real pnpm pack tarball (M31, post-build)", () => {
   // Runs against the actual repo dist when it exists. Skipped when dist hasn't been built in this
   // checkout (the synthetic contract suite above still covers the packaging rules).
-  const built = existsSync(join(root, "dist", "index.d.ts"))
+  const built = existsSync(join(root, "dist", "index.d.ts")) &&
+    existsSync(join(root, "dist", "agents", "fleet-omegacode-grok-worker.md"))
 
   test("built dist packs the dts, ambient, web assets, LICENSE — and nothing unexpected", { skip: !built }, () => {
     const out = pnpm(["pack", "--dry-run", "--json"], root)
@@ -415,6 +431,7 @@ describe("real pnpm pack tarball (M31, post-build)", () => {
       "dist/index.d.ts",
       "dist/ambient.d.ts",
       "dist/cli.js",
+      "dist/agents/fleet-omegacode-grok-worker.md",
       "skill/SKILL.md",
       "builtins/deep-research.workflow.js",
       "builtins/code-review.workflow.js",

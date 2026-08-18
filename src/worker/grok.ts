@@ -12,9 +12,10 @@
 //
 // Verified against grok 0.2.112+ (prompt-file, streaming-json, sandbox profiles, resume).
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { addUsage, emptyUsage, type AgentResult, type AgentSpec, type AgentUsage, type Effort, type Sandbox } from "../dsl/types.js"
 import type { Worker, WorkerContext, WorkerProgress } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
@@ -29,6 +30,9 @@ import {
 } from "./subprocess-jsonl.js"
 
 const PROVIDER = "grok" as const
+const GROK_AGENT_PROFILE_PATH = fileURLToPath(
+  new URL("./agents/fleet-omegacode-grok-worker.md", import.meta.url),
+)
 
 /** Minimum CLI whose flags and streaming-json event shapes this worker is verified against. */
 export const GROK_MIN_VERSION = "0.2.112"
@@ -55,6 +59,8 @@ export interface GrokWorkerOpts {
   bin?: string
   /** Test seam: replaces child_process.spawn for every subprocess (runs AND --version). */
   spawnProcess?: SpawnProcess
+  /** Test seam: replaces the regular-file check for the shipped agent profile. */
+  agentProfileIsFile?: (path: string) => boolean
   /** No-output stall watchdog (ms). 0 disables. */
   stallTimeoutMs?: number
 }
@@ -69,12 +75,21 @@ export class GrokWorker implements Worker {
   readonly id = PROVIDER
   private readonly bin: string
   private readonly spawnProcess?: SpawnProcess
+  private readonly agentProfileIsFile: (path: string) => boolean
   private readonly stallTimeoutMs: number
+  private agentProfileChecked = false
   private versionCheck: Promise<void> | null = null
 
   constructor(opts: GrokWorkerOpts = {}) {
     this.bin = opts.bin ?? "grok"
     this.spawnProcess = opts.spawnProcess
+    this.agentProfileIsFile = opts.agentProfileIsFile ?? ((path) => {
+      try {
+        return statSync(path).isFile()
+      } catch {
+        return false
+      }
+    })
     this.stallTimeoutMs = opts.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS
   }
 
@@ -101,6 +116,7 @@ export class GrokWorker implements Worker {
         message: `grok runs as a one-shot subprocess and cannot surface approval requests to omegacode — use approval: "never" with provider "grok"`,
       })
     }
+    this.ensureAgentProfile()
     await this.ensureVersion()
 
     const working = await this.runTurn(spec, spec.prompt, ctx, { forwardProgress: true })
@@ -153,6 +169,19 @@ export class GrokWorker implements Worker {
     return this.versionCheck
   }
 
+  private ensureAgentProfile(): void {
+    if (this.agentProfileChecked) return
+    if (!this.agentProfileIsFile(GROK_AGENT_PROFILE_PATH)) {
+      throw new AgentError({
+        provider: PROVIDER,
+        code: "provider_error",
+        message: `shipped Grok agent profile is missing or not a regular file: ${GROK_AGENT_PROFILE_PATH}`,
+        retryable: false,
+      })
+    }
+    this.agentProfileChecked = true
+  }
+
   private async checkVersion(): Promise<void> {
     const out = await captureStdout({
       provider: PROVIDER,
@@ -187,6 +216,7 @@ export class GrokWorker implements Worker {
       "--no-auto-update",
       "--no-subagents",
     ]
+    if (!opts.resume) args.push("--agent", GROK_AGENT_PROFILE_PATH)
     if (opts.resume) args.push("--resume", opts.resume)
     if (spec.model) args.push("-m", spec.model)
     if (spec.effort) args.push("--reasoning-effort", EFFORT_TO_GROK[spec.effort])

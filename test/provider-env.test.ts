@@ -7,9 +7,13 @@ import assert from "node:assert/strict"
 import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { runWorkflow } from "../src/runtime/run.ts"
 
 const posixOnly = { skip: process.platform === "win32" }
+const grokAgentProfile = fileURLToPath(
+  new URL("../src/worker/agents/fleet-omegacode-grok-worker.md", import.meta.url),
+)
 
 interface Launch {
   argv: string[]
@@ -168,6 +172,8 @@ test("grok: GROK_BIN env drives a real spawn with prompt-file and policy flags",
       "streaming-json",
       "--no-auto-update",
       "--no-subagents",
+      "--agent",
+      grokAgentProfile,
       "-m",
       "grok-4.6",
       "--reasoning-effort",

@@ -10,9 +10,7 @@
 // danger-full-access all map. Approval prompts cannot surface to omegacode, so approval must
 // be "never". Nested Grok subagents are disabled — OmegaCode owns orchestration.
 //
-// Verified against grok 0.2.112+ (prompt-file, streaming-json, sandbox profiles, resume).
-// --agent is emitted on every fresh spawn but is verified only on 0.2.121; the release that
-// introduced it is not established, so GROK_MIN_VERSION may be optimistic for that flag alone.
+// Verified against grok 0.2.112+ (prompt-file, streaming-json, sandbox profiles, resume, --agent).
 
 import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -217,8 +215,9 @@ export class GrokWorker implements Worker {
       "streaming-json",
       "--no-auto-update",
       "--no-subagents",
+      "--agent",
+      GROK_AGENT_PROFILE_PATH,
     ]
-    if (!opts.resume) args.push("--agent", GROK_AGENT_PROFILE_PATH)
     if (opts.resume) args.push("--resume", opts.resume)
     if (spec.model) args.push("-m", spec.model)
     if (spec.effort) args.push("--reasoning-effort", EFFORT_TO_GROK[spec.effort])

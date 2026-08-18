@@ -231,13 +231,12 @@ test("approval on-request is rejected", async () => {
   )
 })
 
-test("schema extraction resume does not relabel the existing Grok session", async () => {
+test("schema extraction resume preserves the session's Grok fleet stamp", async () => {
   const h = harness([
     versionOk,
     happyRun,
     (p, call) => {
       assert.equal(flagAfter(call.args, "--resume"), "ses_1")
-      assert.ok(!call.args.includes("--agent"))
       assert.equal(flagAfter(call.args, "--tools"), "")
       assert.equal(flagAfter(call.args, "--deny"), "MCPTool")
       assert.ok(!call.args.includes("--json-schema"))
@@ -256,7 +255,11 @@ test("schema extraction resume does not relabel the existing Grok session", asyn
   assert.equal(result.text, '{"ok":true}')
   assert.equal(result.usage.inputTokens, 116)
   assert.equal(result.usage.outputTokens, 22)
-  assert.equal(flagAfter(h.spawned[1]!.args, "--agent"), expectedAgentProfilePath)
+  const freshProfilePath = flagAfter(h.spawned[1]!.args, "--agent")
+  const resumedProfilePath = flagAfter(h.spawned[2]!.args, "--agent")
+  assert.equal(freshProfilePath, expectedAgentProfilePath)
+  assert.equal(resumedProfilePath, expectedAgentProfilePath)
+  assert.equal(resumedProfilePath, freshProfilePath)
 })
 
 test("missing shipped Grok fleet profile fails before any subprocess spawn", async () => {

@@ -11,6 +11,8 @@
 // be "never". Nested Grok subagents are disabled — OmegaCode owns orchestration.
 //
 // Verified against grok 0.2.112+ (prompt-file, streaming-json, sandbox profiles, resume).
+// --agent is emitted on every fresh spawn but is verified only on 0.2.121; the release that
+// introduced it is not established, so GROK_MIN_VERSION may be optimistic for that flag alone.
 
 import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"

@@ -49,11 +49,16 @@ writeFileSync(join(dist, "ambient.d.ts"), ambient)
 // 3. Grok fleet profile -> dist/agents
 const agentsSrc = join(root, "src", "worker", "agents")
 const agentsOut = join(dist, "agents")
+const grokAgentProfile = "fleet-omegacode-grok-worker.md"
+const grokAgentProfileOut = join(agentsOut, grokAgentProfile)
 if (!existsSync(agentsSrc)) {
   throw new Error(`Grok agent profiles missing at ${agentsSrc}`)
 }
 rmSync(agentsOut, { recursive: true, force: true })
 cpSync(agentsSrc, agentsOut, { recursive: true })
+if (!existsSync(grokAgentProfileOut)) {
+  throw new Error(`Grok agent profile missing from postbuild output at ${grokAgentProfileOut}`)
+}
 
 console.log(
   "postbuild: copied viewer -> dist/web, wrote dist/ambient.d.ts, and copied Grok agent profiles -> dist/agents",

@@ -320,6 +320,26 @@ describe("postbuild helper behavior (L19)", () => {
     }
   })
 
+  test("fails loudly when the exact Grok agent profile is missing", () => {
+    const w2 = mkdtempSync(join(tmpdir(), "omega-postbuild-no-agent-"))
+    try {
+      mkdirSync(join(w2, "scripts"), { recursive: true })
+      cpSync(join(root, "scripts", "postbuild.mjs"), join(w2, "scripts", "postbuild.mjs"))
+      mkdirSync(join(w2, "src", "dsl"), { recursive: true })
+      cpSync(join(root, "src", "dsl", "ambient.d.ts"), join(w2, "src", "dsl", "ambient.d.ts"))
+      mkdirSync(join(w2, "src", "worker", "agents"), { recursive: true })
+      writeFileSync(join(w2, "src", "worker", "agents", "other-profile.md"), "---\nname: other\n---\n")
+      mkdirSync(join(w2, "viewer", "dist"), { recursive: true })
+      writeFileSync(join(w2, "viewer", "dist", "index.html"), "<html></html>")
+      assert.throws(
+        () => execFileSync(process.execPath, [join(w2, "scripts", "postbuild.mjs")], { stdio: "pipe" }),
+        /Grok agent profile missing from postbuild output/,
+      )
+    } finally {
+      rmSync(w2, { recursive: true, force: true })
+    }
+  })
+
   test("rejects an ambient.d.ts that re-introduces an import (self-containment guard)", () => {
     const w3 = mkdtempSync(join(tmpdir(), "omega-postbuild-imp-"))
     try {
@@ -416,8 +436,7 @@ describe("pnpm pack tarball contract (M31)", () => {
 describe("real pnpm pack tarball (M31, post-build)", () => {
   // Runs against the actual repo dist when it exists. Skipped when dist hasn't been built in this
   // checkout (the synthetic contract suite above still covers the packaging rules).
-  const built = existsSync(join(root, "dist", "index.d.ts")) &&
-    existsSync(join(root, "dist", "agents", "fleet-omegacode-grok-worker.md"))
+  const built = existsSync(join(root, "dist", "index.d.ts"))
 
   test("built dist packs the dts, ambient, web assets, LICENSE — and nothing unexpected", { skip: !built }, () => {
     const out = pnpm(["pack", "--dry-run", "--json"], root)

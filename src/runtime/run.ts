@@ -160,7 +160,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   if (opts.signal?.aborted) ac.abort()
   else opts.signal?.addEventListener("abort", onSig, { once: true })
 
-  events.emit({ type: "run", status: "started", runId, workflowFile: filePath })
+  events.emit({ type: "run", status: "started", runId, workflowFile: filePath, workflowName: parsed.meta.name })
 
   // Deadman switch: touch a heartbeat file while the run is alive. SIGINT/SIGTERM and
   // crashes still write a terminal event below, but a SIGKILL / power loss / closed

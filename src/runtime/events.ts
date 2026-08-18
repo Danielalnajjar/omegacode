@@ -7,7 +7,7 @@ import type { ProviderId } from "../dsl/types.js"
 export type AgentState = "queued" | "running" | "done" | "failed" | "skipped"
 
 export type WorkflowEvent =
-  | { t: number; type: "run"; status: "started" | "completed" | "failed" | "interrupted"; runId: string; workflowFile?: string; error?: string }
+  | { t: number; type: "run"; status: "started" | "completed" | "failed" | "interrupted"; runId: string; workflowFile?: string; workflowName?: string; error?: string }
   /**
    * `pending: true` marks a phase declared in meta.phases but not yet entered by phase().
    * Declared phases are announced up front (so the viewer can show the full plan); the same

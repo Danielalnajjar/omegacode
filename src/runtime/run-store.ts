@@ -118,6 +118,7 @@ export function foldSnapshot(runId: string, events: WorkflowEvent[], lastBeat?: 
   let startedAt: number | undefined
   let endedAt: number | undefined
   let workflowFile: string | undefined
+  let workflowName: string | undefined
   let error: string | undefined
 
   for (const ev of events) {
@@ -127,6 +128,7 @@ export function foldSnapshot(runId: string, events: WorkflowEvent[], lastBeat?: 
           status = "started"
           if (startedAt === undefined) startedAt = ev.t
           if (ev.workflowFile) workflowFile = ev.workflowFile
+          if (ev.workflowName) workflowName = ev.workflowName
         } else {
           status = ev.status
           endedAt = ev.t
@@ -190,7 +192,7 @@ export function foldSnapshot(runId: string, events: WorkflowEvent[], lastBeat?: 
     if (p.agents.length > 0) p.pending = false
   }
 
-  const name = workflowFile ? basename(workflowFile).replace(/\.workflow\.[cm]?[jt]s$/i, "").replace(/\.[cm]?[jt]s$/i, "") : undefined
+  const name = workflowName ?? (workflowFile ? basename(workflowFile).replace(/\.workflow\.[cm]?[jt]s$/i, "").replace(/\.[cm]?[jt]s$/i, "") : undefined)
   const finalStatus = raw ? status : applyDeadman(status, startedAt, lastBeat)
   return { runId, status: finalStatus, name, workflowFile, error, startedAt, endedAt, phases, agents, logs }
 }

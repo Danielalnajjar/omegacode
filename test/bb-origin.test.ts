@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
+import { foldSnapshotRaw } from "../src/runtime/run-store.ts"
 import { runWorkflow } from "../src/runtime/run.ts"
 
 test("a run launched inside bb records its original thread without leaking connection context", async () => {
@@ -31,6 +32,10 @@ test("a run launched inside bb records its original thread without leaking conne
     const first = await runWorkflow({ file: workflow, fake: true, quiet: true })
     const originPath = join(process.env.OMEGACODE_HOME, "runs", first.runId, "bb-origin.json")
     const firstOrigin = JSON.parse(readFileSync(originPath, "utf8"))
+    const firstEvents = readFileSync(join(process.env.OMEGACODE_HOME, "runs", first.runId, "events.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
     assert.deepEqual(firstOrigin, {
       schemaVersion: 1,
       threadId: "thr_origin",
@@ -40,6 +45,8 @@ test("a run launched inside bb records its original thread without leaking conne
     })
     assert.equal(typeof firstOrigin.capturedAt, "number")
     assert.equal("serverUrl" in firstOrigin, false)
+    assert.equal(firstEvents[0]?.workflowName, "origin")
+    assert.equal(foldSnapshotRaw(first.runId, firstEvents).name, "origin")
 
     process.env.BB_THREAD_ID = "thr_resume_elsewhere"
     await runWorkflow({

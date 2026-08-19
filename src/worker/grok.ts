@@ -224,11 +224,9 @@ export class GrokWorker implements Worker {
     if (spec.instructions) args.push("--rules", spec.instructions)
     if (spec.maxTurns !== undefined) args.push("--max-turns", String(spec.maxTurns))
     if (opts.noTools) args.push("--tools", "", "--deny", "MCPTool")
-    if (spec.sandbox === "read-only") {
-      args.push("--permission-mode", "plan")
-    } else {
-      args.push("--always-approve")
-    }
+    // Headless Omega cannot answer Grok permission prompts. Plan mode waits
+    // ~30s then cancels the turn. Keep the OS sandbox; never prompt.
+    args.push("--always-approve")
     return args
   }
 

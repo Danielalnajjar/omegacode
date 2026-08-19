@@ -149,10 +149,10 @@ test("happy path: argv shape, prompt file, event mapping, usage normalization", 
   assert.equal(flagAfter(args, "--output-format"), "streaming-json")
   assert.equal(flagAfter(args, "-m"), "grok-4.6")
   assert.equal(flagAfter(args, "--reasoning-effort"), "high")
-  assert.equal(flagAfter(args, "--permission-mode"), "plan")
+  assert.ok(args.includes("--always-approve"))
+  assert.ok(!args.includes("--permission-mode"))
   assert.ok(args.includes("--no-auto-update"))
   assert.ok(args.includes("--no-subagents"))
-  assert.ok(!args.includes("--always-approve"))
   const promptPath = flagAfter(args, "--prompt-file")
   assert.ok(promptPath)
   // prompt file is cleaned up after the turn; contents were written before spawn
@@ -182,16 +182,22 @@ test("fresh spawn stamps the absolute shipped Grok fleet profile", async () => {
   assert.ok(isAbsolute(profilePath))
 })
 
-test("workspace-write and danger-full-access map sandbox + always-approve", async () => {
-  const h = harness([versionOk, happyRun, happyRun])
+test("every sandbox maps OS confinement and always-approve", async () => {
+  const h = harness([versionOk, happyRun, happyRun, happyRun])
+  await h.worker.runAgent(spec({ sandbox: "read-only" }), ctx())
+  const ro = h.spawned[1]!.args
+  assert.equal(flagAfter(ro, "--sandbox"), "read-only")
+  assert.ok(ro.includes("--always-approve"))
+  assert.ok(!ro.includes("--permission-mode"))
+
   await h.worker.runAgent(spec({ sandbox: "workspace-write" }), ctx())
-  const ws = h.spawned[1]!.args
+  const ws = h.spawned[2]!.args
   assert.equal(flagAfter(ws, "--sandbox"), "workspace")
   assert.ok(ws.includes("--always-approve"))
   assert.ok(!ws.includes("--permission-mode"))
 
   await h.worker.runAgent(spec({ sandbox: "danger-full-access" }), ctx())
-  const full = h.spawned[2]!.args
+  const full = h.spawned[3]!.args
   assert.equal(flagAfter(full, "--sandbox"), "off")
   assert.ok(full.includes("--always-approve"))
 })

@@ -3,12 +3,14 @@
 // It runs after tsup (not as onSuccess) because tsup's dts worker manages dist independently and
 // would clobber files written from onSuccess.
 //
-// Two jobs:
+// Three jobs:
 //   1. Copy the built React viewer (viewer/dist) into dist/web. serve.ts resolves its web assets at
 //      join(__dirname, "web") and __dirname is dist/ once bundled.
 //   2. Copy the self-contained author ambient types to dist/ambient.d.ts (the target of the
 //      package.json "./ambient" export). The source MUST NOT import any other module, or the d.ts is
 //      dead on arrival for npm consumers — we assert that here so a regression fails the build loudly.
+//   3. Copy the Grok fleet profile next to the bundled worker so its import.meta.url-relative path
+//      resolves identically in source and in the published dist.
 
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
@@ -44,4 +46,20 @@ for (const line of ambient.split("\n")) {
 }
 writeFileSync(join(dist, "ambient.d.ts"), ambient)
 
-console.log("postbuild: copied viewer -> dist/web and wrote dist/ambient.d.ts")
+// 3. Grok fleet profile -> dist/agents
+const agentsSrc = join(root, "src", "worker", "agents")
+const agentsOut = join(dist, "agents")
+const grokAgentProfile = "fleet-omegacode-grok-worker.md"
+const grokAgentProfileOut = join(agentsOut, grokAgentProfile)
+if (!existsSync(agentsSrc)) {
+  throw new Error(`Grok agent profiles missing at ${agentsSrc}`)
+}
+rmSync(agentsOut, { recursive: true, force: true })
+cpSync(agentsSrc, agentsOut, { recursive: true })
+if (!existsSync(grokAgentProfileOut)) {
+  throw new Error(`Grok agent profile missing from postbuild output at ${grokAgentProfileOut}`)
+}
+
+console.log(
+  "postbuild: copied viewer -> dist/web, wrote dist/ambient.d.ts, and copied Grok agent profiles -> dist/agents",
+)

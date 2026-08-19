@@ -2,8 +2,10 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { EventEmitter } from "node:events"
 import { readFileSync } from "node:fs"
+import { isAbsolute } from "node:path"
+import { fileURLToPath } from "node:url"
 
-import { GrokWorker, GROK_MIN_VERSION } from "../src/worker/grok.js"
+import { GrokWorker, GROK_MIN_VERSION, type GrokWorkerOpts } from "../src/worker/grok.js"
 import { AgentError, AgentInterrupted, type WorkerProgress } from "../src/worker/index.js"
 import type { SpawnProcess } from "../src/worker/subprocess-jsonl.js"
 import type { AgentSpec, Effort } from "../src/dsl/types.js"
@@ -60,7 +62,14 @@ const versionOk: Script = (p) => {
   p.end(0)
 }
 
-function harness(scripts: Script[]): { worker: GrokWorker; spawned: SpawnCall[] } {
+const expectedAgentProfilePath = fileURLToPath(
+  new URL("../src/worker/agents/fleet-omegacode-grok-worker.md", import.meta.url),
+)
+
+function harness(
+  scripts: Script[],
+  workerOpts: Omit<GrokWorkerOpts, "spawnProcess"> = {},
+): { worker: GrokWorker; spawned: SpawnCall[] } {
   const spawned: SpawnCall[] = []
   const queue = [...scripts]
   const spawnProcess: SpawnProcess = (bin, args, opts) => {
@@ -72,7 +81,7 @@ function harness(scripts: Script[]): { worker: GrokWorker; spawned: SpawnCall[] 
     queueMicrotask(() => script(proc, call))
     return proc as any
   }
-  return { worker: new GrokWorker({ spawnProcess }), spawned }
+  return { worker: new GrokWorker({ ...workerOpts, spawnProcess }), spawned }
 }
 
 function ctx(signal?: AbortSignal): { signal: AbortSignal; onProgress: (e: WorkerProgress) => void; events: WorkerProgress[] } {
@@ -164,6 +173,15 @@ test("happy path: argv shape, prompt file, event mapping, usage normalization", 
   assert.deepEqual(kinds, ["reasoning", "tool", "tool-result", "text", "usage"])
 })
 
+test("fresh spawn stamps the absolute shipped Grok fleet profile", async () => {
+  const h = harness([versionOk, happyRun])
+  await h.worker.runAgent(spec(), ctx())
+
+  const profilePath = flagAfter(h.spawned[1]!.args, "--agent")
+  assert.equal(profilePath, expectedAgentProfilePath)
+  assert.ok(isAbsolute(profilePath))
+})
+
 test("workspace-write and danger-full-access map sandbox + always-approve", async () => {
   const h = harness([versionOk, happyRun, happyRun])
   await h.worker.runAgent(spec({ sandbox: "workspace-write" }), ctx())
@@ -213,7 +231,7 @@ test("approval on-request is rejected", async () => {
   )
 })
 
-test("schema extraction resumes the working session and does not use --json-schema", async () => {
+test("schema extraction resume preserves the session's Grok fleet stamp", async () => {
   const h = harness([
     versionOk,
     happyRun,
@@ -237,6 +255,30 @@ test("schema extraction resumes the working session and does not use --json-sche
   assert.equal(result.text, '{"ok":true}')
   assert.equal(result.usage.inputTokens, 116)
   assert.equal(result.usage.outputTokens, 22)
+  const freshProfilePath = flagAfter(h.spawned[1]!.args, "--agent")
+  const resumedProfilePath = flagAfter(h.spawned[2]!.args, "--agent")
+  assert.equal(freshProfilePath, expectedAgentProfilePath)
+  assert.equal(resumedProfilePath, expectedAgentProfilePath)
+  assert.equal(resumedProfilePath, freshProfilePath)
+})
+
+test("missing shipped Grok fleet profile fails before any subprocess spawn", async () => {
+  const h = harness([], {
+    agentProfileIsFile: (path) => {
+      assert.equal(path, expectedAgentProfilePath)
+      return false
+    },
+  })
+
+  await assert.rejects(
+    () => h.worker.runAgent(spec(), ctx()),
+    (err: unknown) =>
+      err instanceof AgentError &&
+      err.code === "provider_error" &&
+      err.message.includes(expectedAgentProfilePath) &&
+      /missing or not a regular file/.test(err.message),
+  )
+  assert.equal(h.spawned.length, 0)
 })
 
 test("stream error is fatal even on exit 0 and preserves aggregate usage", async () => {

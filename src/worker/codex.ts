@@ -14,7 +14,7 @@ import { emptyUsage } from "../dsl/types.js"
 import { Semaphore } from "../runtime/semaphore.js"
 import type { Worker, WorkerContext } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
-import { toCodexOutputSchema, parseJsonLoose } from "./schema.js"
+import { toCodexOutputSchema, parseJsonLoose, parseValidJson } from "./schema.js"
 import { JsonRpcStdioClient, StdioTransportError, JsonRpcResponseError, type SpawnChild } from "./jsonrpc-stdio.js"
 import {
   encodeNotification,
@@ -325,6 +325,9 @@ export class CodexWorker implements Worker {
     ctx.onProgress({ kind: "phase", phase: "working" })
     const working = await this.runTurn(ctx, spec.sandbox, spec.cwd, { ...baseTurn, input: textInput(spec.prompt) }, true)
     if (!spec.schema) return working
+
+    const workingStructured = parseValidJson(working.text, spec.schema)
+    if (workingStructured !== undefined) return { ...working, structured: workingStructured }
 
     ctx.onProgress({ kind: "phase", phase: "extraction" })
     // The extraction turn runs under its own hard deadline (see the constant's

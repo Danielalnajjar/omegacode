@@ -12,7 +12,7 @@
 import { addUsage, emptyUsage, type AgentResult, type AgentSpec, type AgentUsage } from "../dsl/types.js"
 import type { Worker, WorkerContext, WorkerProgress } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
-import { assertValidSchema, parseJsonLoose } from "./schema.js"
+import { assertValidSchema, parseJsonLoose, parseValidJson } from "./schema.js"
 import {
   captureStdout,
   exitError,
@@ -111,6 +111,11 @@ export class OpencodeWorker implements Worker {
 
     const working = await this.runTurn(spec, args, withInstructions(spec, spec.prompt), ctx, true)
     if (!spec.schema) return { text: working.text, status: "completed", usage: working.usage }
+
+    const workingStructured = parseValidJson(working.text, spec.schema)
+    if (workingStructured !== undefined) {
+      return { text: working.text, structured: workingStructured, status: "completed", usage: working.usage }
+    }
 
     // Extraction turn (two-phase structured output, codex precedent): silent, reuses the working
     // turn's session so the model keeps its context. Instructions are forwarded so the runtime's

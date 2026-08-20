@@ -237,10 +237,34 @@ test("approval on-request is rejected", async () => {
   )
 })
 
-test("schema extraction resume preserves the session's Grok fleet stamp", async () => {
+test("valid main-turn structured output skips schema extraction", async () => {
+  const validMain: Script = (p) => {
+    p.pushLine({ type: "text", data: 'Result:\n```json\n{"ok":true}\n```' })
+    p.pushLine({ type: "end", stopReason: "end_turn", sessionId: "ses_1", usage: { input_tokens: 4, output_tokens: 2 } })
+    p.end(0)
+  }
+  const h = harness([versionOk, validMain])
+
+  const result = await h.worker.runAgent(
+    spec({ schema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] } }),
+    ctx(),
+  )
+
+  assert.equal(h.spawned.length, 2)
+  assert.deepEqual(result.structured, { ok: true })
+  assert.match(result.text, /"ok":true/)
+  assert.equal(result.usage.outputTokens, 2)
+})
+
+test("schema-invalid main-turn JSON falls through to extraction and preserves the fleet stamp", async () => {
+  const invalidMain: Script = (p) => {
+    p.pushLine({ type: "text", data: '{"ok":"not a boolean"}' })
+    p.pushLine({ type: "end", stopReason: "end_turn", sessionId: "ses_1", usage: { input_tokens: 100, output_tokens: 20 } })
+    p.end(0)
+  }
   const h = harness([
     versionOk,
-    happyRun,
+    invalidMain,
     (p, call) => {
       assert.equal(flagAfter(call.args, "--resume"), "ses_1")
       assert.equal(flagAfter(call.args, "--tools"), "")
@@ -256,10 +280,11 @@ test("schema extraction resume preserves the session's Grok fleet stamp", async 
       p.end(0)
     },
   ])
-  const result = await h.worker.runAgent(spec({ schema: { type: "object", properties: { ok: { type: "boolean" } } } }), ctx())
+  const result = await h.worker.runAgent(spec({ schema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] } }), ctx())
+  assert.equal(h.spawned.length, 3)
   assert.deepEqual(result.structured, { ok: true })
   assert.equal(result.text, '{"ok":true}')
-  assert.equal(result.usage.inputTokens, 116)
+  assert.equal(result.usage.inputTokens, 104)
   assert.equal(result.usage.outputTokens, 22)
   const freshProfilePath = flagAfter(h.spawned[1]!.args, "--agent")
   const resumedProfilePath = flagAfter(h.spawned[2]!.args, "--agent")

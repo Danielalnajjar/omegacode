@@ -179,7 +179,9 @@ export class ClaudeWorker implements Worker {
         // than deliver stale data. An abort can truncate the stream into this same shape — that
         // must stay an interruption, not a success with a possibly-superseded payload.
         if (ctx.signal.aborted) throw new AgentInterrupted()
-        // Tokens come from the stream; cost only a result message knows — take what we have.
+        // Stream tokens are a main-loop lower bound (assistant usage never carries
+        // total_cost_usd, so streamUsage.costUsd stays 0 until this splice). Cost
+        // comes from the notification result when one arrived — including 0.
         if (anyResult) streamUsage.costUsd = usageFromResult(anyResult).costUsd
         return { text: lastText, structured: structuredFromTool, status: "completed", usage: streamUsage }
       }
@@ -439,10 +441,16 @@ function expandHome(p: string): string {
 }
 
 /**
- * Sum an SDK result message's usage into AgentUsage. Cache reads/creation are billed input
- * tokens — dropping them undercounts budget ceilings. Exported for tests.
+ * Sum an SDK result message's usage into AgentUsage. Prefer camelCase modelUsage for tokens
+ * when that map's token sum is non-zero; cost is always last.total_cost_usd. Cache
+ * reads/creation are billed input tokens — dropping them undercounts budget ceilings.
+ * Exported for tests.
  */
-export function usageFromResult(last: { usage?: unknown; total_cost_usd?: unknown }): AgentUsage {
+export function usageFromResult(last: { usage?: unknown; total_cost_usd?: unknown; modelUsage?: unknown }): AgentUsage {
+  const costUsd = numOr(last.total_cost_usd)
+  const fromModel = tokensFromModelUsage(last.modelUsage)
+  if (fromModel) return { ...emptyUsage(), ...fromModel, costUsd }
+
   const u = (last.usage && typeof last.usage === "object" ? last.usage : {}) as Record<string, unknown>
   const cacheReadInputTokens = optionalNumber(u.cache_read_input_tokens)
   const cacheCreationInputTokens = optionalNumber(u.cache_creation_input_tokens)
@@ -450,9 +458,35 @@ export function usageFromResult(last: { usage?: unknown; total_cost_usd?: unknow
     ...emptyUsage(),
     inputTokens: numOr(u.input_tokens) + (cacheReadInputTokens ?? 0) + (cacheCreationInputTokens ?? 0),
     outputTokens: numOr(u.output_tokens),
-    costUsd: numOr(last.total_cost_usd),
+    costUsd,
     ...(cacheReadInputTokens === undefined ? {} : { cacheReadInputTokens }),
     ...(cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens }),
+  }
+}
+
+/** Fold camelCase modelUsage when billed tokens are non-zero; otherwise treat as empty. */
+function tokensFromModelUsage(modelUsage: unknown): Omit<AgentUsage, "costUsd"> | undefined {
+  if (modelUsage == null || typeof modelUsage !== "object" || Array.isArray(modelUsage)) return undefined
+
+  let inputTokens = 0
+  let outputTokens = 0
+  let cacheReadInputTokens = 0
+  let cacheCreationInputTokens = 0
+  for (const entry of Object.values(modelUsage as Record<string, unknown>)) {
+    if (entry == null || typeof entry !== "object") continue
+    const e = entry as Record<string, unknown>
+    inputTokens += numOr(e.inputTokens)
+    outputTokens += numOr(e.outputTokens)
+    cacheReadInputTokens += numOr(e.cacheReadInputTokens)
+    cacheCreationInputTokens += numOr(e.cacheCreationInputTokens)
+  }
+  inputTokens += cacheReadInputTokens + cacheCreationInputTokens
+  if (inputTokens + outputTokens === 0) return undefined
+  return {
+    inputTokens,
+    outputTokens,
+    ...(cacheReadInputTokens === 0 ? {} : { cacheReadInputTokens }),
+    ...(cacheCreationInputTokens === 0 ? {} : { cacheCreationInputTokens }),
   }
 }
 

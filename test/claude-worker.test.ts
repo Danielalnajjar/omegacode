@@ -124,6 +124,75 @@ test("happy path: result text + usage (cache tokens fold into inputTokens)", asy
   assert.equal(calls[0]!.prompt, "do the thing")
 })
 
+const MODEL_USAGE_A = {
+  inputTokens: 100,
+  cacheReadInputTokens: 50,
+  cacheCreationInputTokens: 25,
+  outputTokens: 10,
+  costUSD: 0.40,
+  contextWindow: 200000,
+  maxOutputTokens: 8192,
+  webSearchRequests: 0,
+}
+const MODEL_USAGE_B = {
+  inputTokens: 20,
+  cacheReadInputTokens: 10,
+  cacheCreationInputTokens: 5,
+  outputTokens: 4,
+  costUSD: 0.10,
+  contextWindow: 200000,
+  maxOutputTokens: 8192,
+  webSearchRequests: 0,
+}
+const CONFLICTING_SNAKE_USAGE = {
+  input_tokens: 10,
+  cache_read_input_tokens: 200,
+  cache_creation_input_tokens: 77,
+  output_tokens: 4,
+}
+const STREAM_USAGE = {
+  input_tokens: 100,
+  cache_read_input_tokens: 1000,
+  cache_creation_input_tokens: 10,
+  output_tokens: 7,
+}
+
+test("lastResult modelUsage wins tokens; total_cost_usd wins cost", async () => {
+  const worker = new ClaudeWorker({
+    queryFn: scripted([
+      resultMsg({
+        modelUsage: { A: MODEL_USAGE_A, B: MODEL_USAGE_B },
+        usage: CONFLICTING_SNAKE_USAGE,
+        total_cost_usd: 1.25,
+      }),
+    ]),
+  })
+  const res = await worker.runAgent(spec(), ctx())
+  assert.equal(res.usage.inputTokens, 210)
+  assert.equal(res.usage.outputTokens, 14)
+  assert.equal(res.usage.cacheReadInputTokens, 60)
+  assert.equal(res.usage.cacheCreationInputTokens, 30)
+  assert.equal(res.usage.costUsd, 1.25)
+})
+
+test("empty modelUsage object falls back to snake usage", async () => {
+  const worker = new ClaudeWorker({
+    queryFn: scripted([
+      resultMsg({
+        modelUsage: {},
+        usage: { input_tokens: 10, cache_read_input_tokens: 200, cache_creation_input_tokens: 30, output_tokens: 4 },
+        total_cost_usd: 0.05,
+      }),
+    ]),
+  })
+  const res = await worker.runAgent(spec(), ctx())
+  assert.equal(res.usage.inputTokens, 240)
+  assert.equal(res.usage.outputTokens, 4)
+  assert.equal(res.usage.costUsd, 0.05)
+  assert.equal(res.usage.cacheReadInputTokens, 200)
+  assert.equal(res.usage.cacheCreationInputTokens, 30)
+})
+
 test("spec → SDK options: cwd/model/maxTurns/effort floor/instructions preset append", async () => {
   const calls: QueryCall[] = []
   const worker = new ClaudeWorker({ queryFn: scripted([resultMsg()], calls), model: "default-model" })
@@ -187,6 +256,21 @@ test("progress mapping: text/thinking/tool_use/tool_result → WorkerProgress ev
   ])
 })
 
+test("system commands_changed and background_tasks_changed pass through without progress", async () => {
+  const c = ctx()
+  const worker = new ClaudeWorker({
+    queryFn: scripted([
+      { type: "system", subtype: "commands_changed" },
+      { type: "system", subtype: "background_tasks_changed" },
+      resultMsg(),
+    ]),
+  })
+  const res = await worker.runAgent(spec(), c)
+  assert.equal(res.status, "completed")
+  assert.equal(res.text, "all done")
+  assert.deepEqual(c.events, [])
+})
+
 test("malformed/unknown blocks and message types are skipped without crashing", async () => {
   const c = ctx()
   const worker = new ClaudeWorker({
@@ -246,6 +330,51 @@ test("a failed turn's AgentError carries cache-inclusive usage (failed turns sti
   assert.equal(err.usage?.inputTokens, 4600)
   assert.equal(err.usage?.outputTokens, 42)
   assert.equal(err.usage?.costUsd, 0.07)
+
+  const errModel = await new ClaudeWorker({
+    queryFn: scripted([
+      resultMsg({
+        subtype: "error_during_execution",
+        modelUsage: { A: MODEL_USAGE_A, B: MODEL_USAGE_B },
+        usage: CONFLICTING_SNAKE_USAGE,
+        total_cost_usd: 1.25,
+      }),
+    ]),
+  })
+    .runAgent(spec(), ctx())
+    .catch((e) => e)
+  assert.ok(errModel instanceof AgentError)
+  assert.equal(errModel.usage?.inputTokens, 210)
+  assert.equal(errModel.usage?.outputTokens, 14)
+  assert.equal(errModel.usage?.cacheReadInputTokens, 60)
+  assert.equal(errModel.usage?.cacheCreationInputTokens, 30)
+  assert.equal(errModel.usage?.costUsd, 1.25)
+
+  const errZeroed = await new ClaudeWorker({
+    queryFn: scripted([
+      resultMsg({
+        subtype: "error_during_execution",
+        modelUsage: {
+          crashed: {
+            ...MODEL_USAGE_A,
+            inputTokens: 0,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            outputTokens: 0,
+            costUSD: 0,
+          },
+        },
+        usage: { input_tokens: 100, cache_read_input_tokens: 4000, cache_creation_input_tokens: 500, output_tokens: 42 },
+        total_cost_usd: 0.07,
+      }),
+    ]),
+  })
+    .runAgent(spec(), ctx())
+    .catch((e) => e)
+  assert.ok(errZeroed instanceof AgentError)
+  assert.equal(errZeroed.usage?.inputTokens, 4600)
+  assert.equal(errZeroed.usage?.outputTokens, 42)
+  assert.equal(errZeroed.usage?.costUsd, 0.07)
 })
 
 test("an SDK throw is wrapped as retryable sdk_error (message preserved)", async () => {
@@ -298,11 +427,10 @@ test("stream ends with NO result after an accepted StructuredOutput → recovere
 })
 
 test("no-result recovery sums assistant usage deduped by API message id (cost unknowable → 0)", async () => {
-  const usage = { input_tokens: 100, cache_read_input_tokens: 1000, cache_creation_input_tokens: 10, output_tokens: 7 }
   const worker = new ClaudeWorker({
     queryFn: scripted([
-      { type: "assistant", message: { id: "m1", usage, content: [{ type: "tool_use", id: "so1", name: "StructuredOutput", input: { answer: 1 } }] } },
-      { type: "assistant", message: { id: "m1", usage, content: [{ type: "text", text: "same API message, second block" }] } }, // repeat id: counted once
+      { type: "assistant", message: { id: "m1", usage: STREAM_USAGE, content: [{ type: "tool_use", id: "so1", name: "StructuredOutput", input: { answer: 1 } }] } },
+      { type: "assistant", message: { id: "m1", usage: STREAM_USAGE, content: [{ type: "text", text: "same API message, second block" }] } }, // repeat id: counted once
       userMsg([{ type: "tool_result", tool_use_id: "so1", content: "ok", is_error: false }]),
       { type: "assistant", message: { id: "m2", usage: { input_tokens: 50, output_tokens: 3 }, content: [{ type: "text", text: "done" }] } },
     ]),
@@ -313,6 +441,40 @@ test("no-result recovery sums assistant usage deduped by API message id (cost un
   assert.equal(res.usage.costUsd, 0)
   assert.equal(res.usage.cacheReadInputTokens, 1000)
   assert.equal(res.usage.cacheCreationInputTokens, 10)
+})
+
+test("StructuredOutput recovery splices notification total_cost_usd onto stream tokens", async () => {
+  const worker = new ClaudeWorker({
+    queryFn: scripted([
+      ...structuredOutputTurn({ answer: 1 }),
+      { type: "assistant", message: { id: "m1", usage: STREAM_USAGE, content: [{ type: "text", text: "done" }] } },
+      resultMsg({
+        origin: { kind: "task-notification" },
+        modelUsage: {
+          sonnet: {
+            inputTokens: 400,
+            cacheReadInputTokens: 80,
+            cacheCreationInputTokens: 20,
+            outputTokens: 5,
+            costUSD: 9,
+            contextWindow: 1,
+            maxOutputTokens: 1,
+            webSearchRequests: 0,
+          },
+        },
+        usage: { input_tokens: 10, output_tokens: 4 },
+        total_cost_usd: 1.68,
+      }),
+    ]),
+  })
+  const res = await worker.runAgent(spec({ schema: SCHEMA }), ctx())
+  assert.equal(res.status, "completed")
+  assert.deepEqual(res.structured, { answer: 1 })
+  assert.equal(res.usage.inputTokens, 1110)
+  assert.equal(res.usage.outputTokens, 7)
+  assert.equal(res.usage.cacheReadInputTokens, 1000)
+  assert.equal(res.usage.cacheCreationInputTokens, 10)
+  assert.equal(res.usage.costUsd, 1.68)
 })
 
 test("a post-answer NOTIFICATION turn's result lacking structured_output → recovered from the tool payload", async () => {
@@ -326,6 +488,29 @@ test("a post-answer NOTIFICATION turn's result lacking structured_output → rec
   const res = await worker.runAgent(spec({ schema: SCHEMA }), ctx())
   assert.deepEqual(res.structured, { answer: 42 })
   assert.equal(res.usage.costUsd, 1.68) // cost still taken from the notification result — it's all we have
+})
+
+test("zeroed error notification must not wipe stream usage on StructuredOutput recovery", async () => {
+  const worker = new ClaudeWorker({
+    queryFn: scripted([
+      ...structuredOutputTurn({ answer: 1 }),
+      { type: "assistant", message: { id: "m1", usage: STREAM_USAGE, content: [{ type: "text", text: "done" }] } },
+      resultMsg({
+        subtype: "error_during_execution",
+        origin: { kind: "task-notification" },
+        usage: { input_tokens: 0, output_tokens: 0 },
+        modelUsage: {},
+        total_cost_usd: 0,
+      }),
+    ]),
+  })
+  const res = await worker.runAgent(spec({ schema: SCHEMA }), ctx())
+  assert.equal(res.status, "completed")
+  assert.equal(res.usage.inputTokens, 1110)
+  assert.equal(res.usage.outputTokens, 7)
+  assert.equal(res.usage.cacheReadInputTokens, 1000)
+  assert.equal(res.usage.cacheCreationInputTokens, 10)
+  assert.equal(res.usage.costUsd, 0)
 })
 
 test("a non-success NOTIFICATION result after an accepted StructuredOutput does not fail the finished agent", async () => {

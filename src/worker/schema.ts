@@ -198,29 +198,28 @@ export function parseJsonLoose(text: string): unknown {
     initialError = error
   }
 
-  const fences = [...trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)]
-  for (let index = fences.length - 1; index >= 0; index--) {
+  const candidates = [
+    ...[...trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)].map((match) => ({
+      text: match[1]!,
+      end: match.index + match[0].length,
+    })),
+    ...balancedJsonSpans(trimmed),
+  ].sort((a, b) => b.end - a.end || b.text.length - a.text.length)
+
+  for (const candidate of candidates) {
     try {
-      return JSON.parse(fences[index]![1]!)
+      return JSON.parse(candidate.text)
     } catch {
       // Keep looking: models often quote an earlier example before emitting the final value.
-    }
-  }
-
-  for (const candidate of balancedJsonSpans(trimmed)) {
-    try {
-      return JSON.parse(candidate)
-    } catch {
-      // A balanced JavaScript-looking span is not necessarily valid JSON.
     }
   }
 
   throw initialError
 }
 
-/** Return balanced object/array spans widest-first, ignoring delimiters inside JSON strings. */
-function balancedJsonSpans(text: string): string[] {
-  const spans: string[] = []
+/** Return positioned object/array spans, ignoring delimiters inside JSON strings. */
+function balancedJsonSpans(text: string): Array<{ text: string; end: number }> {
+  const spans: Array<{ text: string; end: number }> = []
   const stack: Array<{ char: "{" | "["; index: number }> = []
   let inString = false
   let escaped = false
@@ -250,10 +249,10 @@ function balancedJsonSpans(text: string): string[] {
       continue
     }
     stack.pop()
-    spans.push(text.slice(opening.index, index + 1))
+    spans.push({ text: text.slice(opening.index, index + 1), end: index + 1 })
   }
 
-  return spans.sort((a, b) => b.length - a.length)
+  return spans
 }
 
 /** Parse and validate a main-turn answer before paying for a separate extraction turn. */

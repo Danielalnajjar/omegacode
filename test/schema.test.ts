@@ -241,6 +241,10 @@ test("parseJsonLoose prefers the last valid fenced block", () => {
   assert.deepEqual(parseJsonLoose('```json\n{"draft":true}\n```\nfinal:\n```json\n{"draft":false}\n```'), { draft: false })
 })
 
+test("parseJsonLoose prefers a later bare value over an earlier fenced example", () => {
+  assert.deepEqual(parseJsonLoose('```json\n{"decision":"reject"}\n```\nFinal: {"decision":"accept"}'), { decision: "accept" })
+})
+
 test("parseJsonLoose skips an earlier poison fence", () => {
   assert.deepEqual(parseJsonLoose('```json\n{not json}\n```\n```json\n{"ok":true}\n```'), { ok: true })
 })

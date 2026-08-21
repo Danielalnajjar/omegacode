@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url"
 import { addUsage, emptyUsage, type AgentResult, type AgentSpec, type AgentUsage, type Effort, type Sandbox } from "../dsl/types.js"
 import type { Worker, WorkerContext, WorkerProgress } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
-import { assertValidSchema, parseJsonLoose } from "./schema.js"
+import { assertValidSchema, parseJsonLoose, parseValidJson } from "./schema.js"
 import {
   captureStdout,
   exitError,
@@ -121,6 +121,11 @@ export class GrokWorker implements Worker {
 
     const working = await this.runTurn(spec, spec.prompt, ctx, { forwardProgress: true })
     if (!spec.schema) return { text: working.text, status: "completed", usage: working.usage }
+
+    const workingStructured = parseValidJson(working.text, spec.schema)
+    if (workingStructured !== undefined) {
+      return { text: working.text, structured: workingStructured, status: "completed", usage: working.usage }
+    }
 
     let extraction: TurnOutcome
     try {

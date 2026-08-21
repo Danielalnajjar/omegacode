@@ -425,8 +425,8 @@ export class Runtime {
         try {
           value = this.finalizeResult(spec, result)
         } catch (err) {
-          // One corrective retry on a schema-validation miss (DESIGN §6.3).
-          if (spec.schema && err instanceof WorkflowError && err.message.startsWith("structured output failed schema")) {
+          // One corrective retry on a missing or schema-invalid structured result (DESIGN §6.3).
+          if (spec.schema && err instanceof WorkflowError && isStructuredOutputFailure(err)) {
             this.o.events.emit({ type: "log", message: `[${label}] structured output retry: ${err.message}` })
             const corrective = {
               ...runSpec,
@@ -534,10 +534,12 @@ export class Runtime {
     if (result.structured !== undefined) {
       const normalized = stripNullOptionals(result.structured, spec.schema)
       const check = validate(spec.schema, normalized)
-      if (!check.ok) throw new WorkflowError(`structured output failed schema: ${check.errors}`)
+      if (!check.ok) {
+        throw new WorkflowError(`structured output failed schema: ${check.errors}; ${structuredOutputTextDiagnostic(result.text)}`)
+      }
       return normalized
     }
-    throw new WorkflowError("agent({schema}) returned no structured output")
+    throw new WorkflowError(`agent({schema}) returned no structured output; ${structuredOutputTextDiagnostic(result.text)}`)
   }
 
   private async setupWorktree(spec: AgentSpec, wt: boolean | string, index: number): Promise<Worktree & { gitRoot: string }> {
@@ -620,6 +622,21 @@ export class Runtime {
  */
 function isControlFlow(err: unknown): boolean {
   return err instanceof AgentInterrupted || (err instanceof WorkflowError && !(err instanceof AgentFailedError))
+}
+
+function isStructuredOutputFailure(err: WorkflowError): boolean {
+  return (
+    err.message.startsWith("structured output failed schema") ||
+    err.message.startsWith("agent({schema}) returned no structured output")
+  )
+}
+
+function structuredOutputTextDiagnostic(text: string): string {
+  const edgeLength = 1_000
+  const excerpt = text.length <= edgeLength * 2
+    ? text
+    : `${text.slice(0, edgeLength)}\n... [truncated] ...\n${text.slice(-edgeLength)}`
+  return `output text (${text.length} chars): ${JSON.stringify(excerpt)}`
 }
 
 function firstLine(s: string): string {

@@ -382,6 +382,56 @@ test("M10: corrective-retry usage accumulates across both attempts", async () =>
   }
 })
 
+test("missing structured output gets the single corrective retry", async () => {
+  let call = 0
+  const b = build({
+    hooks: {
+      run: async () => {
+        call++
+        if (call === 1) {
+          return { text: "extraction prose without JSON", status: "completed", usage: emptyUsage() }
+        }
+        return { text: '"recovered"', structured: "recovered", status: "completed", usage: emptyUsage() }
+      },
+    },
+  })
+  try {
+    const out = await runBody(b, `return await agent("p", { schema: { type: "string" } })`)
+    assert.equal(out, "recovered")
+    assert.equal(call, 2)
+    const retryLogs = b.sink.events.filter((e) => e.type === "log" && e.message.includes("structured output retry"))
+    assert.equal(retryLogs.length, 1)
+    assert.match(retryLogs[0]!.message, /output text \(29 chars\): "extraction prose without JSON"/)
+  } finally {
+    b.cleanup()
+  }
+})
+
+test("persistent structured-output failures retain bounded output diagnostics", async () => {
+  const extractionText = `HEAD-${"x".repeat(2_100)}-TAIL`
+  const b = build({
+    hooks: {
+      run: async () => ({ text: extractionText, status: "completed", usage: emptyUsage() }),
+    },
+  })
+  try {
+    await assert.rejects(
+      runBody(b, `return await agent("p", { schema: { type: "string" } })`),
+      (error: unknown) => {
+        assert.ok(error instanceof Error)
+        assert.match(error.message, /output text \(2110 chars\)/)
+        assert.match(error.message, /HEAD-/)
+        assert.match(error.message, /\[truncated\]/)
+        assert.match(error.message, /-TAIL/)
+        assert.doesNotMatch(error.message, /x{1500}/)
+        return true
+      },
+    )
+  } finally {
+    b.cleanup()
+  }
+})
+
 test("M4: a retryable AgentError is retried via withRetry, then succeeds", async () => {
   let call = 0
   const b = build({

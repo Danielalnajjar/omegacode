@@ -237,6 +237,25 @@ test("parseJsonLoose handles bare JSON and fenced JSON", () => {
   assert.deepEqual(parseJsonLoose('  \n {"a": "b"}  '), { a: "b" })
 })
 
-test("parseJsonLoose throws on non-JSON", () => {
+test("parseJsonLoose prefers the last valid fenced block", () => {
+  assert.deepEqual(parseJsonLoose('```json\n{"draft":true}\n```\nfinal:\n```json\n{"draft":false}\n```'), { draft: false })
+})
+
+test("parseJsonLoose skips an earlier poison fence", () => {
+  assert.deepEqual(parseJsonLoose('```json\n{not json}\n```\n```json\n{"ok":true}\n```'), { ok: true })
+})
+
+test("parseJsonLoose accepts prose before a bare JSON value", () => {
+  assert.deepEqual(parseJsonLoose('Here is the requested value:\n{"ok":true}'), { ok: true })
+})
+
+test("parseJsonLoose falls back to the widest balanced JSON span", () => {
+  assert.deepEqual(parseJsonLoose('prefix [ignore] then {"outer":{"text":"} [ still text"},"items":[1,2]} suffix'), {
+    outer: { text: "} [ still text" },
+    items: [1, 2],
+  })
+})
+
+test("parseJsonLoose still throws on non-JSON garbage", () => {
   assert.throws(() => parseJsonLoose("not json at all"))
 })

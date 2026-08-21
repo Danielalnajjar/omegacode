@@ -188,10 +188,81 @@ function allowsNull(schema: JSONSchema | undefined): boolean {
   return false
 }
 
-/** Best-effort: parse a model's text output as JSON (handles ```json fences). */
+/** Best-effort: parse a model's text output as JSON, including fenced or prose-wrapped values. */
 export function parseJsonLoose(text: string): unknown {
   const trimmed = text.trim()
-  const fence = /```(?:json)?\s*([\s\S]*?)```/.exec(trimmed)
-  const candidate = fence ? fence[1]! : trimmed
-  return JSON.parse(candidate)
+  let initialError: unknown
+  try {
+    return JSON.parse(trimmed)
+  } catch (error) {
+    initialError = error
+  }
+
+  const fences = [...trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)]
+  for (let index = fences.length - 1; index >= 0; index--) {
+    try {
+      return JSON.parse(fences[index]![1]!)
+    } catch {
+      // Keep looking: models often quote an earlier example before emitting the final value.
+    }
+  }
+
+  for (const candidate of balancedJsonSpans(trimmed)) {
+    try {
+      return JSON.parse(candidate)
+    } catch {
+      // A balanced JavaScript-looking span is not necessarily valid JSON.
+    }
+  }
+
+  throw initialError
+}
+
+/** Return balanced object/array spans widest-first, ignoring delimiters inside JSON strings. */
+function balancedJsonSpans(text: string): string[] {
+  const spans: string[] = []
+  const stack: Array<{ char: "{" | "["; index: number }> = []
+  let inString = false
+  let escaped = false
+
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index]!
+    if (inString) {
+      if (escaped) escaped = false
+      else if (char === "\\") escaped = true
+      else if (char === '"') inString = false
+      continue
+    }
+    if (char === '"') {
+      inString = true
+      continue
+    }
+    if (char === "{" || char === "[") {
+      stack.push({ char, index })
+      continue
+    }
+    if (char !== "}" && char !== "]") continue
+
+    const expected = char === "}" ? "{" : "["
+    const opening = stack.at(-1)
+    if (!opening || opening.char !== expected) {
+      stack.length = 0
+      continue
+    }
+    stack.pop()
+    spans.push(text.slice(opening.index, index + 1))
+  }
+
+  return spans.sort((a, b) => b.length - a.length)
+}
+
+/** Parse and validate a main-turn answer before paying for a separate extraction turn. */
+export function parseValidJson(text: string, schema: JSONSchema): unknown | undefined {
+  try {
+    const parsed = parseJsonLoose(text)
+    const normalized = stripNullOptionals(parsed, schema)
+    return validate(schema, normalized).ok ? parsed : undefined
+  } catch {
+    return undefined
+  }
 }

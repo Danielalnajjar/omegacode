@@ -7,6 +7,7 @@ export type {
   AgentStatus,
   AgentUsage,
   Approval,
+  CodexWebSearch,
   Effort,
   JSONSchema,
   Meta,

@@ -735,6 +735,27 @@ test("provider/model are both-or-neither in agent() opts (a lone half must not m
   }
 })
 
+test("provider-native options are rejected at the public boundary even with a fake worker", async () => {
+  const b = build()
+  try {
+    for (const body of [
+      `return await agent("x", { claudeAgent: "librarian" })`,
+      `return await agent("x", { provider: "claude-code", model: "claude-fable-5", codexChildRole: "librarian" })`,
+      `return await agent("x", { provider: "claude-code", model: "claude-fable-5", codexWebSearch: "live" })`,
+      `return await agent("x", { provider: "claude-code", model: "claude-fable-5", codexNetworkAccess: true })`,
+    ]) {
+      await assert.rejects(runBody(b, body), (error: unknown) => error instanceof AgentError && error.code === "unsupported_option")
+    }
+    await assert.rejects(
+      runBody(b, `return await agent("x", { codexWebSearch: "sometimes" })`),
+      /invalid codexWebSearch "sometimes"/,
+    )
+    assert.equal(b.worker.calls.length, 0)
+  } finally {
+    b.cleanup()
+  }
+})
+
 test("H6: a persistent schema miss nulls only ITS parallel item — siblings and the fan-out survive", async () => {
   // The AgentFailedError wrap must NOT count as control flow: failing schema validation on both
   // attempts is a per-agent failure (null that item, baseline semantics), not a run-level abort.

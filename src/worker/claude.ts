@@ -62,6 +62,11 @@ function toClaudeEffort(effort: Effort): ClaudeEffort {
   return effort
 }
 
+function isAgentResolutionError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  return /\bagent(?: type)?\b.*\b(?:not found|unknown|unrecognized|does not exist|failed to (?:load|resolve))\b/i.test(error.message)
+}
+
 export class ClaudeWorker implements Worker {
   readonly id = "claude-code" as const
   constructor(private readonly opts: ClaudeWorkerOpts = {}) {}
@@ -91,7 +96,9 @@ export class ClaudeWorker implements Worker {
       cwd: spec.cwd,
       model: spec.model ?? this.opts.model,
       maxTurns: spec.maxTurns,
-      settingSources: [],
+      ...(spec.claudeAgent !== undefined
+        ? { agent: spec.claudeAgent, settingSources: ["user"] as const }
+        : { settingSources: [] }),
       permissionMode: "default",
       abortController: abort,
       canUseTool: (toolName: string, input: Record<string, unknown>): Promise<PermissionResult> => {
@@ -209,7 +216,15 @@ export class ClaudeWorker implements Worker {
     } catch (err) {
       if (ctx.signal.aborted) throw new AgentInterrupted()
       if (err instanceof AgentError || err instanceof AgentInterrupted) throw err
-      throw new AgentError({ provider: "claude-code", code: "sdk_error", message: (err as Error).message, retryable: true })
+      throw new AgentError({
+        provider: "claude-code",
+        code: "sdk_error",
+        message: (err as Error).message,
+        // A native agent that the SDK cannot resolve is a hard configuration failure. Other SDK
+        // exceptions can still be transient even when an agent is selected, so keep their normal
+        // retry path. Neither case falls back to an ordinary Claude call.
+        retryable: !isAgentResolutionError(err),
+      })
     } finally {
       ctx.signal.removeEventListener("abort", onAbort)
     }

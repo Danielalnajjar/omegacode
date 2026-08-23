@@ -368,6 +368,8 @@ function makeServedWorker(
     threadEphemeral?: boolean
     threadId?: string
     initResult?: unknown
+    threadListResult?: unknown | ((params: any) => unknown)
+    threadReadResult?: unknown | ((params: any) => unknown)
     onServerReq?: (child: FakeChild, req: any) => void
   } = {},
 ): { worker: CodexWorker; getChild: () => FakeChild } {
@@ -390,6 +392,28 @@ function makeServedWorker(
         if (req.method === "initialize") return child.pushLine({ jsonrpc: "2.0", id: req.id, result: opts.initResult ?? INIT_OK })
         if (req.method === "initialized") return
         if (req.method === "thread/start") return child.pushLine({ jsonrpc: "2.0", id: req.id, result: { thread: { id: threadId } } })
+        if (req.method === "thread/list") return child.pushLine({
+          jsonrpc: "2.0",
+          id: req.id,
+          result: typeof opts.threadListResult === "function"
+            ? opts.threadListResult(req.params)
+            : opts.threadListResult ?? { data: [], nextCursor: null, backwardsCursor: null },
+        })
+        if (req.method === "thread/read") return child.pushLine({
+          jsonrpc: "2.0",
+          id: req.id,
+          result: typeof opts.threadReadResult === "function"
+            ? opts.threadReadResult(req.params)
+            : opts.threadReadResult ?? {
+                thread: {
+                  id: req.params.threadId,
+                  parentThreadId: null,
+                  agentRole: null,
+                  turns: [],
+                },
+              },
+        })
+        if (req.method === "thread/delete") return child.pushLine({ jsonrpc: "2.0", id: req.id, result: {} })
         if (req.method === "turn/interrupt") return child.pushLine({ jsonrpc: "2.0", id: req.id, result: {} })
         if (req.method === "turn/start") {
           child.pushLine({ jsonrpc: "2.0", id: req.id, result: {} })
@@ -540,6 +564,153 @@ test("CodexWorker passes max effort through to turn/start", async () => {
   await worker.runAgent(spec({ effort: "max" }), ctx())
   assert.equal(turnStarts.length, 1)
   assert.equal(turnStarts[0].effort, "max")
+  await worker.shutdown()
+})
+
+test("CodexWorker maps web search to thread config and network access to the turn sandbox", async () => {
+  const threadStarts: any[] = []
+  const turnStarts: any[] = []
+  const { worker } = makeServedWorker(
+    (_req, reply) => {
+      reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
+      reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
+    },
+    {
+      onServerReq: (_child, req) => {
+        if (req.method === "thread/start") threadStarts.push(req.params)
+        if (req.method === "turn/start") turnStarts.push(req.params)
+      },
+    },
+  )
+  await worker.runAgent(spec({ codexWebSearch: "live", codexNetworkAccess: true }), ctx())
+  assert.deepEqual(threadStarts[0].config, { web_search: "live" })
+  assert.equal(turnStarts[0].sandboxPolicy.networkAccess, true)
+  assert.deepEqual(turnStarts[0].sandboxPolicy, { type: "readOnly", networkAccess: true })
+  await worker.shutdown()
+})
+
+test("CodexWorker proves the exact listed child role and deletes the temporary durable subtree", async () => {
+  const threadStarts: any[] = []
+  const listRequests: any[] = []
+  const readRequests: any[] = []
+  const deleteRequests: any[] = []
+  const { worker } = makeServedWorker(
+    (_req, reply) => {
+      reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
+      reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
+    },
+    {
+      threadListResult: {
+        data: [{ id: "child-1", parentThreadId: "thread-1", agentRole: "librarian" }],
+        nextCursor: null,
+        backwardsCursor: null,
+      },
+      threadReadResult: {
+        thread: {
+          id: "child-1",
+          parentThreadId: "thread-1",
+          agentRole: "librarian",
+          turns: [{ status: "completed" }],
+        },
+      },
+      onServerReq: (_child, req) => {
+        if (req.method === "thread/start") threadStarts.push(req.params)
+        if (req.method === "thread/list") listRequests.push(req.params)
+        if (req.method === "thread/read") readRequests.push(req.params)
+        if (req.method === "thread/delete") deleteRequests.push(req.params)
+      },
+    },
+  )
+  const result = await worker.runAgent(spec({ codexChildRole: "librarian" }), ctx())
+  assert.equal(result.text, "done")
+  assert.equal(threadStarts[0].ephemeral, false)
+  assert.deepEqual(listRequests, [{ parentThreadId: "thread-1", limit: 100 }])
+  assert.deepEqual(readRequests, [{ threadId: "child-1", includeTurns: true }])
+  assert.deepEqual(deleteRequests, [{ threadId: "thread-1" }])
+  await worker.shutdown()
+})
+
+for (const scenario of ["absent", "failed", "in-progress", "mismatched-role", "unrelated-child"] as const) {
+  test(`CodexWorker rejects ${scenario} child-role evidence`, async () => {
+    const { worker } = makeServedWorker(
+      (_req, reply) => {
+        reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "claimed success" } } })
+        reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
+      },
+      {
+        threadListResult: {
+          data: scenario === "absent"
+            ? []
+            : [{ id: "child-1", parentThreadId: "thread-1", agentRole: "librarian" }],
+          nextCursor: null,
+          backwardsCursor: null,
+        },
+        threadReadResult: {
+          thread: {
+            id: "child-1",
+            parentThreadId: scenario === "unrelated-child" ? "other-root" : "thread-1",
+            agentRole: scenario === "mismatched-role" ? "explorer" : "librarian",
+            turns: [{
+              status: scenario === "failed" ? "failed" : scenario === "in-progress" ? "inProgress" : "completed",
+            }],
+          },
+        },
+      },
+    )
+    await assert.rejects(
+      worker.runAgent(spec({ codexChildRole: "librarian" }), ctx()),
+      (error: unknown) => error instanceof AgentError && error.code === "child_role_unproven" && error.retryable === false,
+    )
+    await worker.shutdown()
+  })
+}
+
+test("concurrent root turns cannot cross-correlate child-role evidence", async () => {
+  let child!: FakeChild
+  let nextThread = 0
+  const pendingRoots: string[] = []
+  const worker = new CodexWorker({
+    spawnChild: () => {
+      child = new FakeChild()
+      child.onWrite = (req: any) => {
+        if (req.method === "initialize") return child.pushLine({ jsonrpc: "2.0", id: req.id, result: INIT_OK })
+        if (req.method === "thread/start") {
+          const id = `root-${++nextThread}`
+          return child.pushLine({ jsonrpc: "2.0", id: req.id, result: { thread: { id } } })
+        }
+        if (req.method === "turn/start") {
+          child.pushLine({ jsonrpc: "2.0", id: req.id, result: {} })
+          pendingRoots.push(req.params.threadId)
+          if (pendingRoots.length !== 2) return
+          const [rootOne, rootTwo] = pendingRoots
+          // The matching-role child belongs to root two. Exact per-root metadata must prevent root
+          // one from accepting it even if the provider returns it in root one's filtered list.
+          for (const root of [rootOne, rootTwo]) {
+            child.pushLine({ jsonrpc: "2.0", method: "item/completed", params: { threadId: root, item: { type: "agentMessage", text: "done" } } })
+            child.pushLine({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: root, turn: { status: "completed" } } })
+          }
+        }
+        if (req.method === "thread/list") child.pushLine({
+          jsonrpc: "2.0",
+          id: req.id,
+          result: {
+            data: req.params.parentThreadId === "root-1"
+              ? [{ id: "child-cross", parentThreadId: "root-2", agentRole: "librarian" }]
+              : [],
+            nextCursor: null,
+            backwardsCursor: null,
+          },
+        })
+        if (req.method === "thread/delete") child.pushLine({ jsonrpc: "2.0", id: req.id, result: {} })
+      }
+      return child as any
+    },
+  })
+  const results = await Promise.allSettled([
+    worker.runAgent(spec({ codexChildRole: "librarian" }), ctx()),
+    worker.runAgent(spec({ codexChildRole: "librarian" }), ctx()),
+  ])
+  assert.ok(results.every((result) => result.status === "rejected" && result.reason instanceof AgentError && result.reason.code === "child_role_unproven"))
   await worker.shutdown()
 })
 

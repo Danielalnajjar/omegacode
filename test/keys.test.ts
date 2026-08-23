@@ -16,11 +16,10 @@ import type { AgentOpts } from "../src/dsl/types.ts"
 // helper: build the keyed-fields object the way chainKey now expects it
 const fields = (opts?: AgentOpts) => keyedOpts(opts)
 
-test("KEY_VERSION is v3 (bumped for the per-branch fan-out call counter, C1)", () => {
-  // v2 (per-branch lineage, no call counter) derived identical child keys for two sequential
-  // identical fan-outs — wrong-result replay. The derivation changed, so the version must change
-  // too: resuming a v2 journal must fail fast rather than silently miss every key and re-bill.
-  assert.equal(KEY_VERSION, "v3")
+test("KEY_VERSION is v4 (bumped for provider-native option cache identity)", () => {
+  // Adding provider-native semantic fields changes the derivation. The version must change too so
+  // older journals fail fast rather than silently miss every key and re-bill.
+  assert.equal(KEY_VERSION, "v4")
 })
 
 test("canonical sorts object keys recursively and drops __proto__", () => {
@@ -63,6 +62,19 @@ test("changing approval changes the key", () => {
   const a = chainKey(b, 0, "p", fields({ approval: "never" }))
   const c = chainKey(b, 0, "p", fields({ approval: "on-request" }))
   assert.notEqual(a, c)
+})
+
+test("provider-native options each invalidate the cache key", () => {
+  const b = branchKey(ROOT_KEY, "root", 0)
+  const baseline = chainKey(b, 0, "p", fields())
+  for (const opts of [
+    { claudeAgent: "librarian" },
+    { codexChildRole: "librarian" },
+    { codexWebSearch: "live" as const },
+    { codexNetworkAccess: true },
+  ]) {
+    assert.notEqual(chainKey(b, 0, "p", fields(opts)), baseline)
+  }
 })
 
 test("keyedSpec captures RESOLVED provider/model so default/CLI overrides invalidate (H8)", () => {

@@ -75,6 +75,14 @@ diversity. Provider and model are **both-or-neither** at every site (per-call, m
 CLI flags): a lone `provider:` or `model:` is rejected, so a model meant for one provider can
 never silently ride another provider's call.
 
+Provider-native options stay deliberately provider-specific:
+- Claude Code: `claudeAgent` selects a user-level custom agent. OmegaCode loads only the user
+  setting source for that call; ordinary calls continue to load no settings sources.
+- Codex: `codexChildRole` uses provider thread metadata to prove an exact native child role completed,
+  then deletes that temporary provider thread subtree; `codexWebSearch` is `"disabled"`, `"cached"`, or `"live"`;
+  and `codexNetworkAccess` controls network access inside read-only/workspace-write sandboxes.
+  These options affect resume identity and are rejected when paired with another provider.
+
 ## CLI
 
 ```

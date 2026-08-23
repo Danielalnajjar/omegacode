@@ -19,12 +19,14 @@
 import { createHash } from "node:crypto"
 import type { AgentOpts } from "../dsl/types.js"
 
-// v3: per-branch key lineage PLUS a per-branch fan-out call counter (v2 lacked the counter, so two
+// v4: provider-native options join the semantic field set. v3 added per-branch key lineage PLUS a
+// per-branch fan-out call counter (v2 lacked the counter, so two
 // sequential identical parallel()/pipeline() calls in one branch derived identical child keys —
 // demonstrated wrong-result replay). v2 introduced per-branch lineage over v1's global
 // completion-ordered prevKey and folded the full resolved spec (sandbox/worktree/approval/etc.)
-// into the key. Any v1/v2 journal is intentionally rejected on resume (see checkResumePreconditions).
-export const KEY_VERSION = "v3"
+// into the key. Older-version journals are intentionally rejected on resume (see
+// checkResumePreconditions).
+export const KEY_VERSION = "v4"
 
 /** Stable JSON: object keys sorted recursively so equal values hash equally. */
 export function canonical(value: unknown): string {
@@ -59,6 +61,10 @@ export interface KeyedFields {
   instructions: string | null
   schema: unknown
   maxTurns: number | null
+  claudeAgent: string | null
+  codexChildRole: string | null
+  codexWebSearch: string | null
+  codexNetworkAccess: boolean | null
   worktree: unknown
 }
 
@@ -73,6 +79,10 @@ export function keyedSpec(spec: KeyedSpecInput, worktree: unknown): KeyedFields 
     instructions: spec.instructions ?? null,
     schema: spec.schema ?? null,
     maxTurns: spec.maxTurns ?? null,
+    claudeAgent: spec.claudeAgent ?? null,
+    codexChildRole: spec.codexChildRole ?? null,
+    codexWebSearch: spec.codexWebSearch ?? null,
+    codexNetworkAccess: spec.codexNetworkAccess ?? null,
     worktree: worktree ?? null,
   }
 }
@@ -87,6 +97,10 @@ export interface KeyedSpecInput {
   instructions?: string
   schema?: unknown
   maxTurns?: number
+  claudeAgent?: string
+  codexChildRole?: string
+  codexWebSearch?: string
+  codexNetworkAccess?: boolean
 }
 
 /** The subset of OPTS that participates in the cache key (used where a resolved spec isn't handy). */

@@ -15,6 +15,8 @@ declare global {
 
   type OmegacodeApproval = "never" | "on-request"
 
+  type OmegacodeCodexWebSearch = "disabled" | "cached" | "live"
+
   type OmegacodeJSONSchema = Record<string, unknown>
 
   /** Options an author passes to `agent()`. All optional; defaults come from meta/config/CLI. */
@@ -34,6 +36,14 @@ declare global {
     maxTurns?: number
     /** Codex-only service tier; `fast` canonicalizes to `priority` codex-side. */
     serviceTier?: string
+    /** Claude Code user-level custom agent name. */
+    claudeAgent?: string
+    /** Codex child role that the root turn must prove it spawned successfully. */
+    codexChildRole?: string
+    /** Codex web-search mode sent through thread/start config. */
+    codexWebSearch?: OmegacodeCodexWebSearch
+    /** Codex sandbox network access for read-only/workspace-write turns. */
+    codexNetworkAccess?: boolean
   }
 
   /** provider and model travel together (both-or-neither): a lone provider would inherit a model

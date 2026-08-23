@@ -18,6 +18,8 @@ import {
   isThreadItem,
   isTokenUsage,
   isTurnCompleted,
+  readListedChildRolePage,
+  hasReadCompletedChildRole,
   readErrorNotificationThreadId,
   readErrorNotificationMessage,
   readErrorNotificationCode,
@@ -126,6 +128,17 @@ test("L1: workspace-write does NOT silently grant network access", () => {
   }
 })
 
+test("toCodexSandboxPolicy maps explicit network access without widening filesystem roots", () => {
+  assert.deepEqual(toCodexSandboxPolicy("read-only", "/work", true), { type: "readOnly", networkAccess: true })
+  assert.deepEqual(toCodexSandboxPolicy("workspace-write", "/work", true), {
+    type: "workspaceWrite",
+    writableRoots: ["/work"],
+    networkAccess: true,
+    excludeTmpdirEnvVar: false,
+    excludeSlashTmp: false,
+  })
+})
+
 test("toCodexSandboxPolicy: danger-full-access", () => {
   assert.deepEqual(toCodexSandboxPolicy("danger-full-access", "/work"), { type: "dangerFullAccess" })
 })
@@ -148,6 +161,34 @@ test("toCodexEffort preserves every supported Codex level, including max", () =>
   assert.equal(toCodexEffort("high"), "high")
   assert.equal(toCodexEffort("xhigh"), "xhigh")
   assert.equal(toCodexEffort("max"), "max")
+})
+
+test("provider child-role proof requires exact listed and read metadata", () => {
+  const page = { data: [
+    { id: "child-1", parentThreadId: "root-1", agentRole: "librarian" },
+    { id: "child-2", parentThreadId: "root-1", agentRole: "explorer" },
+    { id: "child-3", parentThreadId: "other-root", agentRole: "librarian" },
+  ], nextCursor: "next" }
+  assert.deepEqual(readListedChildRolePage(page, "root-1", "librarian"), {
+    childThreadIds: ["child-1"],
+    nextCursor: "next",
+  })
+  assert.deepEqual(readListedChildRolePage({ data: [], nextCursor: null }, "root-1", "librarian"), {
+    childThreadIds: [],
+    nextCursor: null,
+  })
+  assert.equal(readListedChildRolePage({ data: [] }, "root-1", "librarian"), undefined)
+
+  const child = { thread: {
+    id: "child-1",
+    parentThreadId: "root-1",
+    agentRole: "librarian",
+    turns: [{ status: "completed" }],
+  } }
+  assert.equal(hasReadCompletedChildRole(child, "child-1", "root-1", "librarian"), true)
+  assert.equal(hasReadCompletedChildRole(child, "child-1", "root-1", "explorer"), false)
+  assert.equal(hasReadCompletedChildRole({ thread: { ...child.thread, turns: [{ status: "failed" }] } }, "child-1", "root-1", "librarian"), false)
+  assert.equal(hasReadCompletedChildRole({ thread: { id: "child-1" } }, "child-1", "root-1", "librarian"), undefined)
 })
 
 // ---------------------------------------------------------------------------

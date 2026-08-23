@@ -213,6 +213,42 @@ test("spec → SDK options: cwd/model/maxTurns/effort floor/instructions preset 
   assert.equal(o2.systemPrompt, undefined)
 })
 
+test("claudeAgent selects a user-level SDK agent without loading project or local settings", async () => {
+  const calls: QueryCall[] = []
+  const worker = new ClaudeWorker({ queryFn: scripted([resultMsg(), resultMsg()], calls) })
+  await worker.runAgent(spec({ claudeAgent: "librarian" }), ctx())
+  assert.equal(calls[0]!.options.agent, "librarian")
+  assert.deepEqual(calls[0]!.options.settingSources, ["user"])
+
+  await worker.runAgent(spec(), ctx())
+  assert.equal(calls[1]!.options.agent, undefined)
+  assert.deepEqual(calls[1]!.options.settingSources, [])
+})
+
+test("a claudeAgent SDK resolution failure is a hard provider failure", async () => {
+  const worker = new ClaudeWorker({
+    queryFn: () => (async function* () {
+      throw new Error('Agent type "missing" not found')
+    })(),
+  })
+  await assert.rejects(
+    worker.runAgent(spec({ claudeAgent: "missing" }), ctx()),
+    (error: unknown) => error instanceof AgentError && error.code === "sdk_error" && error.retryable === false,
+  )
+})
+
+test("a transient SDK failure remains retryable when claudeAgent is selected", async () => {
+  const worker = new ClaudeWorker({
+    queryFn: () => (async function* () {
+      throw new Error("socket hung up")
+    })(),
+  })
+  await assert.rejects(
+    worker.runAgent(spec({ claudeAgent: "librarian" }), ctx()),
+    (error: unknown) => error instanceof AgentError && error.code === "sdk_error" && error.retryable === true,
+  )
+})
+
 test("schema spec: outputFormat is sent and structured_output comes back on the result", async () => {
   const calls: QueryCall[] = []
   const worker = new ClaudeWorker({ queryFn: scripted([resultMsg({ structured_output: { answer: 42 } })], calls) })

@@ -13,6 +13,8 @@ export type Effort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | 
 
 export type Approval = "never" | "on-request"
 
+export type CodexWebSearch = "disabled" | "cached" | "live"
+
 /** A plain JSON Schema object (draft-07-ish). We do not constrain it further at the type level. */
 export type JSONSchema = Record<string, unknown>
 
@@ -43,6 +45,14 @@ interface AgentOptsBase {
   maxTurns?: number
   /** Codex-only service tier; `fast` canonicalizes to `priority` codex-side. */
   serviceTier?: string
+  /** Claude Code user-level custom agent name. */
+  claudeAgent?: string
+  /** Codex child role that the root turn must prove it spawned successfully. */
+  codexChildRole?: string
+  /** Codex web-search mode sent through thread/start config. */
+  codexWebSearch?: CodexWebSearch
+  /** Codex sandbox network access for read-only/workspace-write turns. */
+  codexNetworkAccess?: boolean
 }
 
 export type AgentOpts = AgentOptsBase & ProviderModelPair
@@ -60,6 +70,10 @@ export interface AgentSpec {
   schema?: JSONSchema
   maxTurns?: number
   serviceTier?: string
+  claudeAgent?: string
+  codexChildRole?: string
+  codexWebSearch?: CodexWebSearch
+  codexNetworkAccess?: boolean
 }
 
 export interface AgentUsage {

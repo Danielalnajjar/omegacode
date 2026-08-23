@@ -104,9 +104,10 @@ user input, stream item/turn notifications, read the result off `turn/completed`
 `{type:"image", url}` | `{type:"localImage", path}` | `{type:"skill", name, path}` |
 `{type:"mention", name, path}`. v1 sends `text`.
 
-**Streaming notifications (per turn):** `turn/started`, `item/started`, `item/agentMessage/delta`
+**Streaming notifications (per turn):** `turn/started`, `thread/started`, `item/started`, `item/agentMessage/delta`
 (streamed text), `item/completed` (authoritative final item — the `agentMessage` item carries the final
-text), `turn/diff/updated`, `thread/tokenUsage/updated`, and finally **`turn/completed`**
+text), `turn/diff/updated`,
+`thread/tokenUsage/updated`, and finally **`turn/completed`**
 (`TurnCompletedNotification = { threadId, turn }`, where `turn.status ∈ completed|interrupted|failed`).
 The assistant's text is the final `agentMessage` item; the status is on `turn/completed`.
 
@@ -133,7 +134,8 @@ process (bb confirms this model). We cap concurrency and clean up threads when d
   **`result`** message (`SDKResultSuccess`) carries `result` (final text), **`structured_output`**,
   `usage`, `total_cost_usd`, `num_turns`. Errors come as `SDKResultError` with subtypes
   (`error_max_turns`, `error_max_budget_usd`, `error_max_structured_output_retries`, …).
-- **Options we use:** `cwd`, `model`, `maxTurns`, `settingSources: []` (SDK isolation), a
+- **Options we use:** `cwd`, `model`, `maxTurns`, `agent` for `claudeAgent`, `settingSources: []`
+  for ordinary calls or `["user"]` for native-agent calls (never project/local sources), a
   **`canUseTool`** callback (the sandbox tool-gate, §6.4), and **`outputFormat: { type: 'json_schema',
   schema }`** for structured output (verified in the installed typings + the [Agent SDK
   structured-outputs docs](https://code.claude.com/docs/en/agent-sdk/structured-outputs)).
@@ -248,7 +250,9 @@ and typechecking. Schemas are **JSON Schema** (the portable default that maps st
 "none"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max" (the shared provider union; each worker maps
 only the levels its backend does not support), cwd?, sandbox?:
 "read-only"|"workspace-write"|"danger-full-access", approval?: "never"|"on-request", instructions?,
-schema?: JSONSchema, worktree?: boolean | string, key?: string, maxTurns?: number }`.
+schema?: JSONSchema, worktree?: boolean | string, key?: string, maxTurns?: number, serviceTier?:
+string, claudeAgent?: string, codexChildRole?: string, codexWebSearch?:
+"disabled"|"cached"|"live", codexNetworkAccess?: boolean }`.
 - `provider` selects the backend for this call; default = `--provider` → `meta.defaultProvider` →
   built-in (`codex`). `provider` and `model` are **both-or-neither** at every specification site
   (per-call opts, meta defaults, CLI flags): each site supplies the pair atomically or not at all,
@@ -259,6 +263,10 @@ schema?: JSONSchema, worktree?: boolean | string, key?: string, maxTurns?: numbe
   re-validated client-side (§6.3).
 - `sandbox`/`approval` map per provider (§6.4); `effort` maps natively on Codex, best-effort on Claude
   (§6.5).
+- `claudeAgent` is Claude-only and loads that user-level SDK agent without project/local settings.
+  `codexChildRole`, `codexWebSearch`, and `codexNetworkAccess` are Codex-only; child-role construction
+  is accepted only from exact provider-owned parent, role, and completed-turn metadata, never from
+  prompt/result text.
 - `worktree` → run this agent in an isolated git worktree (§7), for parallel mutators.
 - `key` pins an explicit, stable resume cache key (§9) so the call replays even if its position or prompt
   wording changes; omit it to use the default chained key. (`label`/`phase`/`key` do **not** affect the
@@ -344,12 +352,16 @@ small registry of live workers and lazily starts each provider the first time it
 ### 6.1 `CodexWorker` (codex app-server)
 - Spawn `codex app-server` (one process per run, multiplexes threads — a pool is the throughput escape
   hatch, §8); newline-delimited JSON-RPC framing; `initialize`/`initialized` handshake.
-- `runAgent`: `thread/start` (cwd, model, sandbox, approvalPolicy, instructions, `experimentalRawEvents:
+- `runAgent`: `thread/start` (cwd, model, sandbox, approvalPolicy, instructions, optional
+  `config.web_search`, `experimentalRawEvents:
   false`) → `thread/start` returns a `threadId` → `turn/start` (input text, model, effort, sandboxPolicy,
   approvalPolicy, **`outputSchema`** when `schema` set). Subscribe by `threadId`: accumulate
   `item/agentMessage/delta`, capture the final `agentMessage` item, resolve on **`turn/completed`**;
-  surface `thread/tokenUsage/updated`. *(No per-thread cleanup is shipped — the worker never calls
-  `thread/unsubscribe`/`thread/archive`; threads end when the per-run app-server process exits.)*
+  surface `thread/tokenUsage/updated`. Ordinary worker threads are ephemeral. When
+  `codexChildRole` is set, start only that provider thread as temporarily durable because Codex
+  0.149 does not list ephemeral child metadata: paginate all direct children, re-read the matching
+  child to verify its exact parent, role, and completed final turn, then `thread/delete` the root subtree after success or
+  failure. Other ephemeral threads end with the per-run app-server process.
 - Errors from `codexErrorInfo` (`UsageLimitExceeded`/429 → classified retryable; `ContextWindowExceeded`
   → fail). Interrupt via `turn/interrupt`.
 
@@ -357,7 +369,8 @@ small registry of live workers and lazily starts each provider the first time it
 - `runAgent`: call `query({ prompt, options })` and iterate the `SDKMessage` async generator. Accumulate
   `assistant` text; on the terminal **`result`** message return `{ text: m.result, structured:
   m.structured_output, usage: m.usage, status }`. Options: `cwd`, `model`, `maxTurns`,
-  `settingSources: []`, the `canUseTool` sandbox gate (§6.4), and `outputFormat` (when `schema` is
+  `agent` plus `settingSources: ["user"]` for `claudeAgent` calls (otherwise `settingSources: []`),
+  the `canUseTool` sandbox gate (§6.4), and `outputFormat` (when `schema` is
   set). Abort via the generator's abort/interrupt.
 - One `query()` per agent (its own session/subprocess). Errors come as `SDKResultError` subtypes
   (rate-limit/turns/budget/structured-retries) → mapped to the same typed `AgentError` with the same

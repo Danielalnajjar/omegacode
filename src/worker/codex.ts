@@ -32,6 +32,8 @@ import {
   isThreadItem,
   isTokenUsage,
   isTurnCompleted,
+  readListedChildRolePage,
+  hasReadCompletedChildRole,
   readErrorNotificationThreadId,
   readErrorNotificationMessage,
   readErrorNotificationCode,
@@ -100,9 +102,9 @@ export const DEFAULT_TURN_STALL_TIMEOUT_MS = 30 * 60_000
 export const DEFAULT_EXTRACTION_TURN_TIMEOUT_MS = 15 * 60_000
 
 /** Provider-side Codex threads are an implementation detail of an OmegaCode run.
- *  Keeping them ephemeral prevents worker sessions from being persisted into the
- *  user's normal Codex Desktop thread store while preserving OmegaCode's own
- *  events/journal/transcripts/result files. */
+ *  Keep ordinary calls ephemeral. A codexChildRole call is temporarily durable
+ *  only because 0.149 does not list ephemeral child metadata; that exact subtree
+ *  is deleted after role verification. */
 export const DEFAULT_THREAD_EPHEMERAL = true
 
 /** Keep thread initialization below the measured local app-server saturation
@@ -215,6 +217,10 @@ interface TurnState {
   /** No-progress watchdog: re-armed on every inbound frame that touches this
    *  turn's thread, cleared on settle. Fires → the turn fails as stalled. (M30) */
   watchdog?: ReturnType<typeof setTimeout>
+  /** Provider-native child role this root turn must prove it spawned. */
+  requiredChildRole?: string
+  /** Prevent duplicate turn/completed frames from issuing duplicate proof lookups. */
+  childRoleVerificationStarted: boolean
 }
 
 export class CodexWorker implements Worker {
@@ -274,8 +280,10 @@ export class CodexWorker implements Worker {
       sandbox: toCodexSandboxMode(spec.sandbox),
       ...(spec.instructions ? { developerInstructions: spec.instructions } : {}),
       experimentalRawEvents: false,
-      persistExtendedHistory: false,
-      ephemeral: this.threadEphemeral,
+      // Codex 0.149 does not list child metadata for ephemeral threads.
+      // Role-proof calls are briefly persisted, verified, then deleted as an exact subtree.
+      ephemeral: spec.codexChildRole === undefined ? this.threadEphemeral : false,
+      ...(spec.codexWebSearch !== undefined ? { config: { web_search: spec.codexWebSearch } } : {}),
     }
     let startResult: unknown
     try {
@@ -306,6 +314,7 @@ export class CodexWorker implements Worker {
       })
     }
 
+    try {
     // 2. Two-phase structured output — match the native Claude SDK behavior.
     //    A free-form WORKING turn (no schema → prose + tools, streamed to the
     //    transcript), then — only when a schema is set — a silent EXTRACTION turn
@@ -314,7 +323,7 @@ export class CodexWorker implements Worker {
     const baseTurn = {
       threadId,
       approvalPolicy: toCodexApprovalPolicy(spec.sandbox, spec.approval),
-      sandboxPolicy: toCodexSandboxPolicy(spec.sandbox, spec.cwd),
+      sandboxPolicy: toCodexSandboxPolicy(spec.sandbox, spec.cwd, spec.codexNetworkAccess),
       ...(spec.model ? { model: spec.model } : {}),
       ...(toCodexEffort(spec.effort) ? { effort: toCodexEffort(spec.effort) } : {}),
     }
@@ -323,7 +332,15 @@ export class CodexWorker implements Worker {
     // long working turn from a silent extraction turn (extraction forwards no
     // text, which otherwise looks identical to a stall from the outside).
     ctx.onProgress({ kind: "phase", phase: "working" })
-    const working = await this.runTurn(ctx, spec.sandbox, spec.cwd, { ...baseTurn, input: textInput(spec.prompt) }, true)
+    const working = await this.runTurn(
+      ctx,
+      spec.sandbox,
+      spec.cwd,
+      { ...baseTurn, input: textInput(spec.prompt) },
+      true,
+      undefined,
+      spec.codexChildRole,
+    )
     if (!spec.schema) return working
 
     const workingStructured = parseValidJson(working.text, spec.schema)
@@ -390,6 +407,21 @@ export class CodexWorker implements Worker {
       status: "completed",
       usage: extraction.usage,
     }
+    } finally {
+      if (spec.codexChildRole !== undefined) {
+        try {
+          await this.request("thread/delete", { threadId })
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          ctx.onProgress({
+            kind: "tool-result",
+            name: "codex-thread-cleanup",
+            output: `could not delete temporary provider thread ${threadId}: ${message}`,
+            isError: true,
+          })
+        }
+      }
+    }
   }
 
   /** Run one codex turn on an existing thread; resolves on turn completion. */
@@ -400,6 +432,7 @@ export class CodexWorker implements Worker {
     turnParams: TurnStartParams,
     forwardProgress: boolean,
     seedUsage?: AgentUsage,
+    requiredChildRole?: string,
   ): Promise<AgentResult> {
     const { threadId } = turnParams
     let onAbort: (() => void) | undefined
@@ -416,6 +449,8 @@ export class CodexWorker implements Worker {
         cwd,
         pendingWrites: [],
         forwardProgress,
+        requiredChildRole,
+        childRoleVerificationStarted: false,
       }
       this.turns.set(threadId, state)
       // Arm the no-progress watchdog for the whole turn lifetime — the
@@ -804,19 +839,18 @@ export class CodexWorker implements Worker {
     if (!state) return
     const status = typeof p.turn.status === "string" ? p.turn.status : undefined
     if (status === "completed") {
-      const result: AgentResult = {
-        text: state.finalMessage ?? state.deltaText,
-        status: "completed",
-        usage: state.usage,
+      if (state.requiredChildRole !== undefined) {
+        if (state.childRoleVerificationStarted) return
+        state.childRoleVerificationStarted = true
+        void this.verifyRequestedChildRole(state).then((verified) => {
+          if (verified) this.settleCompletedTurn(p.threadId, state)
+          else this.settleReject(p.threadId, this.childRoleUnprovenError(state.requiredChildRole!))
+        }).catch((error: unknown) => {
+          this.settleReject(p.threadId, error instanceof AgentError ? error : this.toAgentError(error))
+        })
+        return
       }
-      // Await any in-flight host-side writes (e.g. image artifacts) before
-      // resolving so the artifact exists when the result is journaled.
-      const writes = state.pendingWrites
-      if (writes.length === 0) {
-        this.settleResolve(p.threadId, result)
-      } else {
-        void Promise.allSettled(writes).then(() => this.settleResolve(p.threadId, result))
-      }
+      this.settleCompletedTurn(p.threadId, state)
       return
     }
     if (status === "interrupted") {
@@ -837,6 +871,80 @@ export class CodexWorker implements Worker {
         retryable: isRetryableCodexError(codexErrorCode(info)),
       }),
     )
+  }
+
+  private async verifyRequestedChildRole(state: TurnState): Promise<boolean> {
+    const role = state.requiredChildRole
+    if (role === undefined) return true
+
+    const childThreadIds = new Set<string>()
+    const seenCursors = new Set<string>()
+    let cursor: string | undefined
+    do {
+      const result = await this.request("thread/list", {
+        parentThreadId: state.threadId,
+        limit: 100,
+        ...(cursor === undefined ? {} : { cursor }),
+      })
+      const page = readListedChildRolePage(result, state.threadId, role)
+      if (page === undefined) {
+        throw new AgentError({
+          provider: PROVIDER,
+          code: "protocol_drift",
+          message: `codex thread/list returned an unrecognized page while verifying child role "${role}" (server: ${this.serverUserAgent ?? "unknown"})`,
+          retryable: false,
+        })
+      }
+      for (const childThreadId of page.childThreadIds) childThreadIds.add(childThreadId)
+      if (page.nextCursor === null) break
+      if (seenCursors.has(page.nextCursor)) {
+        throw new AgentError({
+          provider: PROVIDER,
+          code: "protocol_drift",
+          message: `codex thread/list repeated a pagination cursor while verifying child role "${role}" (server: ${this.serverUserAgent ?? "unknown"})`,
+          retryable: false,
+        })
+      }
+      seenCursors.add(page.nextCursor)
+      cursor = page.nextCursor
+    } while (true)
+
+    for (const childThreadId of childThreadIds) {
+      const childResult = await this.request("thread/read", { threadId: childThreadId, includeTurns: true })
+      const verified = hasReadCompletedChildRole(childResult, childThreadId, state.threadId, role)
+      if (verified === undefined) {
+        throw new AgentError({
+          provider: PROVIDER,
+          code: "protocol_drift",
+          message: `codex thread/read returned unrecognized child metadata while verifying role "${role}" (server: ${this.serverUserAgent ?? "unknown"})`,
+          retryable: false,
+        })
+      }
+      if (verified) return true
+    }
+    return false
+  }
+
+  private childRoleUnprovenError(role: string): AgentError {
+    return new AgentError({
+      provider: PROVIDER,
+      code: "child_role_unproven",
+      message: `codex turn completed without provider evidence of child role "${role}"`,
+      retryable: false,
+    })
+  }
+
+  private settleCompletedTurn(threadId: string, state: TurnState): void {
+    const result: AgentResult = {
+      text: state.finalMessage ?? state.deltaText,
+      status: "completed",
+      usage: state.usage,
+    }
+    // Await any in-flight host-side writes (e.g. image artifacts) before resolving so the
+    // artifact exists when the result is journaled.
+    const writes = state.pendingWrites
+    if (writes.length === 0) this.settleResolve(threadId, result)
+    else void Promise.allSettled(writes).then(() => this.settleResolve(threadId, result))
   }
 
   /** A turn/completed we cannot read is protocol drift on the exact frame that

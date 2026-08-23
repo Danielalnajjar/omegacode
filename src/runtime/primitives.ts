@@ -47,6 +47,7 @@ export const SPEC_ENUMS = {
   effort: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
   approval: ["never", "on-request"],
   serviceTier: CODEX_SERVICE_TIERS,
+  codexWebSearch: ["disabled", "cached", "live"],
 } as const satisfies Record<string, readonly string[]>
 
 /**
@@ -238,6 +239,10 @@ export class Runtime {
       schema: opts?.schema,
       maxTurns: opts?.maxTurns,
       serviceTier: opts?.serviceTier,
+      claudeAgent: opts?.claudeAgent,
+      codexChildRole: opts?.codexChildRole,
+      codexWebSearch: opts?.codexWebSearch,
+      codexNetworkAccess: opts?.codexNetworkAccess,
     }
     // Validate the RESOLVED values so both per-call opts and run defaults are covered (H14).
     // Provider included: an unknown provider would otherwise only fail at the factory — and not
@@ -247,6 +252,7 @@ export class Runtime {
     checkSpecEnum("effort", spec.effort)
     checkSpecEnum("approval", spec.approval)
     checkSpecEnum("serviceTier", spec.serviceTier)
+    checkSpecEnum("codexWebSearch", spec.codexWebSearch)
     // Pairing is checked on the RAW opts (after the enum checks, so a typo'd provider still reports
     // as invalid): a lone provider/model here would silently mix with the other half of the run
     // defaults — the exact leak this rule exists to prevent. resolveDefaults covers the CLI/meta sites.
@@ -258,6 +264,23 @@ export class Runtime {
         provider: spec.provider,
         code: "unsupported_option",
         message: "serviceTier is codex-only; omit it or use the codex provider",
+      })
+    }
+    if (spec.claudeAgent !== undefined && spec.provider !== "claude-code") {
+      throw new AgentError({
+        provider: spec.provider,
+        code: "unsupported_option",
+        message: "claudeAgent is claude-code-only; omit it or use the claude-code provider",
+      })
+    }
+    if (
+      spec.provider !== "codex"
+      && (spec.codexChildRole !== undefined || spec.codexWebSearch !== undefined || spec.codexNetworkAccess !== undefined)
+    ) {
+      throw new AgentError({
+        provider: spec.provider,
+        code: "unsupported_option",
+        message: "codexChildRole, codexWebSearch, and codexNetworkAccess are codex-only; omit them or use the codex provider",
       })
     }
     return spec

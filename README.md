@@ -36,6 +36,18 @@ refuse at runtime.
 > Its one-shot subprocess cannot surface approval prompts, so calls use `approval: "never"`
 > (the default). Structured output resumes the working session for a tool-less formatting turn.
 
+> **Amp-hosted Grok:** an Amp orb can route Grok workers through registered Amp custom modes when
+> the Grok CLI is absent. Set `OMEGACODE_GROK_TRANSPORT=amp` (or pass
+> `--grok-transport amp`). Modes are named `<prefix>-read-<effort>`,
+> `<prefix>-full-<effort>`, and `<prefix>-extract-<effort>`, where the default prefix is
+> `omega-grok` and effort is `low|med|high|xhigh` (`med` maps Omega's `medium` effort within
+> Amp's 24-character mode-key limit). The read mode must expose exactly `Read,finder`; the full
+> mode must expose exactly `Read,finder,shell_command,verified_context_pack`; extraction must
+> expose no tools. OmegaCode verifies that tool list from Amp's stream init event before accepting
+> output. `workspace-write` is rejected because Amp's shell tool cannot enforce that intermediate
+> confinement. Override the executable with `AMP_BIN` and the prefix with
+> `OMEGACODE_AMP_GROK_MODE_PREFIX` or `--amp-grok-mode-prefix`.
+
 ## Use it
 
 With the skill installed, just ask your agent:

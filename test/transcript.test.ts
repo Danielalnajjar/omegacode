@@ -69,6 +69,16 @@ test("switching from text to reasoning flushes the pending text first", async ()
   assert.equal(lines[1].kind, "reasoning")
 })
 
+test("phase markers are preserved as durable transcript receipts", async () => {
+  const tx = new AgentTranscript("run-phase", 0)
+  tx.write({ kind: "phase", phase: "amp-thread:T-child" })
+  await tx.close()
+  const lines = readLines(agentTranscriptPath("run-phase", 0))
+  assert.deepEqual(lines.map(({ t: _t, ...line }) => line), [
+    { kind: "phase", phase: "amp-thread:T-child" },
+  ])
+})
+
 test("a tool chunk flushes pending text before it", async () => {
   const tx = new AgentTranscript("run4", 0)
   tx.write({ kind: "text", text: "before tool" })

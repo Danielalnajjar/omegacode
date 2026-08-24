@@ -256,6 +256,17 @@ export function toThreadFeed(chunks: ChatChunk[]): ThreadFeed {
         flushText()
         reasonBuf += c.text
         break
+      case "phase":
+        flushText()
+        flushReason()
+        items.push({
+          type: "toolCall",
+          id: nextId("phase"),
+          tool: "phase",
+          status: "completed",
+          result: c.phase,
+        })
+        break
       case "tool": {
         flushText()
         flushReason()

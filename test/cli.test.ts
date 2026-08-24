@@ -471,6 +471,28 @@ describe("CLI end-to-end (--fake)", () => {
     assert.match(r.stdout, /grok\s+: grok 0\.2\.100 — OUTDATED \(< 0\.2\.112\)/)
   })
 
+  test("doctor reports the selected Amp-backed Grok transport", { skip: process.platform === "win32" }, async () => {
+    const ampStub = join(home, "fake-amp")
+    writeFileSync(ampStub, "#!/bin/sh\necho 'amp 0.1.2'\n")
+    chmodSync(ampStub, 0o755)
+    const r = await runCli(["doctor"], {
+      OMEGACODE_HOME: home,
+      OMEGACODE_GROK_TRANSPORT: "amp",
+      AMP_BIN: ampStub,
+    })
+    assert.equal(r.code, 0, `stderr=${r.stderr}`)
+    assert.match(r.stdout, /grok\s+: Amp transport \(amp 0\.1\.2\)/)
+  })
+
+  test("doctor rejects an invalid Grok transport environment value", async () => {
+    const r = await runCli(["doctor"], {
+      OMEGACODE_HOME: home,
+      OMEGACODE_GROK_TRANSPORT: "AMP",
+    })
+    assert.equal(r.code, 1)
+    assert.match(r.stderr, /invalid Grok transport: AMP — expected cli or amp/)
+  })
+
   test("a meta.defaultProvider typo is rejected at run setup, even under --fake", async () => {
     const bad = join(home, "bad-default-provider.workflow.js")
     writeFileSync(
@@ -505,6 +527,18 @@ describe("CLI end-to-end (--fake)", () => {
     const r = await runCli(["run", wf, "--codex-thread-start-concurrency", "0", "--fake", "--no-serve"], { OMEGACODE_HOME: home })
     assert.equal(r.code, 1)
     assert.match(r.stderr, /--codex-thread-start-concurrency must be a positive integer/)
+  })
+
+  test("invalid --grok-transport is rejected", async () => {
+    const r = await runCli(["run", wf, "--grok-transport", "socket", "--fake", "--no-serve"], { OMEGACODE_HOME: home })
+    assert.equal(r.code, 1)
+    assert.match(r.stderr, /--grok-transport must be one of cli, amp/)
+  })
+
+  test("empty --amp-grok-mode-prefix is rejected", async () => {
+    const r = await runCli(["run", wf, "--amp-grok-mode-prefix=", "--fake", "--no-serve"], { OMEGACODE_HOME: home })
+    assert.equal(r.code, 1)
+    assert.match(r.stderr, /--amp-grok-mode-prefix requires a value/)
   })
 
   test("invalid --budget (abc → NaN) is rejected instead of silently disabling the budget (M20)", async () => {

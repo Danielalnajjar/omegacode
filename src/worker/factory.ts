@@ -6,6 +6,9 @@ import { ClaudeWorker } from "./claude.js"
 import { OpencodeWorker } from "./opencode.js"
 import { PiWorker } from "./pi.js"
 import { GrokWorker } from "./grok.js"
+import { AmpGrokWorker } from "./amp-grok.js"
+
+export type GrokTransport = "cli" | "amp"
 
 export interface FactoryOpts {
   /** Use the in-process FakeWorker for every provider (smoke tests, --fake). */
@@ -20,6 +23,9 @@ export interface FactoryOpts {
   opencodeBin?: string
   piBin?: string
   grokBin?: string
+  grokTransport?: GrokTransport
+  ampBin?: string
+  ampGrokModePrefix?: string
 }
 
 export class DefaultWorkerFactory implements WorkerFactory {
@@ -57,6 +63,12 @@ export class DefaultWorkerFactory implements WorkerFactory {
       case "pi":
         return new PiWorker({ bin: this.opts.piBin })
       case "grok":
+        if (this.opts.grokTransport === "amp") {
+          return new AmpGrokWorker({
+            bin: this.opts.ampBin,
+            modePrefix: this.opts.ampGrokModePrefix,
+          })
+        }
         return new GrokWorker({ bin: this.opts.grokBin })
       default: {
         // Exhaustive: a new ProviderId must be handled here, and an unknown runtime value

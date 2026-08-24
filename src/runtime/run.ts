@@ -5,7 +5,7 @@ import { createHash, randomBytes } from "node:crypto"
 import { readFileSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { DEFAULTS, type Effort, type ProviderId, type RunDefaults, type Sandbox } from "../dsl/types.js"
-import { DefaultWorkerFactory } from "../worker/factory.js"
+import { DefaultWorkerFactory, type GrokTransport } from "../worker/factory.js"
 import { writeBbOrigin } from "./bb-origin.js"
 import { type EventListener, FileEventSink } from "./event-sink.js"
 import { determinismLint, KEY_VERSION } from "./keys.js"
@@ -41,6 +41,10 @@ export interface RunOverrides {
   opencodeBin?: string
   piBin?: string
   grokBin?: string
+  /** Run provider `grok` through the native Grok CLI or an Amp custom mode. */
+  grokTransport?: GrokTransport
+  ampBin?: string
+  ampGrokModePrefix?: string
   /** Use `codex app-server proxy --sock <path>` for Codex workers. */
   codexAppServerSocket?: string
   /** Force Codex workers to spawn their own stdio app-server, even if env selects a shared socket. */
@@ -143,6 +147,9 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     opencodeBin: opts.overrides?.opencodeBin ?? process.env.OPENCODE_BIN,
     piBin: opts.overrides?.piBin ?? process.env.PI_BIN,
     grokBin: opts.overrides?.grokBin ?? process.env.GROK_BIN,
+    grokTransport: resolveGrokTransport(opts.overrides),
+    ampBin: opts.overrides?.ampBin ?? process.env.AMP_BIN,
+    ampGrokModePrefix: opts.overrides?.ampGrokModePrefix ?? process.env.OMEGACODE_AMP_GROK_MODE_PREFIX,
     codexAppServerSocket: resolveCodexAppServerSocket(opts.overrides),
     codexDisableLocalMcps: opts.overrides?.codexDisableLocalMcps ?? envFlag("OMEGACODE_CODEX_DISABLE_LOCAL_MCPS") ?? true,
     codexThreadStartConcurrency: opts.overrides?.codexThreadStartConcurrency,
@@ -221,6 +228,12 @@ function resolveCodexAppServerSocket(overrides: RunOverrides | undefined): strin
   const configured = process.env.OMEGACODE_CODEX_APP_SERVER_SOCKET
   if (configured !== undefined) return configured.length > 0 ? configured : undefined
   return undefined
+}
+
+function resolveGrokTransport(overrides: RunOverrides | undefined): GrokTransport {
+  const value = overrides?.grokTransport ?? process.env.OMEGACODE_GROK_TRANSPORT ?? "cli"
+  if (value === "cli" || value === "amp") return value
+  throw new Error(`invalid Grok transport: ${value} — expected cli or amp`)
 }
 
 function envFlag(name: string): boolean | undefined {

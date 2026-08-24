@@ -77,6 +77,13 @@ describe("toThreadFeed — meta + text + reasoning", () => {
     expect(feed.status).toBe("failed")
     expect(feed.error).toBe("nope")
   })
+
+  it("surfaces worker phase receipts", () => {
+    const feed = toThreadFeed([{ t: 1, kind: "phase", phase: "amp-thread:T-child" }])
+    expect(feed.items).toEqual([
+      expect.objectContaining({ type: "toolCall", tool: "phase", status: "completed", result: "amp-thread:T-child" }),
+    ])
+  })
 })
 
 describe("toThreadFeed — command tools", () => {

@@ -433,6 +433,9 @@ export class Runtime {
                   cacheCreationInputTokens: e.usage.cacheCreationInputTokens,
                 })
                 break
+              case "phase":
+                transcript.write({ kind: "phase", phase: e.phase })
+                break
             }
           },
         }

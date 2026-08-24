@@ -195,3 +195,59 @@ test("grok: GROK_BIN env drives a real spawn with prompt-file and policy flags",
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test("grok: Amp transport env drives a real nested Amp spawn", posixOnly, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "omega-amp-grok-env-"))
+  const prev = {
+    OMEGACODE_HOME: process.env.OMEGACODE_HOME,
+    RECORD: process.env.RECORD,
+    AMP_BIN: process.env.AMP_BIN,
+    OMEGACODE_GROK_TRANSPORT: process.env.OMEGACODE_GROK_TRANSPORT,
+    OMEGACODE_AMP_GROK_MODE_PREFIX: process.env.OMEGACODE_AMP_GROK_MODE_PREFIX,
+  }
+  try {
+    const record = join(dir, "record.json")
+    const bin = join(dir, "amp-fake.cjs")
+    writeFakeBin(bin, "amp 0.0.0-test", [
+      JSON.stringify({ type: "system", subtype: "init", session_id: "T-test", tools: ["Read", "finder"] }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "ok" }], usage: { input_tokens: 1, output_tokens: 2 } } }),
+      JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok", session_id: "T-test" }),
+    ])
+    const wf = join(dir, "amp-grok-env.workflow.js")
+    writeFileSync(
+      wf,
+      `export const meta = { name: "amp-grok-env-smoke", description: "e2e Amp transport wiring", defaultProvider: "grok", defaultModel: "grok-4.6" }\n` +
+        `return await agent("hello from workflow", { effort: "high", instructions: "be terse", cwd: ${JSON.stringify(dir)} })\n`,
+    )
+    process.env.OMEGACODE_HOME = join(dir, "home")
+    process.env.RECORD = record
+    process.env.AMP_BIN = bin
+    process.env.OMEGACODE_GROK_TRANSPORT = "amp"
+    process.env.OMEGACODE_AMP_GROK_MODE_PREFIX = "placecard-grok"
+
+    const outcome = await runWorkflow({ file: wf, quiet: true })
+    assert.equal(outcome.status, "completed", `error=${outcome.error}`)
+    assert.equal(outcome.result, "ok")
+
+    const launch = JSON.parse(readFileSync(record, "utf8")) as Launch
+    assert.deepEqual(launch.argv, [
+      "--mode",
+      "placecard-grok-read-high",
+      "--execute",
+      "--stream-json-thinking",
+      "--plugin-ready-timeout",
+      "30",
+      "--label",
+      "omega",
+    ])
+    assert.equal(launch.stdin, "<instructions>\nbe terse\n</instructions>\n\nhello from workflow")
+    assert.equal(realpathSync(launch.cwd), realpathSync(dir))
+  } finally {
+    restoreEnv("OMEGACODE_HOME", prev.OMEGACODE_HOME)
+    restoreEnv("RECORD", prev.RECORD)
+    restoreEnv("AMP_BIN", prev.AMP_BIN)
+    restoreEnv("OMEGACODE_GROK_TRANSPORT", prev.OMEGACODE_GROK_TRANSPORT)
+    restoreEnv("OMEGACODE_AMP_GROK_MODE_PREFIX", prev.OMEGACODE_AMP_GROK_MODE_PREFIX)
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

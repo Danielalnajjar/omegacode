@@ -431,6 +431,13 @@ async function cmdRun(flags: Flags): Promise<void> {
   if (flags["codex-enable-local-mcps"] === true) overrides.codexDisableLocalMcps = false
   const codexThreadStartConcurrency = positiveIntFlag(flags, "codex-thread-start-concurrency")
   if (codexThreadStartConcurrency !== undefined) overrides.codexThreadStartConcurrency = codexThreadStartConcurrency
+  const grokTransport = enumFlag(flags, "grok-transport", ["cli", "amp"] as const)
+  if (grokTransport !== undefined) overrides.grokTransport = grokTransport
+  const ampGrokModePrefix = str(flags["amp-grok-mode-prefix"])
+  if (ampGrokModePrefix !== undefined) {
+    if (!ampGrokModePrefix) throw new UsageError("--amp-grok-mode-prefix requires a value")
+    overrides.ampGrokModePrefix = ampGrokModePrefix
+  }
 
   // --resume, if present, must carry a runId — a bare `--resume` used to silently start a fresh run.
   const resumeRunId = str(flags.resume)
@@ -601,6 +608,8 @@ function buildDetachedChildArgs(
   if (opts.overrides.codexDisableLocalMcps) out.push("--codex-disable-local-mcps")
   if (opts.overrides.codexDisableLocalMcps === false) out.push("--codex-enable-local-mcps")
   appendValue(out, "codex-thread-start-concurrency", opts.overrides.codexThreadStartConcurrency)
+  appendValue(out, "grok-transport", opts.overrides.grokTransport)
+  appendValue(out, "amp-grok-mode-prefix", opts.overrides.ampGrokModePrefix)
   return out
 }
 
@@ -807,6 +816,12 @@ async function cmdDoctor(): Promise<void> {
   const opencodeBin = process.env.OPENCODE_BIN ?? "opencode"
   const piBin = process.env.PI_BIN ?? "pi"
   const grokBin = process.env.GROK_BIN ?? "grok"
+  const grokTransport = process.env.OMEGACODE_GROK_TRANSPORT ?? "cli"
+  const ampBin = process.env.AMP_BIN ?? "amp"
+
+  if (grokTransport !== "cli" && grokTransport !== "amp") {
+    throw new UsageError(`invalid Grok transport: ${grokTransport} — expected cli or amp`)
+  }
 
   // pi probes run isolated (scratch agent dir, neutral cwd): old binaries wrote lock files and a
   // repo-local .pi even on --version, and 0.79.1 is not confirmed clean.
@@ -824,7 +839,9 @@ async function cmdDoctor(): Promise<void> {
   console.log(`  claude-code  : ${check("claude", ["--version"])}`)
   console.log(`  opencode     : ${withMin(check(opencodeBin, ["--version"]), OPENCODE_MIN_VERSION, "upgrade the opencode CLI")}`)
   console.log(`  pi           : ${withMin(piOut, PI_MIN_VERSION, "bun add -g @earendil-works/pi-coding-agent")}`)
-  console.log(`  grok         : ${withMin(check(grokBin, ["--version"]), GROK_MIN_VERSION, "upgrade the grok CLI")}`)
+  console.log(`  grok         : ${grokTransport === "amp"
+    ? `Amp transport (${check(ampBin, ["--version"])})`
+    : withMin(check(grokBin, ["--version"]), GROK_MIN_VERSION, "upgrade the grok CLI")}`)
   console.log(`  data dir     : ${dataRoot()}`)
 }
 
@@ -887,6 +904,8 @@ Usage:
       --codex-thread-start-concurrency <N> cap simultaneous thread initialization, not model turns (default 16)
       --codex-app-server-socket <path>     opt into proxying Codex workers through an existing app-server socket
       --codex-no-app-server-proxy          force a fresh stdio app-server even when env selects a proxy socket
+      --grok-transport cli|amp             run Grok through its CLI (default) or an Amp custom mode
+      --amp-grok-mode-prefix <prefix>      Amp mode prefix (default omega-grok; profile/effort suffixes are added)
       --resume <runId>                     replay unchanged prefix, re-run the rest
       --fake                               run with a fake worker (no real agents)
       --json                               print {runId,status,url,result,error} as JSON (viewer still starts)

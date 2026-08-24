@@ -64,6 +64,7 @@ export type ChatChunk =
   | { t: number; kind: "meta"; index: number; label: string; provider: ProviderId; model?: string; prompt: string }
   | { t: number; kind: "text"; text: string }
   | { t: number; kind: "reasoning"; text: string }
+  | { t: number; kind: "phase"; phase: string }
   | { t: number; kind: "tool"; id?: string; name: string; input?: unknown }
   | { t: number; kind: "tool-result"; id?: string; name?: string; output?: string; isError?: boolean }
   | { t: number; kind: "status"; state: "running" | "done" | "failed"; error?: string; cached?: boolean }

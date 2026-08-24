@@ -65,9 +65,21 @@ The five providers:
 - **pi** (`@earendil-works/pi-coding-agent` ≥ 0.79.1) — spawn-per-call subprocess backend. `model` is an open pi model reference (e.g. `"openrouter/moonshotai/kimi-k2.6"`). **Requires `sandbox: "danger-full-access"`** — pi's tool allowlists are not OS confinement, so `read-only`/`workspace-write` are rejected. `effort` maps onto pi's full thinking range (`none`→off … `max`→xhigh); `maxTurns` is rejected. Structured output via a silent tool-less extraction turn.
 - **grok** (xAI Grok CLI ≥ 0.2.112) — spawn-per-call `grok --prompt-file`. `model` is a Grok catalog id (e.g. `"grok-4.6"`). Honors every `sandbox` mode (`read-only` → `--sandbox read-only`, `workspace-write` → `--sandbox workspace`, `danger-full-access` → `--sandbox off`). Every headless Grok call also gets `--always-approve` — Omega cannot answer permission prompts, and plan mode cancels the turn after ~30s. `effort` maps onto the grok-4.6 menu (`none`/`minimal`→`low`, `max`/`ultra`→`xhigh`). `maxTurns` maps to `--max-turns`. Nested Grok subagents are disabled. Structured output via a silent resume extraction turn — do not put `--json-schema` on the tool-using pass. `serviceTier` is rejected. Override the binary with `GROK_BIN`.
 
+In an Amp orb where the Grok CLI is absent, select the Amp transport with
+`OMEGACODE_GROK_TRANSPORT=amp` or `--grok-transport amp`. It requires registered
+`xai/grok-4.6` modes named `<prefix>-{read|full|extract}-{low|med|high|xhigh}`;
+`med` represents Omega's `medium` effort within Amp's 24-character mode-key limit.
+The modes must expose exactly `Read,finder`; `Read,finder,shell_command,verified_context_pack`;
+and no tools, respectively. OmegaCode verifies the exact init tool list and records every
+nested Amp thread ID in the agent transcript. Amp cannot enforce `workspace-write` or a
+turn cap, so this transport rejects those options; use `read-only` or
+`danger-full-access` with `approval: "never"`. Override the mode prefix with
+`OMEGACODE_AMP_GROK_MODE_PREFIX` or `--amp-grok-mode-prefix` and the executable with
+`AMP_BIN`.
+
 (`opts.effort` is a single union — `"none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"` — and each worker maps only unsupported levels: `minimal`→`low` on claude and `max`→`xhigh` on pi. Codex and opencode pass `max` through.)
 
-codex, claude-code, and grok honor every `sandbox` mode (read-only by default); **opencode and pi are full-access-only** — every call on them needs an explicit `sandbox: "danger-full-access"` (per call or via `--sandbox`), a deliberate fail-closed choice because neither CLI can honestly enforce confinement. All providers honor `cwd`; `worktree: true` isolates parallel file edits regardless of provider. Outdated opencode/pi/grok binaries are refused at runtime (`provider_outdated`); `omegacode doctor` flags them up front.
+codex, claude-code, and CLI-transport grok honor every `sandbox` mode (read-only by default); Amp-transport grok supports read-only and full access but rejects workspace-write. **opencode and pi are full-access-only** — every call on them needs an explicit `sandbox: "danger-full-access"` (per call or via `--sandbox`), a deliberate fail-closed choice because neither CLI can honestly enforce confinement. All providers honor `cwd`; `worktree: true` isolates parallel file edits regardless of provider. Outdated opencode/pi/grok binaries are refused at runtime (`provider_outdated`); `omegacode doctor` flags them up front.
 
 The default case — omit provider, so fan-out and synthesis run on whatever provider the workflow was invoked with:
 ```js
@@ -212,6 +224,8 @@ omegacode run <file.workflow.js | name> [--args '<json>' | --args-file <f>]
                                        [--codex-thread-start-concurrency <N>]
                                        [--codex-app-server-socket <path>]
                                        [--codex-no-app-server-proxy]
+                                       [--grok-transport cli|amp]
+                                       [--amp-grok-mode-prefix <prefix>]
                                        [--resume <runId>] [--fake] [--json] [--detach] [--open]
 omegacode status <runId> [--json]             Read native status from events.jsonl + heartbeat
 omegacode wait <runId> [--json] [--poll-ms N] [--timeout-ms N] [--stale-debounce-ms N]   Wait for terminal native status

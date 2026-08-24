@@ -7,6 +7,7 @@ import { join } from "node:path"
 import { Runtime } from "../src/runtime/primitives.ts"
 import { ensureRunDir, Journal, type LoadedJournal } from "../src/runtime/journal.ts"
 import { FileEventSink } from "../src/runtime/event-sink.ts"
+import { agentTranscriptPath, type ChatChunk } from "../src/runtime/transcript.ts"
 import { runInSandbox } from "../src/runtime/sandbox.ts"
 import type { EventSink, WorkflowEventInput } from "../src/runtime/events.ts"
 import type { Worker, WorkerContext, WorkerFactory } from "../src/worker/index.ts"
@@ -139,6 +140,27 @@ test("happy path: a single agent returns its text and journals a completed resul
     const [entry] = [...loaded.results.values()]
     assert.equal(entry.status, "completed")
     assert.equal(entry.result, "echo:hi")
+  } finally {
+    b.cleanup()
+  }
+})
+
+test("worker phase receipts reach the durable agent transcript", async () => {
+  const b = build({
+    hooks: {
+      run: async (_spec, ctx) => {
+        ctx.onProgress({ kind: "phase", phase: "amp-thread:T-child" })
+        return { text: "ok", status: "completed", usage: emptyUsage() }
+      },
+    },
+  })
+  try {
+    await runBody(b, `return await agent("phase")`)
+    const chunks = readFileSync(agentTranscriptPath("run_test", 1), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as ChatChunk)
+    assert.ok(chunks.some((chunk) => chunk.kind === "phase" && chunk.phase === "amp-thread:T-child"))
   } finally {
     b.cleanup()
   }

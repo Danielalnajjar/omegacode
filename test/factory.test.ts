@@ -10,6 +10,7 @@ import { CodexWorker } from "../src/worker/codex.ts"
 import { OpencodeWorker } from "../src/worker/opencode.ts"
 import { PiWorker } from "../src/worker/pi.ts"
 import { GrokWorker } from "../src/worker/grok.ts"
+import { AmpGrokWorker } from "../src/worker/amp-grok.ts"
 import { AgentError, AgentInterrupted, type WorkerContext } from "../src/worker/index.ts"
 import type { AgentSpec, ProviderId } from "../src/dsl/types.ts"
 
@@ -104,6 +105,18 @@ test("opencodeBin / piBin / grokBin are consumed by their workers", () => {
   assert.equal((pi as unknown as { bin: string }).bin, "/opt/pi")
   const grok = f.get("grok")
   assert.equal((grok as unknown as { bin: string }).bin, "/opt/grok")
+})
+
+test("grokTransport:amp routes Grok through Amp and consumes its transport options", () => {
+  const f = new DefaultWorkerFactory({
+    grokTransport: "amp",
+    ampBin: "/opt/amp",
+    ampGrokModePrefix: "placecard-grok",
+  })
+  const grok = f.get("grok")
+  assert.ok(grok instanceof AmpGrokWorker)
+  assert.equal((grok as unknown as { bin: string }).bin, "/opt/amp")
+  assert.equal((grok as unknown as { modePrefix: string }).modePrefix, "placecard-grok")
 })
 
 test("shutdownAll shuts down every service-tier worker, clears the cache, and is repeatable", async () => {

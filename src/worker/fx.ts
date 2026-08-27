@@ -10,8 +10,9 @@
 // maxTurns, and effort are rejected pre-spawn. Usage is unavailable: numeric zeros are a known
 // lower bound marked incomplete, never a measured total.
 //
-// Structured output: working turn → local schema validation → a second tool-less extraction
-// turn. fx has no no-tools flag; extraction prompts forbid tools and nonempty tool_calls fail.
+// Structured output: one working turn followed by local schema validation. On a miss the worker
+// leaves `structured` absent so the runtime's single corrective retry starts a new, fully admitted
+// turn. v0.0.6 has no enforceable no-tools flag, so this worker never claims a tool-less pass.
 
 import { createHash } from "node:crypto"
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
@@ -23,10 +24,10 @@ import {
 } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { isAbsolute, join } from "node:path"
-import { addUsage, type AgentResult, type AgentSpec, type AgentUsage } from "../dsl/types.js"
+import { type AgentResult, type AgentSpec, type AgentUsage } from "../dsl/types.js"
 import type { Worker, WorkerContext } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
-import { assertValidSchema, parseJsonLoose, parseValidJson } from "./schema.js"
+import { assertValidSchema, parseValidJson } from "./schema.js"
 import {
   DEFAULT_KILL_GRACE_MS,
   DEFAULT_STALL_TIMEOUT_MS,
@@ -82,8 +83,6 @@ export interface FxWorkerOpts {
 
 interface TurnOutcome {
   text: string
-  usage: AgentUsage
-  toolCalls: unknown[]
 }
 
 export class FxWorker implements Worker {
@@ -121,43 +120,16 @@ export class FxWorker implements Worker {
       }
     }
     const model = requiredModel(spec)
-    const home = resolveManagedHome(this.managedHomeOverride)
-    validateManagedHome(home)
-    validateSettings(home, model)
-    validateAuthMetadata(home)
-    await this.checkBinary()
-    const env = scrubbedEnv(home, model)
-    await this.checkStatus(spec, env, model, ctx.signal)
-
-    const working = await this.runTurn(spec, env, workingPrompt(spec), ctx, true)
+    const working = await this.runTurn(spec, model, workingPrompt(spec), ctx)
     const usage = unknownUsage()
     if (!spec.schema) return { text: working.text, status: "completed", usage }
 
-    const workingStructured = parseValidJson(working.text, spec.schema)
-    if (workingStructured !== undefined) {
-      return { text: working.text, structured: workingStructured, status: "completed", usage }
-    }
-
-    const extraction = await this.runTurn(spec, env, extractionPrompt(spec, working.text), ctx, false)
-    if (extraction.toolCalls.length > 0) {
-      throw new AgentError({
-        provider: PROVIDER,
-        code: "extraction_used_tools",
-        message: "fx extraction turn used tools; fx has no no-tools flag and tool_calls must be empty",
-        usage: addUsage(usage, unknownUsage()),
-      })
-    }
-    let structured: unknown
-    try {
-      structured = parseJsonLoose(extraction.text)
-    } catch {
-      structured = undefined
-    }
+    const structured = parseValidJson(working.text, spec.schema)
     return {
-      text: extraction.text,
-      structured,
+      text: working.text,
+      ...(structured === undefined ? {} : { structured }),
       status: "completed",
-      usage: addUsage(usage, unknownUsage()),
+      usage,
     }
   }
 
@@ -165,9 +137,7 @@ export class FxWorker implements Worker {
     // Spawn-per-call: nothing persistent to tear down.
   }
 
-  private async checkBinary(): Promise<void> {
-    const home = resolveManagedHome(this.managedHomeOverride)
-    validateManagedHome(home)
+  private async checkBinary(home: string, signal: AbortSignal): Promise<void> {
     validateBinaryMetadata(this.bin)
     const platformId = platformIdOf(this.platform)
     if (!platformId) {
@@ -200,7 +170,7 @@ export class FxWorker implements Worker {
       args: ["--version"],
       cwd: tmpdir(),
       env: scrubbedEnv(home, "admission"),
-      signal: new AbortController().signal,
+      signal,
       stallTimeoutMs: 10_000,
       killGraceMs: 1_000,
       spawnProcess: this.spawnProcess,
@@ -331,11 +301,20 @@ export class FxWorker implements Worker {
 
   private async runTurn(
     spec: AgentSpec,
-    env: NodeJS.ProcessEnv,
+    model: string,
     prompt: string,
     ctx: WorkerContext,
-    forwardProgress: boolean,
   ): Promise<TurnOutcome> {
+    // Every paid ask receives fresh admission evidence. Keep these checks adjacent to the spawn:
+    // settings/auth metadata or the pinned binary may have changed since an earlier worker call.
+    const home = resolveManagedHome(this.managedHomeOverride)
+    validateManagedHome(home)
+    validateSettings(home, model)
+    validateAuthMetadata(home)
+    await this.checkBinary(home, ctx.signal)
+    const env = scrubbedEnv(home, model)
+    await this.checkStatus(spec, env, model, ctx.signal)
+
     let exit: FxProcessExit
     try {
       exit = await runFxProcess({
@@ -416,16 +395,14 @@ export class FxWorker implements Worker {
         usage: unknownUsage(),
       })
     }
-    if (forwardProgress) {
-      ctx.onProgress({ kind: "text", text: envelope.output })
-      for (const call of envelope.tool_calls) {
-        if (isObject(call) && typeof call.name === "string") {
-          ctx.onProgress({ kind: "tool", name: call.name, input: call })
-        }
+    ctx.onProgress({ kind: "text", text: envelope.output })
+    for (const call of envelope.tool_calls) {
+      if (isObject(call) && typeof call.name === "string") {
+        ctx.onProgress({ kind: "tool", name: call.name, input: call })
       }
-      ctx.onProgress({ kind: "usage", usage: unknownUsage() })
     }
-    return { text: envelope.output, usage: unknownUsage(), toolCalls: envelope.tool_calls }
+    ctx.onProgress({ kind: "usage", usage: unknownUsage() })
+    return { text: envelope.output }
   }
 }
 
@@ -742,18 +719,6 @@ function scrubbedEnv(home: string, model: string): NodeJS.ProcessEnv {
 function workingPrompt(spec: AgentSpec): string {
   if (!spec.instructions) return spec.prompt
   return `<instructions>\n${spec.instructions}\n</instructions>\n\n${spec.prompt}`
-}
-
-function extractionPrompt(spec: AgentSpec, workingText: string): string {
-  const guidance = spec.instructions ? `Caller instructions and corrective guidance:\n${spec.instructions}\n\n` : ""
-  return (
-    guidance +
-    `Earlier you produced this answer:\n\n${workingText}\n\n` +
-    "Return that answer as a single JSON value that conforms to the following JSON Schema. " +
-    "Output ONLY the JSON — no prose, no explanation, no code fences. " +
-    "Do not call tools. Do not use tools. tool_calls must be empty.\n\nSchema:\n" +
-    JSON.stringify(spec.schema)
-  )
 }
 
 interface AskEnvelope {

@@ -40,7 +40,9 @@ refuse at runtime.
 > (`FX_BIN`; later/earlier/unidentified builds fail closed). Requires `OMEGACODE_FX_HOME` to a
 > private managed automation HOME — never inherited interactive `~/.fx`. Full-access only
 > (`sandbox: "danger-full-access"`, `approval: "never"`). Usage is unavailable, so numeric zeros
-> are a known lower bound marked incomplete; a finite `--budget` rejects fx before spawn.
+> are a known lower bound marked incomplete; a finite `--budget` rejects fx before spawn. Structured
+> responses are validated locally; a miss uses OmegaCode's one corrective full turn because v0.0.6
+> has no enforceable no-tools mode. `worktree` is rejected because it requires workspace-write.
 
 ## Use it
 

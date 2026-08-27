@@ -326,6 +326,11 @@ export class Runtime {
     const localIndex = ctx.agentIndex++
     const promptStr = String(prompt)
     const spec = this.resolveSpec(promptStr, opts)
+    if (spec.provider === "fx" && opts?.worktree) {
+      throw new WorkflowError(
+        'provider "fx" does not support worktree isolation because worktrees require sandbox: "workspace-write"; omit worktree or use another provider',
+      )
+    }
     // Key off the RESOLVED spec (not raw opts) so defaults/CLI overrides invalidate the cache (H8).
     const key = opts?.key
       ? explicitKey(opts.key)

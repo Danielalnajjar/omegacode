@@ -419,39 +419,36 @@ test("strict ask envelope rejects OS/inner failures, typed errors, wrong model, 
   }
 })
 
-test("structured extraction forwards caller/corrective guidance and reports both calls as incomplete", async () => {
+test("structured output validates locally and leaves misses for the runtime corrective retry", async () => {
   const f = fixture()
   try {
-    const h = harness(f, [
-      version,
-      json(status(f)),
-      json(envelope({ output: "the answer is 42" })),
-      json(envelope({ output: '{"answer":42}' })),
-    ])
     const schema = { type: "object", properties: { answer: { type: "number" } }, required: ["answer"] }
+    const h = harness(f, [version, json(status(f)), json(envelope({ output: '{"answer":42}' }))])
     const result = await h.worker.runAgent(spec(f, { schema, instructions: "Follow the caller constraint" }), context())
     assert.deepEqual(result.structured, { answer: 42 })
     assert.deepEqual(result.usage, { inputTokens: 0, outputTokens: 0, costUsd: 0, incomplete: true })
-    assert.match(h.spawned[3]!.proc.stdin.chunks[0]!, /Caller instructions and corrective guidance:\nFollow the caller constraint/)
-    assert.match(h.spawned[3]!.proc.stdin.chunks[0]!, /the answer is 42/)
-    assert.match(h.spawned[3]!.proc.stdin.chunks[0]!, /Do not call tools/)
+    assert.equal(h.spawned.length, 3)
+    assert.match(h.spawned[2]!.proc.stdin.chunks[0]!, /<instructions>\nFollow the caller constraint\n<\/instructions>/)
 
-    const invalid = harness(f, [
-      version,
-      json(status(f)),
-      json(envelope({ output: "not json" })),
-      json(envelope({ output: "still not json" })),
-    ])
+    const invalid = harness(f, [version, json(status(f)), json(envelope({ output: "not json" }))])
     const invalidResult = await invalid.worker.runAgent(spec(f, { schema }), context())
     assert.equal(invalidResult.structured, undefined)
+    assert.equal(invalid.spawned.length, 3)
 
-    const toolExtraction = harness(f, [
+    const corrective = harness(f, [
       version,
       json(status(f)),
-      json(envelope({ output: "not json" })),
-      json(envelope({ output: '{"answer":42}', tool_calls: [{ name: "read_file", status: "success" }] })),
+      json(envelope({ output: '{"answer":42}' })),
     ])
-    await rejectsCode(toolExtraction.worker.runAgent(spec(f, { schema }), context()), "extraction_used_tools")
+    const correctiveInstructions =
+      "Follow the caller constraint\n\nYour previous response did not match the required JSON schema. Respond again with ONLY a JSON value."
+    const corrected = await corrective.worker.runAgent(
+      spec(f, { schema, instructions: correctiveInstructions }),
+      context(),
+    )
+    assert.deepEqual(corrected.structured, { answer: 42 })
+    assert.match(corrective.spawned[2]!.proc.stdin.chunks[0]!, /Follow the caller constraint/)
+    assert.match(corrective.spawned[2]!.proc.stdin.chunks[0]!, /previous response did not match/)
   } finally {
     f.cleanup()
   }
@@ -499,6 +496,17 @@ test("stall, SIGINT, SIGTERM, and caller cancellation terminate without retries 
         return true
       })
     }
+
+    const versionAc = new AbortController()
+    const cancelledVersion = harness(f, [
+      () => queueMicrotask(() => versionAc.abort()),
+    ])
+    await assert.rejects(
+      cancelledVersion.worker.runAgent(spec(f), context(versionAc.signal)),
+      AgentInterrupted,
+    )
+    assert.equal(cancelledVersion.spawned.length, 1)
+    assert.deepEqual(cancelledVersion.spawned[0]!.proc.kills, ["SIGTERM"])
 
     const ac = new AbortController()
     const cancelled = harness(f, [

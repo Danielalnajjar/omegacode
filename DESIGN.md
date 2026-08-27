@@ -18,19 +18,23 @@ interface.
 > --help` disagree, SKILL.md and the CLI win. §12 below lists the actual shipped CLI surface; §13 the
 > actual repo layout.
 >
-> **Provider-set amendment (2026-08):** the shipped provider set is now **five**, not two. `opencode`
+> **Provider-set amendment (2026-08):** the shipped provider set is now **six**, not two. `opencode`
 > (OpenCode CLI ≥ 1.16.2), `pi` (`@earendil-works/pi-coding-agent` ≥ 0.79.1), and `grok`
 > (Grok CLI ≥ 0.2.112) joined as spawn-per-call subprocess workers (`src/worker/opencode.ts`,
-> `src/worker/pi.ts`, `src/worker/grok.ts`; shared transport in `src/worker/subprocess-jsonl.ts`).
+> `src/worker/pi.ts`, `src/worker/grok.ts`; shared transport in `src/worker/subprocess-jsonl.ts`),
+> followed by exact fx v0.0.6 (`src/worker/fx.ts`).
 > OpenCode and pi are **full-access-only**:
 > neither CLI can enforce a confined
 > sandbox, so `read-only`/`workspace-write` are rejected pre-spawn and calls require an explicit
 > `sandbox: "danger-full-access"`. Grok maps all three sandbox modes and requires noninteractive
 > `approval: "never"`. OpenCode and pi reject `maxTurns`; opencode maps `effort` onto `--variant`
 > while pi maps it onto `--thinking`, and Grok maps it onto `--reasoning-effort`. `instructions`
-> maps to pi's `--append-system-prompt` and to a delimited prompt preamble on opencode. Structured
-> output uses a silent extraction turn plus the central validation
-> path. Bin overrides: `OPENCODE_BIN` / `PI_BIN` / `GROK_BIN`. Outdated binaries are refused (`provider_outdated`).
+> maps to pi's `--append-system-prompt` and to a delimited prompt preamble on opencode. OpenCode,
+> pi, and Grok structured output paths use a silent extraction turn plus central validation.
+> Fx locally validates the one-shot result and delegates a miss to the runtime's corrective full
+> turn because v0.0.6 has no enforceable no-tools mode. Bin overrides: `OPENCODE_BIN` / `PI_BIN` /
+> `GROK_BIN` / `FX_BIN`. Outdated binaries are refused (`provider_outdated`); fx instead requires
+> its exact admitted version and platform digest.
 > The "two providers" framing below is historical.
 
 ---

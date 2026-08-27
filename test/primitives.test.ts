@@ -158,6 +158,24 @@ test("fx is rejected before factory/worker spawn when the run budget is finite",
   }
 })
 
+test("fx worktree requests fail before worktree creation or worker spawn", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "omega-fx-worktree-"))
+  const b = build({
+    defaults: { provider: "fx", model: "gpt-5.4", budget: null, sandbox: "danger-full-access", cwd },
+  })
+  try {
+    await assert.rejects(
+      runBody(b, `return await agent("x", { worktree: true })`),
+      /provider "fx" does not support worktree isolation/,
+    )
+    assert.equal(b.worker.calls.length, 0)
+    assert.equal(existsSync(join(cwd, ".omegacode", "worktrees")), false)
+  } finally {
+    b.cleanup()
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
 test("fx cached replay is also rejected when the run budget is finite", async () => {
   const b = build({
     defaults: { provider: "fx", model: "gpt-5.4", budget: 50, sandbox: "danger-full-access" },

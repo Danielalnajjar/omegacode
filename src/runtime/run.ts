@@ -41,6 +41,7 @@ export interface RunOverrides {
   opencodeBin?: string
   piBin?: string
   grokBin?: string
+  fxBin?: string
   /** Use `codex app-server proxy --sock <path>` for Codex workers. */
   codexAppServerSocket?: string
   /** Force Codex workers to spawn their own stdio app-server, even if env selects a shared socket. */
@@ -143,6 +144,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     opencodeBin: opts.overrides?.opencodeBin ?? process.env.OPENCODE_BIN,
     piBin: opts.overrides?.piBin ?? process.env.PI_BIN,
     grokBin: opts.overrides?.grokBin ?? process.env.GROK_BIN,
+    fxBin: opts.overrides?.fxBin ?? process.env.FX_BIN,
     codexAppServerSocket: resolveCodexAppServerSocket(opts.overrides),
     codexDisableLocalMcps: opts.overrides?.codexDisableLocalMcps ?? envFlag("OMEGACODE_CODEX_DISABLE_LOCAL_MCPS") ?? true,
     codexThreadStartConcurrency: opts.overrides?.codexThreadStartConcurrency,

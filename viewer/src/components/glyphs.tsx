@@ -61,6 +61,7 @@ export function ProviderIcon({ provider, className }: { provider: ProviderId; cl
   if (provider === "opencode") return <MonogramBadge label="OC" className={className} />
   if (provider === "pi") return <MonogramBadge label="π" className={className} />
   if (provider === "grok") return <MonogramBadge label="G" className={className} />
+  if (provider === "fx") return <MonogramBadge label="FX" className={className} />
   return <MonogramBadge label="·" className={className} />
 }
 

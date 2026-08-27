@@ -217,6 +217,7 @@ function usageAttributes(usage: AgentUsage): OtlpAttribute[] {
   if (usage.cacheCreationInputTokens !== undefined) {
     attributes.push(intAttribute(GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS, usage.cacheCreationInputTokens))
   }
+  if (usage.incomplete) attributes.push(boolAttribute("omegacode.usage.incomplete", true))
   return attributes
 }
 

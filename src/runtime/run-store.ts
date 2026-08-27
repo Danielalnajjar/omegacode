@@ -18,6 +18,7 @@ export type AgentSnapshot = {
   inputTokens?: number
   outputTokens?: number
   costUsd?: number
+  usageIncomplete?: true
   lastTool?: string
   promptPreview?: string
   resultPreview?: string
@@ -161,6 +162,7 @@ export function foldSnapshot(runId: string, events: WorkflowEvent[], lastBeat?: 
           inputTokens: ev.inputTokens ?? prev?.inputTokens,
           outputTokens: ev.outputTokens ?? prev?.outputTokens,
           costUsd: ev.costUsd ?? prev?.costUsd,
+          usageIncomplete: ev.usageIncomplete ?? prev?.usageIncomplete,
           lastTool: ev.lastTool ?? prev?.lastTool,
           promptPreview: ev.promptPreview ?? prev?.promptPreview,
           resultPreview: ev.resultPreview ?? prev?.resultPreview,

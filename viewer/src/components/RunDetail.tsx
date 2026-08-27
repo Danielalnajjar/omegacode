@@ -53,10 +53,14 @@ function AgentRow({
 }) {
   const meta = [
     agent.model,
-    agent.outputTokens ? `${fmtTokens((agent.inputTokens ?? 0) + agent.outputTokens)} tok` : null,
+    agent.outputTokens || agent.usageIncomplete
+      ? `${agent.usageIncomplete ? "≥" : ""}${fmtTokens((agent.inputTokens ?? 0) + (agent.outputTokens ?? 0))} tok${agent.usageIncomplete ? " (partial)" : ""}`
+      : null,
     agent.lastTool,
     fmtDuration(agent.durationMs),
-    fmtCost(agent.costUsd),
+    agent.costUsd || agent.usageIncomplete
+      ? `${agent.usageIncomplete ? "≥" : ""}${fmtCost(agent.costUsd) || "$0.0000"}${agent.usageIncomplete ? " (partial)" : ""}`
+      : null,
   ].filter(Boolean)
 
   return (
@@ -157,14 +161,17 @@ export function RunDetail({ snap }: { snap: RunSnapshot | null }) {
   const done = snap.agents.filter((a) => isTerminalAgent(a.state)).length
   const tokens = snap.agents.reduce((s, a) => s + (a.outputTokens ?? 0) + (a.inputTokens ?? 0), 0)
   const cost = snap.agents.reduce((s, a) => s + (a.costUsd ?? 0), 0)
+  const usageIncomplete = snap.agents.some((a) => a.usageIncomplete)
   const elapsed = snap.startedAt ? (snap.endedAt ?? now) - snap.startedAt : undefined
   const lastLog = snap.logs.at(-1)
   const ungrouped = snap.agents.filter((a) => a.phaseIndex === undefined)
 
   const stats = [
     `${done}/${total} agents`,
-    tokens ? `${fmtTokens(tokens)} tok` : null,
-    cost ? fmtCost(cost) : null,
+    tokens || usageIncomplete ? `${usageIncomplete ? "≥" : ""}${fmtTokens(tokens)} tok${usageIncomplete ? " (partial)" : ""}` : null,
+    cost || usageIncomplete
+      ? `${usageIncomplete ? "≥" : ""}${fmtCost(cost) || "$0.0000"}${usageIncomplete ? " (partial)" : ""}`
+      : null,
     elapsed ? fmtClock(elapsed) : null,
   ].filter(Boolean)
 

@@ -68,6 +68,7 @@ export function foldEvents(runId: string, events: WorkflowEvent[]): RunSnapshot 
           inputTokens: ev.inputTokens ?? prev?.inputTokens,
           outputTokens: ev.outputTokens ?? prev?.outputTokens,
           costUsd: ev.costUsd ?? prev?.costUsd,
+          usageIncomplete: ev.usageIncomplete ?? prev?.usageIncomplete,
           lastTool: ev.lastTool ?? prev?.lastTool,
           promptPreview: ev.promptPreview ?? prev?.promptPreview,
           resultPreview: ev.resultPreview ?? prev?.resultPreview,

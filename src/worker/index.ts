@@ -49,8 +49,11 @@ export class AgentError extends Error {
 
 /** Raised when an agent turn was interrupted (Ctrl-C, cancel, stall-abort). */
 export class AgentInterrupted extends Error {
-  constructor(message = "agent interrupted") {
+  /** Usage consumed before interruption, when the provider can report only a lower bound. */
+  readonly usage?: AgentUsage
+  constructor(message = "agent interrupted", usage?: AgentUsage) {
     super(message)
     this.name = "AgentInterrupted"
+    this.usage = usage
   }
 }

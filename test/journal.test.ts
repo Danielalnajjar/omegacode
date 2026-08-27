@@ -104,6 +104,26 @@ test("a failed result is loaded and retains status FAILED (replay honoring is th
   })
 })
 
+test("incomplete usage round-trips through the journal without being labeled measured", () => {
+  withHome(() => {
+    const incomplete = { ...emptyUsage(), incomplete: true as const }
+    new Journal("u").append({
+      type: "result",
+      key: "k",
+      index: 1,
+      status: "completed",
+      result: "fx",
+      usage: incomplete,
+      provider: "fx",
+      durationMs: 1,
+    })
+    const loaded = Journal.load("u").results.get("k")
+    assert.equal(loaded?.usage.incomplete, true)
+    assert.equal(loaded?.usage.inputTokens, 0)
+    assert.equal(loaded?.provider, "fx")
+  })
+})
+
 const baseMeta: JournalMeta = {
   type: "meta",
   runId: "r",

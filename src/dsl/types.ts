@@ -1,7 +1,7 @@
 // Shared type contracts for the whole system. Everything compiles against these.
 
 /** The closed set of backend providers. Model strings stay open — each backend is authoritative. */
-export const PROVIDER_IDS = ["codex", "claude-code", "opencode", "pi", "grok"] as const
+export const PROVIDER_IDS = ["codex", "claude-code", "opencode", "pi", "grok", "fx"] as const
 export type ProviderId = (typeof PROVIDER_IDS)[number]
 
 /** read-only: no writes; workspace-write: write within cwd; danger-full-access: unrestricted. */
@@ -83,6 +83,8 @@ export interface AgentUsage {
   inputTokens: number
   outputTokens: number
   costUsd: number
+  /** Numeric fields are known lower bounds because at least one provider did not report usage. */
+  incomplete?: true
   /** Cache-hit input tokens, already included in inputTokens. Omitted when unreported. */
   cacheReadInputTokens?: number
   /** Cache-creation input tokens, already included in inputTokens. Omitted when unreported. */
@@ -100,6 +102,7 @@ export function addUsage(a: AgentUsage, b: AgentUsage): AgentUsage {
     inputTokens: a.inputTokens + b.inputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
     costUsd: a.costUsd + b.costUsd,
+    ...(a.incomplete || b.incomplete ? { incomplete: true as const } : {}),
     ...(cacheReadInputTokens === undefined ? {} : { cacheReadInputTokens }),
     ...(cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens }),
   }

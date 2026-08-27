@@ -40,7 +40,7 @@ before(() => {
         result: "done",
         provider: "claude-code",
         durationMs: 200,
-        usage: { inputTokens: 100, outputTokens: 20, costUsd: 0.01, cacheReadInputTokens: 25, cacheCreationInputTokens: 5 },
+        usage: { inputTokens: 100, outputTokens: 20, costUsd: 0.01, cacheReadInputTokens: 25, cacheCreationInputTokens: 5, incomplete: true },
       },
     ].map((entry) => JSON.stringify(entry)).join("\n") + "\n",
   )
@@ -91,6 +91,7 @@ test("projection emits valid OTLP/HTTP JSON with cache subsets and transcript to
   assert.equal(cacheRead, 25)
   assert.equal(cacheCreation, 5)
   assert.ok(cacheRead + cacheCreation <= input)
+  assert.equal(attributeBool(agent, "omegacode.usage.incomplete"), true)
 
   const tools = spans.filter((span) => attributeString(span, GEN_AI_TOOL_NAME) !== undefined)
   assert.deepEqual(tools.map((span) => attributeString(span, GEN_AI_TOOL_NAME)), ["Read", "Bash"])

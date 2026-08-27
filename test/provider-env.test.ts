@@ -195,3 +195,12 @@ test("grok: GROK_BIN env drives a real spawn with prompt-file and policy flags",
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test("fx: overrides.fxBin reaches FxWorker", async () => {
+  const { DefaultWorkerFactory } = await import("../src/worker/factory.ts")
+  const { FxWorker } = await import("../src/worker/fx.ts")
+  const f = new DefaultWorkerFactory({ fxBin: "/opt/fx-override" })
+  const w = f.get("fx")
+  assert.ok(w instanceof FxWorker)
+  assert.equal((w as unknown as { bin: string }).bin, "/opt/fx-override")
+})

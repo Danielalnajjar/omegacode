@@ -34,6 +34,8 @@ export type WorkflowEvent =
       cacheReadInputTokens?: number
       cacheCreationInputTokens?: number
       costUsd?: number
+      /** Usage values are known lower bounds because this agent did not report complete usage. */
+      usageIncomplete?: true
       lastTool?: string
       promptPreview?: string
       resultPreview?: string

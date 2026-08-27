@@ -341,6 +341,11 @@ export class Runtime {
     if (++this.agentCalls > this.o.defaults.maxAgents) {
       throw new WorkflowError(`agent() call cap reached (${this.o.defaults.maxAgents}) — likely a runaway loop`)
     }
+    if (spec.provider === "fx" && this.o.defaults.budget !== null) {
+      throw new WorkflowError(
+        "provider \"fx\" does not report per-run token usage, so OmegaCode cannot enforce a finite output-token budget; use budget: null or another provider",
+      )
+    }
     // Display index: stable per JOURNAL KEY across resume attempts (L12). The journal records
     // (key, index) on started/result entries; reusing that index means events and the transcript
     // file agents/<index>.jsonl keep pointing at the same logical agent on resume — a re-run
@@ -368,6 +373,12 @@ export class Runtime {
         state: "done",
         cached: true,
         durationMs: cached.durationMs,
+        inputTokens: cached.usage.inputTokens,
+        outputTokens: cached.usage.outputTokens,
+        cacheReadInputTokens: cached.usage.cacheReadInputTokens,
+        cacheCreationInputTokens: cached.usage.cacheCreationInputTokens,
+        costUsd: cached.usage.costUsd,
+        usageIncomplete: cached.usage.incomplete,
         resultPreview: preview(cached.result),
       })
       this.totalUsage = addUsage(this.totalUsage, cached.usage)
@@ -447,6 +458,7 @@ export class Runtime {
                   outputTokens: e.usage.outputTokens,
                   cacheReadInputTokens: e.usage.cacheReadInputTokens,
                   cacheCreationInputTokens: e.usage.cacheCreationInputTokens,
+                  usageIncomplete: e.usage.incomplete,
                 })
                 break
             }
@@ -516,6 +528,7 @@ export class Runtime {
           cacheReadInputTokens: attemptUsage.cacheReadInputTokens,
           cacheCreationInputTokens: attemptUsage.cacheCreationInputTokens,
           costUsd: attemptUsage.costUsd,
+          usageIncomplete: attemptUsage.incomplete,
           resultPreview: preview(value),
         })
         succeeded = true
@@ -526,7 +539,9 @@ export class Runtime {
         // Failed turns still bill (L6): fold the provider-reported usage of the failing attempt into
         // the run totals and the journal, so budget ceilings see the spend end-to-end. attemptUsage
         // already holds any completed-but-rejected attempts (e.g. a persistent schema miss).
-        if (err instanceof AgentError && err.usage) attemptUsage = addUsage(attemptUsage, err.usage)
+        if ((err instanceof AgentError || err instanceof AgentInterrupted) && err.usage) {
+          attemptUsage = addUsage(attemptUsage, err.usage)
+        }
         this.totalUsage = addUsage(this.totalUsage, attemptUsage)
         this.o.journal.append({
           type: "result",
@@ -554,6 +569,7 @@ export class Runtime {
           cacheReadInputTokens: attemptUsage.cacheReadInputTokens,
           cacheCreationInputTokens: attemptUsage.cacheCreationInputTokens,
           costUsd: attemptUsage.costUsd,
+          usageIncomplete: attemptUsage.incomplete,
           error: message,
         })
         throw err instanceof AgentError || err instanceof AgentInterrupted ? err : new AgentFailedError(`agent failed: ${message}`)

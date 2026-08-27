@@ -10,6 +10,7 @@ import { CodexWorker } from "../src/worker/codex.ts"
 import { OpencodeWorker } from "../src/worker/opencode.ts"
 import { PiWorker } from "../src/worker/pi.ts"
 import { GrokWorker } from "../src/worker/grok.ts"
+import { FxWorker } from "../src/worker/fx.ts"
 import { AgentError, AgentInterrupted, type WorkerContext } from "../src/worker/index.ts"
 import type { AgentSpec, ProviderId } from "../src/dsl/types.ts"
 
@@ -38,6 +39,9 @@ test("returns an OpencodeWorker for 'opencode' and a PiWorker for 'pi'", () => {
   const grok = f.get("grok")
   assert.ok(grok instanceof GrokWorker)
   assert.equal(grok.id, "grok")
+  const fx = f.get("fx")
+  assert.ok(fx instanceof FxWorker)
+  assert.equal(fx.id, "fx")
 })
 
 test("M5: unknown provider id throws instead of silently returning ClaudeWorker", () => {
@@ -70,8 +74,10 @@ test("caches workers by provider id and codex service tier", () => {
   assert.equal(f.get("opencode"), f.get("opencode"))
   assert.equal(f.get("pi"), f.get("pi"))
   assert.equal(f.get("grok"), f.get("grok"))
+  assert.equal(f.get("fx"), f.get("fx"))
   assert.notEqual(f.get("codex") as unknown, f.get("claude-code") as unknown)
   assert.notEqual(f.get("opencode") as unknown, f.get("pi") as unknown)
+  assert.notEqual(f.get("grok") as unknown, f.get("fx") as unknown)
 })
 
 test("L5: claudeModel is consumed by the ClaudeWorker", () => {
@@ -96,14 +102,16 @@ test("codexBin is consumed by the CodexWorker", () => {
   assert.ok(w instanceof CodexWorker)
 })
 
-test("opencodeBin / piBin / grokBin are consumed by their workers", () => {
-  const f = new DefaultWorkerFactory({ opencodeBin: "/opt/opencode", piBin: "/opt/pi", grokBin: "/opt/grok" })
+test("opencodeBin / piBin / grokBin / fxBin are consumed by their workers", () => {
+  const f = new DefaultWorkerFactory({ opencodeBin: "/opt/opencode", piBin: "/opt/pi", grokBin: "/opt/grok", fxBin: "/opt/fx" })
   const oc = f.get("opencode")
   assert.equal((oc as unknown as { bin: string }).bin, "/opt/opencode")
   const pi = f.get("pi")
   assert.equal((pi as unknown as { bin: string }).bin, "/opt/pi")
   const grok = f.get("grok")
   assert.equal((grok as unknown as { bin: string }).bin, "/opt/grok")
+  const fx = f.get("fx")
+  assert.equal((fx as unknown as { bin: string }).bin, "/opt/fx")
 })
 
 test("shutdownAll shuts down every service-tier worker, clears the cache, and is repeatable", async () => {

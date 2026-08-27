@@ -139,3 +139,12 @@ describe("agent glyph overlay on dead runs (H19)", () => {
     expect(container.querySelectorAll('[aria-label="in progress"]').length).toBeGreaterThan(0)
   })
 })
+
+describe("incomplete usage", () => {
+  it("labels zero token lower bounds as partial rather than measured zero", () => {
+    const { container } = renderDetail(makeSnap([makeAgent({ inputTokens: 0, outputTokens: 0, usageIncomplete: true })]))
+    fireEvent.click(phaseHeader())
+    expect(container.textContent).toContain("≥0 tok (partial)")
+    expect(container.textContent).toContain("≥$0.0000 (partial)")
+  })
+})

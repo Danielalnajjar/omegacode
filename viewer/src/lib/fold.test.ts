@@ -66,6 +66,23 @@ describe("foldEvents — basic folding", () => {
     expect(a.outputTokens).toBe(5)
   })
 
+  it("preserves usageIncomplete so incomplete totals are not labeled complete", () => {
+    const snap = foldEvents(RUN, [
+      ev({ type: "agent", t: 1, index: 0, label: "fx", provider: "fx", state: "running" }),
+      ev({ type: "agent", t: 2, index: 0, state: "done", inputTokens: 0, outputTokens: 0, usageIncomplete: true }),
+    ])
+    expect(snap.agents[0]!.usageIncomplete).toBe(true)
+    expect(snap.agents[0]!.outputTokens).toBe(0)
+  })
+
+  it("preserves the incomplete-usage marker across later agent events", () => {
+    const snap = foldEvents(RUN, [
+      ev({ type: "agent", t: 1, index: 0, label: "fx", provider: "fx", state: "running", usageIncomplete: true }),
+      ev({ type: "agent", t: 2, index: 0, label: "fx", provider: "fx", state: "done", outputTokens: 0 }),
+    ])
+    expect(snap.agents[0]!.usageIncomplete).toBe(true)
+  })
+
   it("groups agents under phases and sorts by index", () => {
     const snap = foldEvents(RUN, [
       ev({ type: "phase", t: 1, index: 0, title: "Phase A" }),

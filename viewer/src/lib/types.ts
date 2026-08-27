@@ -17,6 +17,7 @@ export interface AgentSnapshot {
   inputTokens?: number
   outputTokens?: number
   costUsd?: number
+  usageIncomplete?: true
   lastTool?: string
   promptPreview?: string
   resultPreview?: string

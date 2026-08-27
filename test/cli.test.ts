@@ -435,7 +435,7 @@ describe("CLI end-to-end (--fake)", () => {
   })
 
   test("subprocess providers are accepted by --provider (fake round-trip)", async () => {
-    for (const provider of ["opencode", "pi", "grok"]) {
+    for (const provider of ["opencode", "pi", "grok", "fx"]) {
       const r = await runCli(["run", wf, "--provider", provider, "--model", "openrouter/foo/bar", "--fake", "--no-serve", "--json"], { OMEGACODE_HOME: home })
       assert.equal(r.code, 0, `stderr=${r.stderr}`)
       assert.equal(JSON.parse(r.stdout).status, "completed")

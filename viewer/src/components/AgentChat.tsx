@@ -30,9 +30,13 @@ export function AgentChat({ agent, runStatus }: { agent?: AgentSnapshot; runStat
   const runDead = runStatus !== undefined && isTerminalRun(runStatus)
   const glyphState = runDead && state === "running" ? runStatus : state
   const stats = [
-    agent?.outputTokens ? `${fmtTokens((agent.inputTokens ?? 0) + agent.outputTokens)} tok` : null,
+    agent?.outputTokens || agent?.usageIncomplete
+      ? `${agent?.usageIncomplete ? "≥" : ""}${fmtTokens((agent?.inputTokens ?? 0) + (agent?.outputTokens ?? 0))} tok${agent?.usageIncomplete ? " (partial)" : ""}`
+      : null,
     fmtDuration(agent?.durationMs),
-    fmtCost(agent?.costUsd),
+    agent?.costUsd || agent?.usageIncomplete
+      ? `${agent?.usageIncomplete ? "≥" : ""}${fmtCost(agent?.costUsd) || "$0.0000"}${agent?.usageIncomplete ? " (partial)" : ""}`
+      : null,
   ].filter(Boolean)
 
   // Working indicator: show while live and not yet terminal. "Thinking" when the

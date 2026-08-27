@@ -13,7 +13,8 @@ import { explicitKey } from "../src/runtime/keys.ts"
 import type { EventSink, WorkflowEventInput } from "../src/runtime/events.ts"
 import type { PreparedAgentCall, Worker, WorkerContext, WorkerFactory } from "../src/worker/index.ts"
 import { AgentError, AgentInterrupted } from "../src/worker/index.ts"
-import { DEFAULTS, emptyUsage, type AgentResult, type AgentSpec, type RunDefaults } from "../src/dsl/types.ts"
+import { addUsage, DEFAULTS, emptyUsage, type AgentResult, type AgentSpec, type RunDefaults } from "../src/dsl/types.ts"
+import { explicitKey } from "../src/runtime/keys.ts"
 
 // ---- test harness ----------------------------------------------------------------------------
 
@@ -134,6 +135,122 @@ async function runBody(b: Built, body: string): Promise<unknown> {
 }
 
 // ---- tests -----------------------------------------------------------------------------------
+
+test("incomplete usage remains a known lower bound when aggregated", () => {
+  assert.deepEqual(
+    addUsage(
+      { ...emptyUsage(), inputTokens: 10, outputTokens: 4 },
+      { ...emptyUsage(), outputTokens: 2, incomplete: true },
+    ),
+    { inputTokens: 10, outputTokens: 6, costUsd: 0, incomplete: true },
+  )
+})
+
+test("fx is rejected before factory/worker spawn when the run budget is finite", async () => {
+  const b = build({
+    defaults: { provider: "fx", model: "gpt-5.4", budget: 100, sandbox: "danger-full-access" },
+  })
+  try {
+    await assert.rejects(runBody(b, `return await agent("x")`), /cannot enforce a finite output-token budget/)
+    assert.equal(b.worker.calls.length, 0)
+  } finally {
+    b.cleanup()
+  }
+})
+
+test("fx cached replay is also rejected when the run budget is finite", async () => {
+  const b = build({
+    defaults: { provider: "fx", model: "gpt-5.4", budget: 50, sandbox: "danger-full-access" },
+    loaded: {
+      results: new Map([
+        [
+          "k",
+          {
+            type: "result",
+            key: "k",
+            index: 1,
+            status: "completed",
+            result: "cached",
+            usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, incomplete: true as const },
+            provider: "fx",
+            durationMs: 1,
+          },
+        ],
+      ]),
+      indexByKey: new Map([["k", 1]]),
+    },
+  })
+  try {
+    await assert.rejects(
+      runBody(b, `return await agent("x", { key: "k" })`),
+      /cannot enforce a finite output-token budget/,
+    )
+    assert.equal(b.worker.calls.length, 0)
+    assert.equal(b.runtime.totalUsage.incomplete, undefined)
+  } finally {
+    b.cleanup()
+  }
+})
+
+test("cached incomplete usage stays a lower bound on resume when budget is unlimited", async () => {
+  const key = explicitKey("fx-cached")
+  const b = build({
+    defaults: { provider: "fx", model: "gpt-5.4", budget: null, sandbox: "danger-full-access" },
+    loaded: {
+      results: new Map([
+        [
+          key,
+          {
+            type: "result",
+            key,
+            index: 1,
+            status: "completed",
+            result: "cached",
+            usage: { inputTokens: 2, outputTokens: 0, costUsd: 0, incomplete: true as const },
+            provider: "fx",
+            durationMs: 1,
+          },
+        ],
+      ]),
+      indexByKey: new Map([[key, 1]]),
+    },
+  })
+  try {
+    const out = await runBody(b, `return await agent("x", { key: "fx-cached" })`)
+    assert.equal(out, "cached")
+    assert.equal(b.worker.calls.length, 0)
+    assert.equal(b.runtime.totalUsage.incomplete, true)
+    assert.equal(b.runtime.totalUsage.inputTokens, 2)
+    const done = b.sink.events.find((e) => e.type === "agent" && e.state === "done")
+    assert.equal(done && "cached" in done && done.cached, true)
+    assert.equal(done && "usageIncomplete" in done && done.usageIncomplete, true)
+  } finally {
+    b.cleanup()
+  }
+})
+
+test("incomplete usage is journaled, evented, and aggregated as a lower bound", async () => {
+  const b = build({
+    hooks: {
+      run: async () => ({
+        text: "ok",
+        status: "completed",
+        usage: { inputTokens: 3, outputTokens: 0, costUsd: 0, incomplete: true },
+      }),
+    },
+  })
+  try {
+    await runBody(b, `return await agent("x")`)
+    const [entry] = [...Journal.load("run_test").results.values()]
+    assert.equal(entry.usage.incomplete, true)
+    assert.equal(entry.usage.inputTokens, 3)
+    assert.equal(b.runtime.totalUsage.incomplete, true)
+    const done = b.sink.events.find((e) => e.type === "agent" && e.state === "done")
+    assert.equal(done && "usageIncomplete" in done && done.usageIncomplete, true)
+  } finally {
+    b.cleanup()
+  }
+})
 
 test("happy path: a single agent returns its text and journals a completed result", async () => {
   const b = build()
@@ -595,6 +712,47 @@ test("a journaled COMPLETED result DOES replay (cache hit, worker not called)", 
   }
 })
 
+test("cached replay preserves incomplete usage in totals and events", async () => {
+  const b0 = build()
+  let key: string
+  try {
+    await runBody(b0, `return await agent("task")`)
+    key = [...Journal.load("run_test").results.keys()][0]!
+  } finally {
+    b0.cleanup()
+  }
+  const loaded: LoadedJournal = {
+    results: new Map([
+      [
+        key,
+        {
+          type: "result",
+          key,
+          index: 1,
+          status: "completed",
+          result: "cached partial",
+          usage: { ...emptyUsage(), inputTokens: 7, incomplete: true },
+          provider: "codex",
+          durationMs: 1,
+        },
+      ],
+    ]),
+    indexByKey: new Map([[key, 1]]),
+  }
+  const b = build({ loaded })
+  try {
+    assert.equal(await runBody(b, `return await agent("task")`), "cached partial")
+    assert.equal(b.worker.calls.length, 0)
+    assert.deepEqual(b.runtime.totalUsage, { inputTokens: 7, outputTokens: 0, costUsd: 0, incomplete: true })
+    const done = b.sink.events.find((event) => event.type === "agent" && event.state === "done")
+    assert.equal(done?.type, "agent")
+    assert.equal(done?.usageIncomplete, true)
+    assert.equal(done?.inputTokens, 7)
+  } finally {
+    b.cleanup()
+  }
+})
+
 test("H8: changing the DEFAULT provider invalidates the resume cache (resolved-spec keying)", async () => {
   // First run with default provider codex; journal a result under the codex-resolved key.
   const b0 = build({ defaults: { provider: "codex" } })
@@ -957,6 +1115,33 @@ test("L6: a failed turn's provider-reported usage reaches totalUsage and the jou
       assert.equal(event.cacheReadInputTokens, 2)
       assert.equal(event.cacheCreationInputTokens, 1)
     }
+  } finally {
+    b.cleanup()
+  }
+})
+
+test("an interrupted turn preserves incomplete usage in totals, journal, and events", async () => {
+  const b = build({
+    hooks: {
+      run: async () => {
+        throw new AgentInterrupted("cancelled", {
+          inputTokens: 0,
+          outputTokens: 0,
+          costUsd: 0,
+          incomplete: true,
+        })
+      },
+    },
+  })
+  try {
+    await assert.rejects(runBody(b, `return await agent("task")`), AgentInterrupted)
+    assert.equal(b.runtime.totalUsage.incomplete, true)
+    const [journaled] = [...Journal.load("run_test").results.values()]
+    assert.equal(journaled.status, "interrupted")
+    assert.equal(journaled.usage.incomplete, true)
+    const failed = b.sink.events.find((event) => event.type === "agent" && event.state === "failed")
+    assert.equal(failed?.type, "agent")
+    assert.equal(failed?.usageIncomplete, true)
   } finally {
     b.cleanup()
   }

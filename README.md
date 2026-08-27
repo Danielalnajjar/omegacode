@@ -7,7 +7,7 @@
 An **agent-agnostic implementation of Claude Code's Workflows**. omegacode runs JavaScript workflow
 files that orchestrate fleets of coding agents with a small deterministic DSL — `agent()` /
 `parallel()` / `pipeline()` / `phase()` — and the workers are pluggable: the same workflow can
-drive **Claude Code**, **Codex**, **OpenCode**, **pi**, and **Grok** in a single run.
+drive **Claude Code**, **Codex**, **OpenCode**, **pi**, **Grok**, and **fx** in a single run.
 
 ## Install
 
@@ -22,7 +22,7 @@ omegacode install-skill
 
 You'll need Node 20+ and at least one worker installed: `codex` (the default provider), `claude`,
 `opencode` (≥ 1.16.2), `pi` (≥ 0.79.1, `bun add -g @earendil-works/pi-coding-agent`),
-and/or `grok` (≥ 0.2.112). Run
+`grok` (≥ 0.2.112), and/or exact **fx `v0.0.6`** (`FX_BIN`, digest-admitted). Run
 `omegacode doctor` to check — it flags binaries below the minimum versions, which the workers
 refuse at runtime.
 
@@ -35,6 +35,12 @@ refuse at runtime.
 > **Note on Grok:** Grok maps all three OmegaCode sandbox modes onto its OS sandbox profiles.
 > Its one-shot subprocess cannot surface approval prompts, so calls use `approval: "never"`
 > (the default). Structured output resumes the working session for a tool-less formatting turn.
+>
+> **Note on fx:** only exact CLI `v0.0.6` with an admitted platform binary SHA-256 is accepted
+> (`FX_BIN`; later/earlier/unidentified builds fail closed). Requires `OMEGACODE_FX_HOME` to a
+> private managed automation HOME — never inherited interactive `~/.fx`. Full-access only
+> (`sandbox: "danger-full-access"`, `approval: "never"`). Usage is unavailable, so numeric zeros
+> are a known lower bound marked incomplete; a finite `--budget` rejects fx before spawn.
 
 ## Use it
 
@@ -69,7 +75,7 @@ return await pipeline(
 ```
 
 Plain JavaScript, no imports — the DSL is injected. Each `agent()` spawns a real Codex, Claude
-Code, OpenCode, pi, or Grok agent; omit `provider`/`model` to inherit whatever the run was started with
+Code, OpenCode, pi, Grok, or fx agent; omit `provider`/`model` to inherit whatever the run was started with
 (`--provider --model`, default `codex`), or pin them per call when you want cross-provider
 diversity. Provider and model are **both-or-neither** at every site (per-call, meta defaults,
 CLI flags): a lone `provider:` or `model:` is rejected, so a model meant for one provider can

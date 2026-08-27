@@ -51,6 +51,7 @@ export type FxPlatformId = keyof typeof FX_BINARY_DIGESTS
 
 const AUTH_LABEL = "Codex subscription"
 const MODEL_SOURCE_LABEL = "Codex subscription"
+const HAS_POSIX_PERMISSIONS = process.platform !== "win32"
 const ENV_PASSTHROUGH = [
   "PATH",
   "TMPDIR",
@@ -521,7 +522,7 @@ function validateManagedHome(home: string): void {
       message: `OMEGACODE_FX_HOME ${home} is not a directory`,
     })
   }
-  if ((st.mode & 0o077) !== 0) {
+  if (HAS_POSIX_PERMISSIONS && (st.mode & 0o077) !== 0) {
     throw new AgentError({
       provider: PROVIDER,
       code: "unsafe_profile",
@@ -565,7 +566,11 @@ function validateManagedHome(home: string): void {
       message: `managed fx profile ${fxDir} does not exist`,
     })
   }
-  if (fxSt.isSymbolicLink() || !fxSt.isDirectory() || (fxSt.mode & 0o077) !== 0) {
+  if (
+    fxSt.isSymbolicLink() ||
+    !fxSt.isDirectory() ||
+    (HAS_POSIX_PERMISSIONS && (fxSt.mode & 0o077) !== 0)
+  ) {
     throw new AgentError({
       provider: PROVIDER,
       code: "unsafe_profile",
@@ -577,7 +582,7 @@ function validateManagedHome(home: string): void {
 function validateSettings(home: string, model: string): void {
   const path = join(home, ".fx", "settings.json")
   const st = lstatOrThrow(path, "settings.json")
-  if (st.isSymbolicLink() || !st.isFile() || (st.mode & 0o077) !== 0) {
+  if (st.isSymbolicLink() || !st.isFile() || (HAS_POSIX_PERMISSIONS && (st.mode & 0o077) !== 0)) {
     throw new AgentError({
       provider: PROVIDER,
       code: "unsafe_profile",
@@ -670,7 +675,7 @@ function validateAuthMetadata(home: string): void {
       message: `${path} must be a regular file`,
     })
   }
-  if ((st.mode & 0o077) !== 0) {
+  if (HAS_POSIX_PERMISSIONS && (st.mode & 0o077) !== 0) {
     throw new AgentError({
       provider: PROVIDER,
       code: "unsafe_profile",
@@ -893,7 +898,11 @@ function validateBinaryMetadata(bin: string): void {
       message: `FX_BIN ${bin} does not exist`,
     })
   }
-  if (st.isSymbolicLink() || !st.isFile() || (st.mode & 0o111) === 0 || (st.mode & 0o022) !== 0) {
+  if (
+    st.isSymbolicLink() ||
+    !st.isFile() ||
+    (HAS_POSIX_PERMISSIONS && ((st.mode & 0o111) === 0 || (st.mode & 0o022) !== 0))
+  ) {
     throw new AgentError({
       provider: PROVIDER,
       code: "binary_not_pinned",
@@ -1012,7 +1021,6 @@ function runFxProcess(o: {
           ),
         )
       }, o.stallTimeoutMs)
-      watchdog.unref?.()
     }
 
     child.stdout.setEncoding("utf8")

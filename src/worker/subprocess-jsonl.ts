@@ -1,8 +1,7 @@
-// Shared mechanics for spawn-per-call CLI workers (opencode, pi, grok): spawn with an injectable
-// seam, optional prompt stdin, strict-LF stdout framing with per-line JSON parse, a stderr ring
-// buffer, a no-output stall watchdog, abort via SIGTERM→SIGKILL, and spawn-failure normalization into
-// AgentError. Event SEMANTICS (what each JSON line means) stay in each worker — this module never
-// interprets payloads.
+// Shared mechanics for spawn-per-call CLI workers (opencode, pi, grok, fx): spawn with an
+// injectable seam, optional prompt stdin, a stderr ring buffer, a no-output stall watchdog, abort
+// via SIGTERM→SIGKILL, and spawn-failure normalization into AgentError. Callers choose strict-LF
+// JSONL delivery or exact raw stdout capture; event/envelope semantics stay in each worker.
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import type { ProviderId } from "../dsl/types.js"
@@ -53,6 +52,17 @@ export interface JsonlExit {
   stderrTail: string
 }
 
+export type CapturedRunOpts = Omit<JsonlRunOpts, "onValue" | "onTextLine">
+
+export interface CapturedExit extends JsonlExit {
+  stdout: string
+}
+
+interface SubprocessRunOpts extends CapturedRunOpts {
+  onStdoutChunk: (chunk: string) => void
+  onStdoutClose?: () => void
+}
+
 /**
  * Run one JSONL-emitting subprocess to completion. Resolves with the exit status (zero or not —
  * the WORKER decides whether a nonzero exit is fatal, because an in-stream terminal event may
@@ -60,6 +70,56 @@ export interface JsonlExit {
  * AgentError on watchdog fire, and `binary_not_found` / `spawn_failed` on spawn errors.
  */
 export function runJsonlSubprocess(o: JsonlRunOpts): Promise<JsonlExit> {
+  const { onValue, onTextLine, ...processOpts } = o
+  let stdoutBuf = ""
+
+  const deliver = (line: string): void => {
+    const trimmed = line.trim()
+    if (!trimmed) return
+    let value: unknown
+    try {
+      value = JSON.parse(trimmed)
+    } catch {
+      onTextLine?.(trimmed)
+      return
+    }
+    onValue(value)
+  }
+
+  return runSubprocess({
+    ...processOpts,
+    onStdoutChunk: (chunk) => {
+      stdoutBuf += chunk
+      // Strict LF framing (pi's JSONL framing is LF-only; a trailing \r is JSON whitespace anyway).
+      let nl = stdoutBuf.indexOf("\n")
+      while (nl !== -1) {
+        const line = stdoutBuf.slice(0, nl)
+        stdoutBuf = stdoutBuf.slice(nl + 1)
+        deliver(line)
+        nl = stdoutBuf.indexOf("\n")
+      }
+    },
+    onStdoutClose: () => {
+      if (stdoutBuf.length === 0) return
+      const rest = stdoutBuf
+      stdoutBuf = ""
+      deliver(rest)
+    },
+  })
+}
+
+/** Run a subprocess with the shared lifecycle while preserving stdout byte-for-byte as UTF-8. */
+export function runCapturedSubprocess(o: CapturedRunOpts): Promise<CapturedExit> {
+  let stdout = ""
+  return runSubprocess({
+    ...o,
+    onStdoutChunk: (chunk) => {
+      stdout += chunk
+    },
+  }).then((exit) => ({ ...exit, stdout }))
+}
+
+function runSubprocess(o: SubprocessRunOpts): Promise<JsonlExit> {
   return new Promise<JsonlExit>((resolve, reject) => {
     if (o.signal.aborted) {
       reject(new AgentInterrupted())
@@ -79,7 +139,6 @@ export function runJsonlSubprocess(o: JsonlRunOpts): Promise<JsonlExit> {
     const graceMs = o.killGraceMs ?? DEFAULT_KILL_GRACE_MS
     const stderrLimit = o.stderrLimit ?? DEFAULT_STDERR_LIMIT
     let settled = false
-    let stdoutBuf = ""
     let stderrBuf = ""
     let watchdog: ReturnType<typeof setTimeout> | undefined
     let killTimer: ReturnType<typeof setTimeout> | undefined
@@ -134,41 +193,19 @@ export function runJsonlSubprocess(o: JsonlRunOpts): Promise<JsonlExit> {
           ),
         )
       }, stallMs)
-      watchdog.unref?.()
-    }
-
-    const deliver = (line: string): void => {
-      const trimmed = line.trim()
-      if (!trimmed) return
-      let value: unknown
-      try {
-        value = JSON.parse(trimmed)
-      } catch {
-        o.onTextLine?.(trimmed)
-        return
-      }
-      try {
-        o.onValue(value)
-      } catch (err) {
-        // A throwing onValue is a worker bug — fail the run loudly rather than crash the
-        // process from inside a stream handler.
-        killWithGrace()
-        settle(() => reject(err instanceof Error ? err : new Error(String(err))))
-      }
     }
 
     child.stdout.setEncoding("utf8")
     child.stdout.on("data", (chunk: string) => {
       if (settled) return
       touch()
-      stdoutBuf += chunk
-      // Strict LF framing (pi's JSONL framing is LF-only; a trailing \r is JSON whitespace anyway).
-      let nl = stdoutBuf.indexOf("\n")
-      while (nl !== -1 && !settled) {
-        const line = stdoutBuf.slice(0, nl)
-        stdoutBuf = stdoutBuf.slice(nl + 1)
-        deliver(line)
-        nl = stdoutBuf.indexOf("\n")
+      try {
+        o.onStdoutChunk(chunk)
+      } catch (err) {
+        // A throwing consumer is a worker bug — fail the run loudly rather than crash the
+        // process from inside a stream handler.
+        killWithGrace()
+        settle(() => reject(err instanceof Error ? err : new Error(String(err))))
       }
     })
 
@@ -189,10 +226,13 @@ export function runJsonlSubprocess(o: JsonlRunOpts): Promise<JsonlExit> {
     })
     child.on("close", (code, signal) => {
       if (killTimer) clearTimeout(killTimer)
-      if (!settled && stdoutBuf.length > 0) {
-        const rest = stdoutBuf
-        stdoutBuf = ""
-        deliver(rest)
+      if (!settled) {
+        try {
+          o.onStdoutClose?.()
+        } catch (err) {
+          settle(() => reject(err instanceof Error ? err : new Error(String(err))))
+          return
+        }
       }
       settle(() => resolve({ code, signal: signal ?? null, stderrTail: stderrBuf.trim() }))
     })
@@ -251,28 +291,20 @@ export function captureStdout(o: {
   spawnProcess?: SpawnProcess
 }): Promise<string> {
   const ac = new AbortController()
-  let out = ""
-  const run = runJsonlSubprocess({
+  const run = runCapturedSubprocess({
     provider: o.provider,
     bin: o.bin,
     args: o.args,
     cwd: o.cwd,
     env: o.env,
     signal: ac.signal,
-    // Version output is plain text, but tolerate JSON-shaped lines too.
-    onValue: (v) => {
-      out += (typeof v === "string" ? v : JSON.stringify(v)) + "\n"
-    },
-    onTextLine: (line) => {
-      out += line + "\n"
-    },
     stallTimeoutMs: o.timeoutMs ?? 10_000,
     killGraceMs: 1_000,
     spawnProcess: o.spawnProcess,
   })
   return run.then((exit) => {
     if (exit.code !== 0) throw exitError(o.provider, o.bin, exit)
-    return out.trim()
+    return exit.stdout.trim()
   })
 }
 

@@ -15,7 +15,6 @@
 // turn. v0.0.6 has no enforceable no-tools flag, so this worker never claims a tool-less pass.
 
 import { createHash } from "node:crypto"
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import {
   lstatSync,
   readFileSync,
@@ -31,6 +30,8 @@ import { assertValidSchema, parseValidJson } from "./schema.js"
 import {
   DEFAULT_KILL_GRACE_MS,
   DEFAULT_STALL_TIMEOUT_MS,
+  runCapturedSubprocess,
+  type CapturedExit,
   type SpawnProcess,
 } from "./subprocess-jsonl.js"
 
@@ -316,7 +317,7 @@ export class FxWorker implements Worker {
     const env = scrubbedEnv(home, model)
     await this.checkStatus(spec, env, model, ctx.signal)
 
-    let exit: FxProcessExit
+    let exit: CapturedExit
     try {
       exit = await runFxProcess({
         bin: this.bin,
@@ -934,14 +935,7 @@ function strOf(v: unknown): string | undefined {
   return typeof v === "string" ? v : undefined
 }
 
-interface FxProcessExit {
-  code: number | null
-  signal: string | null
-  stdout: string
-  stderrTail: string
-}
-
-function runFxProcess(o: {
+async function runFxProcess(o: {
   bin: string
   args: string[]
   cwd?: string
@@ -951,117 +945,22 @@ function runFxProcess(o: {
   stallTimeoutMs: number
   killGraceMs: number
   spawnProcess?: SpawnProcess
-}): Promise<FxProcessExit> {
-  return new Promise<FxProcessExit>((resolve, reject) => {
-    if (o.signal.aborted) {
-      reject(new AgentInterrupted())
-      return
-    }
-    const spawnProcess: SpawnProcess =
-      o.spawnProcess ??
-      ((bin, args, opts) => spawn(bin, args, { cwd: opts.cwd, env: opts.env, stdio: ["pipe", "pipe", "pipe"] }))
-    let child: ChildProcessWithoutNullStreams
-    try {
-      child = spawnProcess(o.bin, o.args, { cwd: o.cwd, env: o.env })
-    } catch (err) {
-      reject(spawnFailure(o.bin, err))
-      return
-    }
-
-    const stderrLimit = 16 * 1024
-    let settled = false
-    let stdout = ""
-    let stderrBuf = ""
-    let watchdog: ReturnType<typeof setTimeout> | undefined
-    let killTimer: ReturnType<typeof setTimeout> | undefined
-
-    const settle = (fn: () => void): void => {
-      if (settled) return
-      settled = true
-      if (watchdog) clearTimeout(watchdog)
-      o.signal.removeEventListener("abort", onAbort)
-      fn()
-    }
-
-    const killWithGrace = (): void => {
-      try {
-        child.kill("SIGTERM")
-      } catch {
-        // best-effort
-      }
-      if (killTimer) return
-      killTimer = setTimeout(() => {
-        try {
-          child.kill("SIGKILL")
-        } catch {
-          // best-effort
-        }
-      }, o.killGraceMs)
-      killTimer.unref?.()
-    }
-
-    const onAbort = (): void => {
-      killWithGrace()
-      settle(() => reject(new AgentInterrupted()))
-    }
-
-    const touch = (): void => {
-      if (o.stallTimeoutMs <= 0 || settled) return
-      if (watchdog) clearTimeout(watchdog)
-      watchdog = setTimeout(() => {
-        killWithGrace()
-        settle(() =>
-          reject(
-            new AgentError({
-              provider: PROVIDER,
-              code: "turn_stalled",
-              message: `${o.bin} produced no output for ${o.stallTimeoutMs}ms — failing instead of hanging forever`,
-              retryable: false,
-            }),
-          ),
-        )
-      }, o.stallTimeoutMs)
-    }
-
-    child.stdout.setEncoding("utf8")
-    child.stdout.on("data", (chunk: string) => {
-      if (settled) return
-      touch()
-      stdout += chunk
+}): Promise<CapturedExit> {
+  try {
+    return await runCapturedSubprocess({
+      provider: PROVIDER,
+      ...o,
     })
-    child.stderr.setEncoding("utf8")
-    child.stderr.on("data", (chunk: string) => {
-      stderrBuf += chunk
-      if (stderrBuf.length > stderrLimit) stderrBuf = stderrBuf.slice(stderrBuf.length - stderrLimit)
-    })
-    child.on("error", (err) => {
-      settle(() => reject(spawnFailure(o.bin, err)))
-    })
-    child.on("exit", () => {
-      if (killTimer) clearTimeout(killTimer)
-    })
-    child.on("close", (code, signal) => {
-      if (killTimer) clearTimeout(killTimer)
-      settle(() => resolve({ code, signal: signal ?? null, stdout, stderrTail: stderrBuf.trim() }))
-    })
-
-    o.signal.addEventListener("abort", onAbort, { once: true })
-    touch()
-    child.stdin.on?.("error", () => {})
-    if (o.stdin !== undefined) child.stdin.write(o.stdin, () => {})
-    child.stdin.end?.()
-  })
-}
-
-function spawnFailure(bin: string, err: unknown): AgentError {
-  const message = err instanceof Error ? err.message : String(err)
-  const notFound = /ENOENT|not found|not recognized|EACCES/i.test(message)
-  return new AgentError({
-    provider: PROVIDER,
-    code: notFound ? "binary_not_found" : "spawn_failed",
-    message: notFound
-      ? `cannot execute "${bin}" — is the fx CLI installed and on PATH? (${message})`
-      : `failed to spawn ${bin}: ${message}`,
-    retryable: false,
-  })
+  } catch (err) {
+    if (err instanceof AgentInterrupted) throw err
+    if (err instanceof AgentError) {
+      throw new AgentError({
+        provider: PROVIDER,
+        code: err.code,
+        message: err.message,
+        retryable: false,
+      })
+    }
+    throw err
+  }
 }

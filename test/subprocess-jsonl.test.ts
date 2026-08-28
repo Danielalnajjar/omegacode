@@ -1,4 +1,4 @@
-import { after, test } from "node:test"
+import { test } from "node:test"
 import assert from "node:assert/strict"
 import { EventEmitter } from "node:events"
 
@@ -6,17 +6,13 @@ import {
   captureStdout,
   exitError,
   parseVersion,
+  runCapturedSubprocess,
   runJsonlSubprocess,
   versionAtLeast,
   type JsonlRunOpts,
   type SpawnProcess,
 } from "../src/worker/subprocess-jsonl.js"
 import { AgentError, AgentInterrupted } from "../src/worker/index.js"
-
-// Stall/kill tests await rejections driven by unref'd timers while the only "process" alive is a
-// FakeProc with no real handles — keep the loop referenced (same rationale as codex-worker.test.ts).
-const keepAlive = setInterval(() => {}, 60_000)
-after(() => clearInterval(keepAlive))
 
 // ---------------------------------------------------------------------------
 // A scripted fake child satisfying the slice of ChildProcessWithoutNullStreams
@@ -290,6 +286,27 @@ test("a throwing onValue fails the run with that error instead of crashing the p
   h.proc.pushLine({ a: 1 })
   await assert.rejects(h.run, /worker bug/)
   assert.deepEqual(h.proc.kills, ["SIGTERM"])
+})
+
+test("captured subprocess preserves exact stdout while sharing the process lifecycle", async () => {
+  const proc = new FakeProc()
+  const run = runCapturedSubprocess({
+    provider: "fx",
+    bin: "/opt/fx",
+    args: ["ask", "--json", "--no-save"],
+    signal: new AbortController().signal,
+    stdin: "prompt",
+    stallTimeoutMs: 0,
+    spawnProcess: () => proc as any,
+  })
+  await tick()
+  proc.pushRaw('{"output":"done",')
+  proc.pushRaw('"exit_code":0}\n')
+  proc.end(0)
+  const exit = await run
+  assert.equal(exit.stdout, '{"output":"done","exit_code":0}\n')
+  assert.deepEqual(proc.stdin.chunks, ["prompt"])
+  assert.equal(proc.stdin.ended, true)
 })
 
 test("captureStdout returns trimmed stdout on exit 0 and throws on nonzero exit", async () => {

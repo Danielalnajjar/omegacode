@@ -368,6 +368,21 @@ test("status attestation rejects wrong route, model, auth, permission, expiry, M
   }
 })
 
+test("a signal-killed status probe is a retryable provider failure, not caller interruption", async () => {
+  const f = fixture()
+  try {
+    const h = harness(f, [version, (proc) => proc.end(null, "SIGKILL")])
+    const err = await rejectsCode(h.worker.runAgent(spec(f), context()), "provider_exit")
+    assert.equal(err.retryable, true)
+    assert.deepEqual(h.spawned.map((call) => call.args), [
+      ["--version"],
+      ["status", "--json"],
+    ])
+  } finally {
+    f.cleanup()
+  }
+})
+
 test("strict ask envelope rejects OS/inner failures, typed errors, wrong model, empty output, failed tools, and malformed stdout", async () => {
   const f = fixture()
   try {

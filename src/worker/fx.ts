@@ -214,7 +214,14 @@ export class FxWorker implements Worker {
       spawnProcess: this.spawnProcess,
     })
     if (signal.aborted) throw new AgentInterrupted()
-    if (exit.signal) throw new AgentInterrupted(`fx status interrupted (${exit.signal})`)
+    if (exit.signal) {
+      throw new AgentError({
+        provider: PROVIDER,
+        code: "provider_exit",
+        message: `${this.bin} status --json exited by signal ${exit.signal}${stderrNote(exit.stderrTail)}`,
+        retryable: true,
+      })
+    }
     if (exit.code !== 0) {
       throw new AgentError({
         provider: PROVIDER,

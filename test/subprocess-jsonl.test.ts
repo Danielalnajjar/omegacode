@@ -115,6 +115,23 @@ test("delivers multiple lines arriving in one chunk, tolerates blank and \\r-ter
   assert.deepEqual(h.values, [{ a: 1 }, { b: 2 }])
 })
 
+test("stops delivering buffered lines when a callback aborts the run", async () => {
+  const ac = new AbortController()
+  const values: unknown[] = []
+  const h = harness({
+    signal: ac.signal,
+    onValue: (value) => {
+      values.push(value)
+      ac.abort()
+    },
+  })
+  await tick()
+  h.proc.pushRaw('{"a":1}\n{"b":2}\n')
+  await assert.rejects(h.run, AgentInterrupted)
+  assert.deepEqual(values, [{ a: 1 }])
+  assert.deepEqual(h.proc.kills, ["SIGTERM"])
+})
+
 test("non-JSON stdout lines go to onTextLine, never crash the run", async () => {
   const h = harness()
   await tick()

@@ -92,7 +92,7 @@ export function runJsonlSubprocess(o: JsonlRunOpts): Promise<JsonlExit> {
       stdoutBuf += chunk
       // Strict LF framing (pi's JSONL framing is LF-only; a trailing \r is JSON whitespace anyway).
       let nl = stdoutBuf.indexOf("\n")
-      while (nl !== -1) {
+      while (nl !== -1 && !processOpts.signal.aborted) {
         const line = stdoutBuf.slice(0, nl)
         stdoutBuf = stdoutBuf.slice(nl + 1)
         deliver(line)

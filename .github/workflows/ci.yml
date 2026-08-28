@@ -49,8 +49,14 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: pnpm
+      - uses: oven-sh/setup-bun@v2
+        if: matrix.os == 'ubuntu-latest' && matrix.node == '22'
+        with:
+          bun-version: 1.4.0
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       # Full build: viewer workspace package, tsup, postbuild.
       - run: pnpm build
       - run: pnpm test
+        env:
+          OMEGACODE_REQUIRE_BUN_TESTS: ${{ matrix.os == 'ubuntu-latest' && matrix.node == '22' && '1' || '0' }}

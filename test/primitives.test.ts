@@ -7,9 +7,11 @@ import { join } from "node:path"
 import { Runtime } from "../src/runtime/primitives.ts"
 import { ensureRunDir, Journal, type LoadedJournal } from "../src/runtime/journal.ts"
 import { FileEventSink } from "../src/runtime/event-sink.ts"
+import { agentTranscriptPath } from "../src/runtime/transcript.ts"
 import { runInSandbox } from "../src/runtime/sandbox.ts"
+import { explicitKey } from "../src/runtime/keys.ts"
 import type { EventSink, WorkflowEventInput } from "../src/runtime/events.ts"
-import type { Worker, WorkerContext, WorkerFactory } from "../src/worker/index.ts"
+import type { PreparedAgentCall, Worker, WorkerContext, WorkerFactory } from "../src/worker/index.ts"
 import { AgentError, AgentInterrupted } from "../src/worker/index.ts"
 import { DEFAULTS, emptyUsage, type AgentResult, type AgentSpec, type RunDefaults } from "../src/dsl/types.ts"
 
@@ -18,6 +20,7 @@ import { DEFAULTS, emptyUsage, type AgentResult, type AgentSpec, type RunDefault
 interface WorkerHooks {
   /** Per-call behavior keyed by the worker's view of the spec. Default: echo the prompt. */
   run?: (spec: AgentSpec, ctx: WorkerContext, callIndex: number) => Promise<AgentResult>
+  prepare?: (spec: AgentSpec, ctx: WorkerContext) => Promise<PreparedAgentCall>
 }
 
 class TestWorker implements Worker {
@@ -31,6 +34,9 @@ class TestWorker implements Worker {
     const i = this.n++
     if (this.hooks.run) return this.hooks.run(spec, ctx, i)
     return { text: `echo:${spec.prompt}`, status: "completed", usage: { ...emptyUsage(), outputTokens: 1 } }
+  }
+  async prepareAgentCall(spec: AgentSpec, ctx: WorkerContext): Promise<PreparedAgentCall> {
+    return this.hooks.prepare?.(spec, ctx) ?? ((attemptSpec, attemptCtx) => this.runAgent(attemptSpec, attemptCtx))
   }
   async shutdown(): Promise<void> {}
 }
@@ -740,6 +746,11 @@ test("provider-native options are rejected at the public boundary even with a fa
   try {
     for (const body of [
       `return await agent("x", { claudeAgent: "librarian" })`,
+      `return await agent("x", { claudeProfile: "profile-a" })`,
+      `return await agent("x", { provider: "claude-code", model: "claude-fable-5", claudeProfile: "   " })`,
+      `return await agent("x", { provider: "claude-code", model: "claude-fable-5", claudeProfile: null })`,
+      `return await agent("x", { provider: "claude-code", model: "claude-fable-5", claudeProfile: 42 })`,
+      `return await agent("x", { provider: "claude-code", model: "claude-fable-5", claudeProfile: "profile-a", claudeAgent: "librarian" })`,
       `return await agent("x", { provider: "claude-code", model: "claude-fable-5", codexChildRole: "librarian" })`,
       `return await agent("x", { provider: "claude-code", model: "claude-fable-5", codexWebSearch: "live" })`,
       `return await agent("x", { provider: "claude-code", model: "claude-fable-5", codexNetworkAccess: true })`,
@@ -751,6 +762,133 @@ test("provider-native options are rejected at the public boundary even with a fa
       /invalid codexWebSearch "sometimes"/,
     )
     assert.equal(b.worker.calls.length, 0)
+  } finally {
+    b.cleanup()
+  }
+})
+
+test("a valid Claude profile is trimmed and prepared exactly once for a corrective retry", async () => {
+  let preparations = 0
+  const attempts: AgentSpec[] = []
+  const b = build({
+    defaults: { provider: "claude-code", model: "claude-fable-5" },
+    hooks: {
+      prepare: async (preparedSpec) => {
+        preparations += 1
+        assert.equal(preparedSpec.claudeProfile, "profile-a")
+        return async (attemptSpec) => {
+          attempts.push(attemptSpec)
+          return attempts.length === 1
+            ? { text: "bad", structured: {}, status: "completed", usage: emptyUsage() }
+            : { text: "good", structured: { answer: 1 }, status: "completed", usage: emptyUsage() }
+        }
+      },
+    },
+  })
+  try {
+    const out = await runBody(b, `return await agent("x", { claudeProfile: "  profile-a  ", schema: { type: "object", properties: { answer: { type: "number" } }, required: ["answer"] } })`)
+    assert.deepEqual(JSON.parse(JSON.stringify(out)), { answer: 1 })
+    assert.equal(preparations, 1)
+    assert.equal(attempts.length, 2)
+    assert.match(attempts[1]!.instructions ?? "", /previous response did not match/)
+    assert.equal(readFileSync(join(b.home, "runs", "run_test", "journal.jsonl"), "utf8").includes("profile-a"), false)
+    assert.equal(readFileSync(agentTranscriptPath("run_test", 1), "utf8").includes("profile-a"), false)
+  } finally {
+    b.cleanup()
+  }
+})
+
+test("ordinary provider retries reuse one prepared Claude profile call", async () => {
+  let preparations = 0
+  let attempts = 0
+  const b = build({
+    defaults: { provider: "claude-code", model: "claude-fable-5" },
+    hooks: {
+      prepare: async () => {
+        preparations += 1
+        return async () => {
+          attempts += 1
+          if (attempts === 1) throw new AgentError({ provider: "claude-code", code: "transient", message: "try again", retryable: true })
+          return { text: "ok", status: "completed", usage: emptyUsage() }
+        }
+      },
+    },
+  })
+  try {
+    assert.equal(await runBody(b, `return await agent("x", { claudeProfile: "profile-a" })`), "ok")
+    assert.equal(preparations, 1)
+    assert.equal(attempts, 2)
+  } finally {
+    b.cleanup()
+  }
+})
+
+test("a profile cache hit skips preparation and profile identity stays outside artifacts", async () => {
+  let preparations = 0
+  const key = explicitKey("profile-cache")
+  const loaded: LoadedJournal = {
+    results: new Map([[key, {
+      type: "result", key, index: 1, status: "completed", result: "cached", usage: emptyUsage(), provider: "claude-code", durationMs: 1,
+    }]]),
+    indexByKey: new Map([[key, 1]]),
+  }
+  const b = build({
+    loaded,
+    defaults: { provider: "claude-code", model: "claude-fable-5" },
+    hooks: { prepare: async () => { preparations += 1; throw new Error("must not prepare") } },
+  })
+  try {
+    assert.equal(await runBody(b, `return await agent("x", { key: "profile-cache", claudeProfile: "PROFILE-MUST-STAY-PRIVATE" })`), "cached")
+    assert.equal(preparations, 0)
+    assert.equal(JSON.stringify(b.sink.events).includes("PROFILE-MUST-STAY-PRIVATE"), false)
+  } finally {
+    b.cleanup()
+  }
+})
+
+test("concurrent A/B/A profiles start independently, including two calls sharing one profile", async () => {
+  let release!: () => void
+  const released = new Promise<void>((resolve) => { release = resolve })
+  let allStartedResolve!: () => void
+  const allStarted = new Promise<void>((resolve) => { allStartedResolve = resolve })
+  const started: string[] = []
+  const b = build({
+    defaults: { provider: "claude-code", model: "claude-fable-5", concurrency: 3 },
+    hooks: {
+      prepare: async (preparedSpec) => async () => {
+        started.push(preparedSpec.claudeProfile!)
+        if (started.length === 3) allStartedResolve()
+        await released
+        return { text: preparedSpec.claudeProfile!, status: "completed", usage: emptyUsage() }
+      },
+    },
+  })
+  try {
+    const pending = runBody(b, `return await parallel([
+      () => agent("a1", { claudeProfile: "a" }),
+      () => agent("b", { claudeProfile: "b" }),
+      () => agent("a2", { claudeProfile: "a" }),
+    ])`)
+    await allStarted
+    assert.deepEqual(started.sort(), ["a", "a", "b"])
+    release()
+    assert.deepEqual(JSON.parse(JSON.stringify(await pending)).sort(), ["a", "a", "b"])
+  } finally {
+    release()
+    b.cleanup()
+  }
+})
+
+test("a worker without profile preparation fails closed", async () => {
+  const worker = new TestWorker()
+  Object.defineProperty(worker, "prepareAgentCall", { value: undefined })
+  const b = build({ worker, defaults: { provider: "claude-code", model: "claude-fable-5" } })
+  try {
+    await assert.rejects(
+      runBody(b, `return await agent("x", { claudeProfile: "profile-a" })`),
+      (error: unknown) => error instanceof AgentError && error.code === "claude_profile_unavailable",
+    )
+    assert.equal(worker.calls.length, 0)
   } finally {
     b.cleanup()
   }

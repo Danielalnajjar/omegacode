@@ -136,10 +136,15 @@ process (bb confirms this model). We cap concurrency and clean up threads when d
   (`error_max_turns`, `error_max_budget_usd`, `error_max_structured_output_retries`, …).
 - **Options we use:** `cwd`, `model`, `maxTurns`, `agent` for `claudeAgent`, `settingSources: []`
   for ordinary calls or `["user"]` for native-agent calls (never project/local sources), a
+  call-local `env` containing the selected `CLAUDE_CONFIG_DIR` for profiled calls,
   **`canUseTool`** callback (the sandbox tool-gate, §6.4), and **`outputFormat: { type: 'json_schema',
   schema }`** for structured output (verified in the installed typings + the [Agent SDK
   structured-outputs docs](https://code.claude.com/docs/en/agent-sdk/structured-outputs)).
-- **Auth:** the host's existing Claude auth (`ANTHROPIC_API_KEY` or Claude Code login).
+- **Auth:** ordinary calls inherit the host's existing Claude auth. A call with `claudeProfile`
+  exact-resolves that Subscription Picker profile once and gives only that SDK subprocess a copied
+  environment whose `CLAUDE_CONFIG_DIR` selects the profile home. Direct credential, endpoint, host-auth,
+  or provider-selector overrides that could bypass the selected home fail before resolution; Omega does
+  not delete them or fall back to another profile.
 - **Process model:** each `query()` is its own session/subprocess (heavier per-call than Codex's
   multiplexed threads) — fine for v1; pool/reuse later if wide fan-out makes it bite (§8).
 
@@ -251,7 +256,7 @@ and typechecking. Schemas are **JSON Schema** (the portable default that maps st
 only the levels its backend does not support), cwd?, sandbox?:
 "read-only"|"workspace-write"|"danger-full-access", approval?: "never"|"on-request", instructions?,
 schema?: JSONSchema, worktree?: boolean | string, key?: string, maxTurns?: number, serviceTier?:
-string, claudeAgent?: string, codexChildRole?: string, codexWebSearch?:
+string, claudeAgent?: string, claudeProfile?: string, codexChildRole?: string, codexWebSearch?:
 "disabled"|"cached"|"live", codexNetworkAccess?: boolean }`.
 - `provider` selects the backend for this call; default = `--provider` → `meta.defaultProvider` →
   built-in (`codex`). `provider` and `model` are **both-or-neither** at every specification site
@@ -264,6 +269,8 @@ string, claudeAgent?: string, codexChildRole?: string, codexWebSearch?:
 - `sandbox`/`approval` map per provider (§6.4); `effort` maps natively on Codex, best-effort on Claude
   (§6.5).
 - `claudeAgent` is Claude-only and loads that user-level SDK agent without project/local settings.
+  `claudeProfile` is Claude-only, selects a Subscription Picker stable profile ID for a new call, and
+  is mutually exclusive with `claudeAgent` because user agents are loaded from the selected home.
   `codexChildRole`, `codexWebSearch`, and `codexNetworkAccess` are Codex-only; child-role construction
   is accepted only from exact provider-owned parent, role, and completed-turn metadata, never from
   prompt/result text.
@@ -372,6 +379,9 @@ small registry of live workers and lazily starts each provider the first time it
   `agent` plus `settingSources: ["user"]` for `claudeAgent` calls (otherwise `settingSources: []`),
   the `canUseTool` sandbox gate (§6.4), and `outputFormat` (when `schema` is
   set). Abort via the generator's abort/interrupt.
+- A `claudeProfile` call exact-resolves once before retry and reuses one immutable call-local environment
+  across ordinary and corrective attempts. Concurrent calls, including two using the same profile, keep
+  independent environment values and never mutate `process.env`.
 - One `query()` per agent (its own session/subprocess). Errors come as `SDKResultError` subtypes
   (rate-limit/turns/budget/structured-retries) → mapped to the same typed `AgentError` with the same
   retryable classification.
@@ -610,9 +620,10 @@ already reads files). Noted as a future direction.
 
 ## 11. Configuration & auth
 
-- **Auth:** each worker inherits the host's existing provider auth — Codex login for `CodexWorker`,
-  `ANTHROPIC_API_KEY` / Claude Code login for `ClaudeWorker`. A workflow only needs auth for the
-  provider(s) it actually uses. *(As shipped, `omegacode doctor` is a lightweight binary check — it runs
+- **Auth:** Codex and ordinary Claude calls inherit the host's existing provider auth. Profiled Claude
+  calls select the exact Subscription Picker Claude home with a call-local `CLAUDE_CONFIG_DIR`; conflicting
+  direct auth/backend controls fail closed without fallback. A workflow only needs auth for the provider(s)
+  and explicit profiles it actually uses. *(As shipped, `omegacode doctor` is a lightweight binary check — it runs
   each provider's version command and reports the data dir; it does **not** do live
   `model/list` / `query()` round-trips the original design described.)*
 - **Config:** there is **no config file** (`omegacode.config.{ts,json}` was designed but **not

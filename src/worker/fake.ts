@@ -6,7 +6,7 @@ import { createHash } from "node:crypto"
 import { setTimeout as sleep } from "node:timers/promises"
 import { emptyUsage, type AgentResult, type AgentSpec, type JSONSchema } from "../dsl/types.js"
 import { validate } from "./schema.js"
-import type { Worker, WorkerContext } from "./index.js"
+import type { PreparedAgentCall, Worker, WorkerContext } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
 
 export class FakeWorker implements Worker {
@@ -14,6 +14,10 @@ export class FakeWorker implements Worker {
   private readonly delayMs: number
   constructor(opts: { delayMs?: number } = {}) {
     this.delayMs = opts.delayMs ?? 0
+  }
+
+  async prepareAgentCall(): Promise<PreparedAgentCall> {
+    return (spec, ctx) => this.runAgent(spec, ctx)
   }
 
   async runAgent(spec: AgentSpec, ctx: WorkerContext): Promise<AgentResult> {

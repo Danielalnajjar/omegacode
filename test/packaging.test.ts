@@ -8,7 +8,8 @@
 
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { createHash } from "node:crypto"
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -27,6 +28,80 @@ function pnpm(args: string[], cwd: string): string {
 function packEntries(stdout: string): Array<{ path: string }> {
   const parsed = JSON.parse(stdout)
   return (Array.isArray(parsed) ? parsed[0] : parsed).files as Array<{ path: string }>
+}
+
+function byteSnapshot(path: string): unknown {
+  const info = lstatSync(path)
+  if (info.isSymbolicLink()) return { type: "link", target: readlinkSync(path) }
+  if (info.isDirectory()) {
+    return {
+      type: "directory",
+      entries: Object.fromEntries(readdirSync(path).sort().map((name) => [name, byteSnapshot(join(path, name))])),
+    }
+  }
+  return { type: "file", mode: info.mode & 0o777, bytes: readFileSync(path).toString("base64") }
+}
+
+function containsSymlink(path: string): boolean {
+  const info = lstatSync(path)
+  if (info.isSymbolicLink()) return true
+  return info.isDirectory() && readdirSync(path).some((name) => containsSymlink(join(path, name)))
+}
+
+function sha256(path: string): string {
+  return createHash("sha256").update(readFileSync(path)).digest("hex")
+}
+
+function writeFixturePackage(source: string, name: string, version: string, marker: string): void {
+  mkdirSync(join(source, "dist"), { recursive: true })
+  writeFileSync(join(source, "package.json"), `${JSON.stringify({
+    name,
+    version,
+    type: "module",
+    bin: { [name]: "dist/cli.js" },
+    files: ["dist"],
+  }, null, 2)}\n`)
+  writeFileSync(join(source, "dist", "cli.js"), `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(marker)})\n`, { mode: 0o755 })
+}
+
+function makeOmegaTarball(externalRoot: string, version: string, marker: string): string {
+  const source = join(externalRoot, "source")
+  const packages = join(externalRoot, "packages")
+  writeFixturePackage(source, "omegacode", version, marker)
+  mkdirSync(packages, { recursive: true })
+  pnpm(["pack", "--pack-destination", packages], source)
+  return join(packages, `omegacode-${version}.tgz`)
+}
+
+const bunAvailable = (() => {
+  try {
+    execFileSync("bun", ["--version"], { stdio: "pipe" })
+    return true
+  } catch {
+    return false
+  }
+})()
+const bunRequired = process.env.OMEGACODE_REQUIRE_BUN_TESTS === "1"
+
+function expectInjectedCutoverFailure(prefix: string, tarball: string): void {
+  try {
+    execFileSync("bash", [join(root, "scripts", "refresh-global.sh"), "--fast"], {
+      cwd: root,
+      env: {
+        ...process.env,
+        BUN_INSTALL: prefix,
+        OMEGACODE_REFRESH_TARBALL: tarball,
+        OMEGACODE_REFRESH_FAIL_AFTER_CUTOVER: "1",
+      },
+      encoding: "utf8",
+      stdio: "pipe",
+    })
+  } catch (error) {
+    const stderr = typeof error === "object" && error !== null && "stderr" in error ? String(error.stderr) : ""
+    assert.match(stderr, /error: injected post-cutover refresh failure/, "refresh failed before reaching the injected post-cutover boundary")
+    return
+  }
+  assert.fail("injected post-cutover failure unexpectedly succeeded")
 }
 
 describe("exports / types map (M31)", () => {
@@ -508,5 +583,206 @@ describe("one coherent package-manager story (L19)", () => {
     assert.equal(pkg.scripts["viewer:build"], "pnpm --filter viewer build")
     assert.equal(pkg.scripts["viewer:dev"], "pnpm --filter viewer dev")
     assert.match(pkg.scripts["verify:deps"], /pnpm pack --dry-run --json/)
+  })
+})
+
+describe("verified packed global refresh", () => {
+  test("the mandatory Bun transaction lane provisions Bun", { skip: !bunRequired }, () => {
+    assert.equal(bunAvailable, true, "OMEGACODE_REQUIRE_BUN_TESTS requires Bun")
+  })
+
+  test("packed-install verifier requires exact bidirectional payload parity and the installed bin", { skip: process.platform === "win32" }, () => {
+    const temp = mkdtempSync(join(tmpdir(), "omega-packed-verify-"))
+    try {
+      const expected = join(temp, "expected")
+      const installed = join(temp, "installed")
+      const bin = join(temp, "omegacode")
+      const receipt = join(temp, "receipt.json")
+      mkdirSync(join(expected, "dist"), { recursive: true })
+      writeFileSync(join(expected, "dist", "cli.js"), "#!/usr/bin/env node\n", { mode: 0o755 })
+      writeFileSync(join(expected, "package.json"), "{}\n", { mode: 0o644 })
+      cpSync(expected, installed, { recursive: true })
+      symlinkSync(join(installed, "dist", "cli.js"), bin)
+
+      const output = execFileSync(process.execPath, [join(root, "scripts", "verify-packed-install.mjs"), expected, installed, bin, receipt], { encoding: "utf8" })
+      assert.equal(JSON.parse(output).ok, true)
+      assert.equal(JSON.parse(readFileSync(receipt, "utf8")).entryCount, 3)
+
+      writeFileSync(join(installed, "stale-extra"), "stale\n")
+      assert.throws(
+        () => execFileSync(process.execPath, [join(root, "scripts", "verify-packed-install.mjs"), expected, installed, bin], { encoding: "utf8", stdio: "pipe" }),
+        /installed package payload differs/,
+      )
+    } finally {
+      rmSync(temp, { recursive: true, force: true })
+    }
+  })
+
+  test("global refresh verifies isolation before cutover and restores only a started failed cutover", () => {
+    const script = read("scripts/refresh-global.sh")
+    const isolatedVerification = script.indexOf('"$isolated/install/global/node_modules/omegacode"')
+    const cutover = script.indexOf("cutover_started=1")
+    assert.ok(isolatedVerification >= 0 && isolatedVerification < cutover, "isolated payload verification must precede active cutover")
+    assert.match(script, /status -ne 0 && \$cutover_started -eq 1 && \$committed -eq 0/)
+    assert.match(script, /bun install --cwd "\$active_prefix\/install\/global" --frozen-lockfile/)
+    assert.match(script, /bun add -g "\$stable_tarball"/)
+    assert.match(script, /omegacode-\$version-\$tarball_sha256\.tgz/)
+    assert.match(script, /\.omegacode-refresh\.lock/)
+    for (const tracked of ["install/global/package.json", "install/global/bun.lock", "install/global/.omegacode-packages"]) {
+      assert.match(script, new RegExp(tracked.replaceAll("/", "\\/")))
+    }
+  })
+
+  test("post-cutover failure restores the old global package and metadata byte-for-byte", { skip: !bunAvailable }, () => {
+    const temp = mkdtempSync(join(tmpdir(), "omega-refresh-rollback-"))
+    try {
+      const prefix = join(temp, "bun-prefix")
+      const generationOneExternal = join(temp, "generation-one-external")
+      const oldTarball = makeOmegaTarball(generationOneExternal, "0.0.1", "old")
+      execFileSync("bash", [join(root, "scripts", "refresh-global.sh"), "--fast"], {
+        cwd: root,
+        env: {
+          ...process.env,
+          BUN_INSTALL: prefix,
+          OMEGACODE_REFRESH_TARBALL: oldTarball,
+        },
+        stdio: "pipe",
+      })
+
+      const packagePath = join(prefix, "install", "global", "node_modules", "omegacode")
+      const binPath = join(prefix, "bin", "omegacode")
+      const globalPackageJson = join(prefix, "install", "global", "package.json")
+      const globalLock = join(prefix, "install", "global", "bun.lock")
+      const stableArtifacts = join(prefix, "install", "global", ".omegacode-packages")
+      const stableOldTarball = join(stableArtifacts, `omegacode-0.0.1-${sha256(oldTarball)}.tgz`)
+      assert.equal(existsSync(stableOldTarball), true, "generation one did not persist its stable in-prefix tarball")
+
+      rmSync(generationOneExternal, { recursive: true, force: true })
+      assert.equal(existsSync(oldTarball), false, "generation-one external tarball survived test setup")
+
+      const before = {
+        package: byteSnapshot(packagePath),
+        bin: byteSnapshot(binPath),
+        packageJson: byteSnapshot(globalPackageJson),
+        bunLock: byteSnapshot(globalLock),
+        stableArtifacts: byteSnapshot(stableArtifacts),
+      }
+
+      const generationTwoExternal = join(temp, "generation-two-external")
+      const newTarball = makeOmegaTarball(generationTwoExternal, "0.0.1", "new")
+      const stableNewTarball = join(stableArtifacts, `omegacode-0.0.1-${sha256(newTarball)}.tgz`)
+
+      expectInjectedCutoverFailure(prefix, newTarball)
+
+      assert.deepEqual({
+        package: byteSnapshot(packagePath),
+        bin: byteSnapshot(binPath),
+        packageJson: byteSnapshot(globalPackageJson),
+        bunLock: byteSnapshot(globalLock),
+        stableArtifacts: byteSnapshot(stableArtifacts),
+      }, before)
+      assert.equal(existsSync(stableOldTarball), true, "rollback lost the only surviving generation-one package source")
+      assert.equal(existsSync(stableNewTarball), false, "failed same-version generation-two tarball survived rollback")
+    } finally {
+      rmSync(temp, { recursive: true, force: true })
+    }
+  })
+
+  test("failed first cutover preserves a checkout-linked Omega package without dereferencing nested links", { skip: !bunAvailable }, () => {
+    const temp = mkdtempSync(join(tmpdir(), "omega-refresh-linked-rollback-"))
+    try {
+      const prefix = join(temp, "bun-prefix")
+      const source = join(temp, "checkout", "omegacode")
+      writeFixturePackage(source, "omegacode", "0.0.6", "linked-old")
+      symlinkSync(source, join(source, "recursive-link"))
+      execFileSync("bun", ["add", "-g", source], {
+        env: { ...process.env, BUN_INSTALL: prefix },
+        stdio: "pipe",
+      })
+
+      const packagePath = join(prefix, "install", "global", "node_modules", "omegacode")
+      const binPath = join(prefix, "bin", "omegacode")
+      const globalPackageJson = join(prefix, "install", "global", "package.json")
+      const globalLock = join(prefix, "install", "global", "bun.lock")
+      assert.equal(containsSymlink(packagePath), true, "fixture did not create a checkout-linked Bun package")
+      const before = {
+        package: byteSnapshot(packagePath),
+        bin: byteSnapshot(binPath),
+        packageJson: byteSnapshot(globalPackageJson),
+        bunLock: byteSnapshot(globalLock),
+      }
+
+      const candidate = makeOmegaTarball(join(temp, "candidate"), "0.0.6", "candidate")
+      expectInjectedCutoverFailure(prefix, candidate)
+
+      assert.deepEqual({
+        package: byteSnapshot(packagePath),
+        bin: byteSnapshot(binPath),
+        packageJson: byteSnapshot(globalPackageJson),
+        bunLock: byteSnapshot(globalLock),
+      }, before)
+      assert.equal(containsSymlink(packagePath), true, "rollback changed the pre-cutover package link topology")
+      assert.equal(existsSync(join(prefix, "install", "global", ".omegacode-packages")), false)
+    } finally {
+      rmSync(temp, { recursive: true, force: true })
+    }
+  })
+
+  test("failed first Omega install restores absence without changing an unrelated global package", { skip: !bunAvailable }, () => {
+    const temp = mkdtempSync(join(tmpdir(), "omega-refresh-absent-rollback-"))
+    try {
+      const prefix = join(temp, "bun-prefix")
+      const unrelatedSource = join(temp, "unrelated-source")
+      writeFixturePackage(unrelatedSource, "unrelated-global-fixture", "1.0.0", "unrelated")
+      execFileSync("bun", ["add", "-g", unrelatedSource], {
+        env: { ...process.env, BUN_INSTALL: prefix },
+        stdio: "pipe",
+      })
+
+      const globalRoot = join(prefix, "install", "global")
+      const unrelatedPackage = join(globalRoot, "node_modules", "unrelated-global-fixture")
+      const unrelatedBin = join(prefix, "bin", "unrelated-global-fixture")
+      const before = {
+        package: byteSnapshot(unrelatedPackage),
+        bin: byteSnapshot(unrelatedBin),
+        packageJson: byteSnapshot(join(globalRoot, "package.json")),
+        bunLock: byteSnapshot(join(globalRoot, "bun.lock")),
+      }
+
+      const candidate = makeOmegaTarball(join(temp, "candidate"), "0.0.6", "candidate")
+      expectInjectedCutoverFailure(prefix, candidate)
+
+      assert.equal(existsSync(join(globalRoot, "node_modules", "omegacode")), false)
+      assert.equal(existsSync(join(prefix, "bin", "omegacode")), false)
+      assert.equal(existsSync(join(globalRoot, "node_modules", ".bin", "omegacode")), false)
+      assert.equal(existsSync(join(globalRoot, ".omegacode-packages")), false)
+      assert.deepEqual({
+        package: byteSnapshot(unrelatedPackage),
+        bin: byteSnapshot(unrelatedBin),
+        packageJson: byteSnapshot(join(globalRoot, "package.json")),
+        bunLock: byteSnapshot(join(globalRoot, "bun.lock")),
+      }, before)
+    } finally {
+      rmSync(temp, { recursive: true, force: true })
+    }
+  })
+
+  test("failed first install removes every candidate-created package, bin, and metadata path", { skip: !bunAvailable }, () => {
+    const temp = mkdtempSync(join(tmpdir(), "omega-refresh-empty-rollback-"))
+    try {
+      const prefix = join(temp, "bun-prefix")
+      const candidate = makeOmegaTarball(join(temp, "candidate"), "0.0.6", "candidate")
+
+      expectInjectedCutoverFailure(prefix, candidate)
+
+      const globalRoot = join(prefix, "install", "global")
+      assert.equal(existsSync(join(globalRoot, "node_modules")), false)
+      assert.equal(existsSync(join(prefix, "bin")), false)
+      assert.equal(existsSync(join(globalRoot, "package.json")), false)
+      assert.equal(existsSync(join(globalRoot, "bun.lock")), false)
+      assert.equal(existsSync(join(globalRoot, ".omegacode-packages")), false)
+    } finally {
+      rmSync(temp, { recursive: true, force: true })
+    }
   })
 })

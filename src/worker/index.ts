@@ -14,10 +14,13 @@ export interface WorkerContext {
   onProgress: (e: WorkerProgress) => void
 }
 
+export type PreparedAgentCall = (spec: AgentSpec, ctx: WorkerContext) => Promise<AgentResult>
+
 /** A provider backend: runs one agent turn to completion. */
 export interface Worker {
   readonly id: ProviderId
   runAgent(spec: AgentSpec, ctx: WorkerContext): Promise<AgentResult>
+  prepareAgentCall?(spec: AgentSpec, ctx: WorkerContext): Promise<PreparedAgentCall>
   shutdown(): Promise<void>
 }
 

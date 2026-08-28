@@ -58,7 +58,8 @@
     "viewer:build": "pnpm --filter viewer build",
     "pnpm:devPreinstall": "node scripts/install-safe.mjs --dev-preinstall",
     "install:safe": "node scripts/install-safe.mjs --frozen",
-    "verify:deps": "pnpm test && pnpm typecheck && pnpm build && pnpm pack --dry-run --json"
+    "verify:claude-profile-auth": "node scripts/verify-claude-profile-auth-controls.mjs",
+    "verify:deps": "pnpm verify:claude-profile-auth && pnpm test && pnpm typecheck && pnpm build && pnpm pack --dry-run --json"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.237",

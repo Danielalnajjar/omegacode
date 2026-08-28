@@ -38,6 +38,8 @@ declare global {
     serviceTier?: string
     /** Claude Code user-level custom agent name. */
     claudeAgent?: string
+    /** Stable Subscription Picker profile id for this direct Claude call. */
+    claudeProfile?: string
     /** Codex child role that the root turn must prove it spawned successfully. */
     codexChildRole?: string
     /** Codex web-search mode sent through thread/start config. */

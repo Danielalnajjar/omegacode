@@ -47,6 +47,8 @@ interface AgentOptsBase {
   serviceTier?: string
   /** Claude Code user-level custom agent name. */
   claudeAgent?: string
+  /** Stable Subscription Picker profile id for this direct Claude call. */
+  claudeProfile?: string
   /** Codex child role that the root turn must prove it spawned successfully. */
   codexChildRole?: string
   /** Codex web-search mode sent through thread/start config. */
@@ -71,6 +73,7 @@ export interface AgentSpec {
   maxTurns?: number
   serviceTier?: string
   claudeAgent?: string
+  claudeProfile?: string
   codexChildRole?: string
   codexWebSearch?: CodexWebSearch
   codexNetworkAccess?: boolean

@@ -77,6 +77,16 @@ test("provider-native options each invalidate the cache key", () => {
   }
 })
 
+test("claudeProfile is an endpoint selector outside key identity and KEY_VERSION stays v4", () => {
+  const b = branchKey(ROOT_KEY, "root", 0)
+  const without = chainKey(b, 0, "p", keyedSpec({ provider: "claude-code", model: "claude-fable-5" }, undefined))
+  const profiled = { provider: "claude-code", model: "claude-fable-5", claudeProfile: "profile-a" }
+  const withProfile = chainKey(b, 0, "p", keyedSpec(profiled, undefined))
+  assert.equal(withProfile, without)
+  assert.equal(KEY_VERSION, "v4")
+  assert.ok(!("claudeProfile" in keyedOpts({ claudeProfile: "profile-a" })))
+})
+
 test("keyedSpec captures RESOLVED provider/model so default/CLI overrides invalidate (H8)", () => {
   const b = branchKey(ROOT_KEY, "root", 0)
   // resolved spec with provider codex vs claude-code → different keys, even with no opts

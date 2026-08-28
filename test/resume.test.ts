@@ -20,6 +20,7 @@ import { runInSandbox } from "../src/runtime/sandbox.ts"
 import type { EventSink, WorkflowEventInput } from "../src/runtime/events.ts"
 import type { Worker, WorkerContext, WorkerFactory } from "../src/worker/index.ts"
 import { DEFAULTS, emptyUsage, type AgentResult, type AgentSpec, type RunDefaults } from "../src/dsl/types.ts"
+import { CLAUDE_PROFILE_AUTH_CONFLICTS } from "../src/worker/claude-profile.ts"
 
 // ---- harness ---------------------------------------------------------------------------------
 
@@ -607,5 +608,64 @@ test("a journaled failure in a parallel branch re-runs on resume (rec #4)", asyn
     // resume: only beta must re-run (its failure must not replay as success).
     const second = await runOnce(home, runId, PARALLEL_BODY, () => 0, true)
     assert.deepEqual(second.worker.calls, ["beta"])
+  })
+})
+
+test("profiled public resume replays through the default factory without resolver or SDK child", { skip: process.platform === "win32" }, async () => {
+  await withHome(async (home) => {
+    const bin = join(home, "bin")
+    const bb = join(bin, "bb")
+    const claude = join(home, "claude-fixture")
+    const workflow = join(home, "profile-resume.workflow.js")
+    const resolverCalls = join(home, "resolver-calls.jsonl")
+    const childCalls = join(home, "child-calls.jsonl")
+    const { mkdirSync } = await import("node:fs")
+    mkdirSync(bin)
+    writeFileSync(bb, [
+      `#!${process.execPath}`,
+      `const fs = require('node:fs')`,
+      `fs.appendFileSync(process.env.RESOLVER_CALLS, JSON.stringify(process.argv.slice(2)) + '\\n')`,
+      `process.stdout.write(JSON.stringify({ profileId: 'profile-a', label: 'A', configDir: '/profiles/a' }))`,
+    ].join("\n"), { mode: 0o700 })
+    writeFileSync(claude, [
+      `#!${process.execPath}`,
+      `const fs = require('node:fs')`,
+      `fs.appendFileSync(process.env.CHILD_CALLS, JSON.stringify({ argv: process.argv.slice(2), configDir: process.env.CLAUDE_CONFIG_DIR }) + '\\n')`,
+      `console.log(JSON.stringify({ type: 'system', subtype: 'init', cwd: process.cwd(), session_id: '00000000-0000-4000-8000-000000000001', tools: [], mcp_servers: [], model: 'claude-test', permissionMode: 'default', slash_commands: [], apiKeySource: 'none', output_style: 'default' }))`,
+      `console.log(JSON.stringify({ type: 'assistant', message: { id: 'msg_1', role: 'assistant', content: [{ type: 'text', text: 'profile-result' }], model: 'claude-test', stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }, parent_tool_use_id: null, session_id: '00000000-0000-4000-8000-000000000001' }))`,
+      `console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, duration_ms: 1, duration_api_ms: 1, num_turns: 1, result: 'profile-result', session_id: '00000000-0000-4000-8000-000000000001', total_cost_usd: 0, usage: { input_tokens: 1, output_tokens: 1 }, modelUsage: {}, permission_denials: [] }))`,
+    ].join("\n"), { mode: 0o700 })
+    writeFileSync(workflow, [
+      `export const meta = { name: "profile-resume", description: "same-ID profile replay" }`,
+      `return await agent("profile prompt", { provider: "claude-code", model: "claude-test", claudeProfile: "profile-a", cwd: ${JSON.stringify(home)} })`,
+    ].join("\n"))
+
+    const conflicts = Object.values(CLAUDE_PROFILE_AUTH_CONFLICTS).flat()
+    const saved = Object.fromEntries(["PATH", "RESOLVER_CALLS", "CHILD_CALLS", ...conflicts].map((key) => [key, process.env[key]]))
+    process.env.PATH = `${bin}:${saved.PATH ?? ""}`
+    process.env.RESOLVER_CALLS = resolverCalls
+    process.env.CHILD_CALLS = childCalls
+    for (const key of conflicts) delete process.env[key]
+    try {
+      const first = await runWorkflow({ file: workflow, quiet: true, overrides: { pathToClaudeCodeExecutable: claude } })
+      assert.equal(first.status, "completed", first.error)
+      assert.equal(first.result, "profile-result")
+      assert.equal(readFileSync(resolverCalls, "utf8").trim().split("\n").length, 1)
+      const firstChild = JSON.parse(readFileSync(childCalls, "utf8").trim())
+      assert.equal(firstChild.configDir, "/profiles/a")
+
+      writeFileSync(bb, `#!${process.execPath}\nthrow new Error('resolver must not run during cached resume')\n`, { mode: 0o700 })
+      writeFileSync(claude, `#!${process.execPath}\nthrow new Error('SDK child must not run during cached resume')\n`, { mode: 0o700 })
+      const resumed = await runWorkflow({ file: workflow, resumeRunId: first.runId, quiet: true, overrides: { pathToClaudeCodeExecutable: claude } })
+      assert.equal(resumed.status, "completed", resumed.error)
+      assert.equal(resumed.result, "profile-result")
+      assert.equal(readFileSync(resolverCalls, "utf8").trim().split("\n").length, 1)
+      assert.equal(readFileSync(childCalls, "utf8").trim().split("\n").length, 1)
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    }
   })
 })

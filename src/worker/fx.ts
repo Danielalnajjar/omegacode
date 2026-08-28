@@ -98,7 +98,7 @@ export class FxWorker implements Worker {
   private readonly killGraceMs: number
 
   constructor(opts: FxWorkerOpts = {}) {
-    this.bin = opts.bin ?? process.env.FX_BIN ?? "fx"
+    this.bin = opts.bin ?? process.env.FX_BIN ?? ""
     this.spawnProcess = opts.spawnProcess
     this.hashBinary = opts.hashBinary ?? defaultHashBinary
     this.platform = opts.platform ?? { os: process.platform, arch: process.arch }
@@ -334,15 +334,12 @@ export class FxWorker implements Worker {
       throw withUnknownUsage(err)
     }
     if (ctx.signal.aborted) throw new AgentInterrupted("fx interrupted", unknownUsage())
-    if (exit.signal) throw new AgentInterrupted(`fx interrupted (${exit.signal})`, unknownUsage())
-    if (exit.code === 130 || exit.code === 143) {
-      throw new AgentInterrupted(`fx interrupted (code ${exit.code})`, unknownUsage())
-    }
-    if (exit.code !== 0) {
+    if (exit.signal || exit.code !== 0) {
+      const how = exit.signal ? `signal ${exit.signal}` : `code ${exit.code ?? "null"}`
       throw new AgentError({
         provider: PROVIDER,
         code: "provider_exit",
-        message: `${this.bin} exited code ${exit.code ?? "null"}${stderrNote(exit.stderrTail)}`,
+        message: `${this.bin} exited ${how}${stderrNote(exit.stderrTail)}`,
         retryable: false,
         usage: unknownUsage(),
       })
@@ -676,6 +673,13 @@ function validateAuthMetadata(home: string): void {
       message: `${path} must be a regular file`,
     })
   }
+  if (st.nlink !== 1) {
+    throw new AgentError({
+      provider: PROVIDER,
+      code: "unsafe_profile",
+      message: `${path} must not be hard-linked`,
+    })
+  }
   if (HAS_POSIX_PERMISSIONS && (st.mode & 0o077) !== 0) {
     throw new AgentError({
       provider: PROVIDER,
@@ -723,8 +727,14 @@ function scrubbedEnv(home: string, model: string): NodeJS.ProcessEnv {
 }
 
 function workingPrompt(spec: AgentSpec): string {
-  if (!spec.instructions) return spec.prompt
-  return `<instructions>\n${spec.instructions}\n</instructions>\n\n${spec.prompt}`
+  const prompt = spec.schema
+    ? spec.prompt +
+      "\n\nReturn your final answer as a single JSON value that conforms to the following JSON Schema. " +
+      "Output ONLY the JSON — no prose, no explanation, no code fences.\n\nSchema:\n" +
+      JSON.stringify(spec.schema)
+    : spec.prompt
+  if (!spec.instructions) return prompt
+  return `<instructions>\n${spec.instructions}\n</instructions>\n\n${prompt}`
 }
 
 interface AskEnvelope {
@@ -882,11 +892,11 @@ function defaultHashBinary(bin: string): string {
 }
 
 function validateBinaryMetadata(bin: string): void {
-  if (!isAbsolute(bin)) {
+  if (bin === "" || !isAbsolute(bin)) {
     throw new AgentError({
       provider: PROVIDER,
       code: "binary_not_pinned",
-      message: "FX_BIN must be an absolute path to the exact admitted v0.0.6 binary",
+      message: "FX_BIN is required and must be an absolute path to the exact admitted v0.0.6 binary",
     })
   }
   let st: Stats
@@ -946,6 +956,9 @@ async function runFxProcess(o: {
   killGraceMs: number
   spawnProcess?: SpawnProcess
 }): Promise<CapturedExit> {
+  // Pinned v0.0.6 handles SIGTERM cooperatively and cleans terminal.exec descendants (including
+  // its detached tool session) before exiting; the production 5s grace exceeds its 800ms
+  // escalation. An outer process-group kill would miss that detached session.
   try {
     return await runCapturedSubprocess({
       provider: PROVIDER,

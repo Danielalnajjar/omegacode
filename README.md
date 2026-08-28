@@ -37,7 +37,7 @@ refuse at runtime.
 > (the default). Structured output resumes the working session for a tool-less formatting turn.
 >
 > **Note on fx:** only exact CLI `v0.0.6` with an admitted platform binary SHA-256 is accepted
-> (`FX_BIN`; later/earlier/unidentified builds fail closed). Requires `OMEGACODE_FX_HOME` to a
+> (`FX_BIN` is required and must be absolute; later/earlier/unidentified builds fail closed). Requires `OMEGACODE_FX_HOME` to a
 > private managed automation HOME — never inherited interactive `~/.fx`. Full-access only
 > (`sandbox: "danger-full-access"`, `approval: "never"`). Usage is unavailable, so numeric zeros
 > are a known lower bound marked incomplete; a finite `--budget` rejects fx before spawn. Structured

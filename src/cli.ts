@@ -3,7 +3,7 @@ import { spawn } from "node:child_process"
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { get as httpGet } from "node:http"
 import { homedir } from "node:os"
-import { dirname, join, resolve, sep } from "node:path"
+import { dirname, isAbsolute, join, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { newRunId, runWorkflow, type RunOverrides } from "./runtime/run.js"
 import { parseWorkflow, WorkflowSyntaxError } from "./runtime/sandbox.js"
@@ -808,7 +808,7 @@ async function cmdDoctor(): Promise<void> {
   const opencodeBin = process.env.OPENCODE_BIN ?? "opencode"
   const piBin = process.env.PI_BIN ?? "pi"
   const grokBin = process.env.GROK_BIN ?? "grok"
-  const fxBin = process.env.FX_BIN ?? "fx"
+  const fxBin = process.env.FX_BIN
 
   // pi probes run isolated (scratch agent dir, neutral cwd): old binaries wrote lock files and a
   // repo-local .pi even on --version, and 0.79.1 is not confirmed clean.
@@ -827,9 +827,13 @@ async function cmdDoctor(): Promise<void> {
   console.log(`  opencode     : ${withMin(check(opencodeBin, ["--version"]), OPENCODE_MIN_VERSION, "upgrade the opencode CLI")}`)
   console.log(`  pi           : ${withMin(piOut, PI_MIN_VERSION, "bun add -g @earendil-works/pi-coding-agent")}`)
   console.log(`  grok         : ${withMin(check(grokBin, ["--version"]), GROK_MIN_VERSION, "upgrade the grok CLI")}`)
-  const fxOut = check(fxBin, ["--version"])
+  const fxOut = !fxBin
+    ? "MISSING (set FX_BIN to the absolute admitted v0.0.6 binary)"
+    : !isAbsolute(fxBin)
+      ? "UNPINNED (FX_BIN must be an absolute path)"
+      : check(fxBin, ["--version"])
   const fxExact =
-    fxOut === "NOT FOUND" || fxOut === FX_VERSION
+    fxOut === "NOT FOUND" || fxOut === FX_VERSION || fxOut.startsWith("MISSING") || fxOut.startsWith("UNPINNED")
       ? fxOut
       : `${fxOut} — UNSUPPORTED (exact ${FX_VERSION} required; digest-admitted v0.0.6 only)`
   console.log(`  fx           : ${fxExact}`)

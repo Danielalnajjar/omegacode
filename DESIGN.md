@@ -33,7 +33,7 @@ interface.
 > pi, and Grok structured output paths use a silent extraction turn plus central validation.
 > Fx locally validates the one-shot result and delegates a miss to the runtime's corrective full
 > turn because v0.0.6 has no enforceable no-tools mode. Bin overrides: `OPENCODE_BIN` / `PI_BIN` /
-> `GROK_BIN` / `FX_BIN`. Outdated binaries are refused (`provider_outdated`); fx instead requires
+> `GROK_BIN`; fx requires an absolute `FX_BIN`. Outdated binaries are refused (`provider_outdated`); fx instead requires
 > its exact admitted version and platform digest.
 > The "two providers" framing below is historical.
 

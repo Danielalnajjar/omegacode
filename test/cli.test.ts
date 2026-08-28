@@ -463,12 +463,13 @@ describe("CLI end-to-end (--fake)", () => {
     chmodSync(ocStub, 0o755)
     chmodSync(piStub, 0o755)
     chmodSync(grokStub, 0o755)
-    const r = await runCli(["doctor"], { OMEGACODE_HOME: home, OPENCODE_BIN: ocStub, PI_BIN: piStub, GROK_BIN: grokStub })
+    const r = await runCli(["doctor"], { OMEGACODE_HOME: home, OPENCODE_BIN: ocStub, PI_BIN: piStub, GROK_BIN: grokStub, FX_BIN: "" })
     assert.equal(r.code, 0, `stderr=${r.stderr}`)
     assert.match(r.stdout, /opencode\s+: 1\.15\.0 — OUTDATED \(< 1\.16\.2\)/)
     assert.match(r.stdout, /pi\s+: 0\.79\.1\n/)
     assert.doesNotMatch(r.stdout, /pi\s+: 0\.79\.1 — OUTDATED/)
     assert.match(r.stdout, /grok\s+: grok 0\.2\.100 — OUTDATED \(< 0\.2\.112\)/)
+    assert.match(r.stdout, /fx\s+: MISSING \(set FX_BIN to the absolute admitted v0\.0\.6 binary\)/)
   })
 
   test("a meta.defaultProvider typo is rejected at run setup, even under --fake", async () => {

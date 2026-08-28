@@ -4,6 +4,7 @@ import { createHash } from "node:crypto"
 import { EventEmitter } from "node:events"
 import {
   chmodSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -276,9 +277,12 @@ test("rechecks the exact binary version and digest before every paid turn", asyn
   }
 })
 
-test("rejects missing, relative, wrong-digest, unsupported-platform, old, later, and unidentified binaries", async () => {
+test("rejects unset, missing, relative, wrong-digest, unsupported-platform, old, later, and unidentified binaries", async () => {
   const f = fixture()
   try {
+    const unset = harness(f, [], { bin: "" })
+    await rejectsCode(unset.worker.runAgent(spec(f), context()), "binary_not_pinned")
+
     const missing = harness(f, [], { bin: join(f.root, "missing") })
     await rejectsCode(missing.worker.runAgent(spec(f), context()), "binary_not_found")
 
@@ -428,7 +432,10 @@ test("structured output validates locally and leaves misses for the runtime corr
     assert.deepEqual(result.structured, { answer: 42 })
     assert.deepEqual(result.usage, { inputTokens: 0, outputTokens: 0, costUsd: 0, incomplete: true })
     assert.equal(h.spawned.length, 3)
-    assert.match(h.spawned[2]!.proc.stdin.chunks[0]!, /<instructions>\nFollow the caller constraint\n<\/instructions>/)
+    const prompt = h.spawned[2]!.proc.stdin.chunks[0]!
+    assert.match(prompt, /<instructions>\nFollow the caller constraint\n<\/instructions>/)
+    assert.match(prompt, /Output ONLY the JSON/)
+    assert.match(prompt, /"answer"/)
 
     const invalid = harness(f, [version, json(status(f)), json(envelope({ output: "not json" }))])
     const invalidResult = await invalid.worker.runAgent(spec(f, { schema }), context())
@@ -475,7 +482,7 @@ test("rejects unsupported authority and turn controls before spawning", async ()
   }
 })
 
-test("stall, SIGINT, SIGTERM, and caller cancellation terminate without retries and mark usage incomplete", async () => {
+test("stall, provider signal deaths, and caller cancellation terminate without retries and mark usage incomplete", async () => {
   const f = fixture()
   try {
     const stalled = harness(f, [version, json(status(f)), () => {}], { stallTimeoutMs: 5, killGraceMs: 1 })
@@ -484,17 +491,22 @@ test("stall, SIGINT, SIGTERM, and caller cancellation terminate without retries 
     assert.equal(stallErr.usage?.incomplete, true)
     assert.deepEqual(stalled.spawned[2]!.proc.kills, ["SIGTERM"])
 
-    for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    for (const signal of ["SIGINT", "SIGTERM", "SIGKILL"] as const) {
       const h = harness(f, [
         version,
         json(status(f)),
         (proc) => proc.end(null, signal),
       ])
-      await assert.rejects(h.worker.runAgent(spec(f), context()), (err: unknown) => {
-        assert.ok(err instanceof AgentInterrupted)
-        assert.equal(err.usage?.incomplete, true)
-        return true
-      })
+      const err = await rejectsCode(h.worker.runAgent(spec(f), context()), "provider_exit")
+      assert.equal(err.retryable, false)
+      assert.equal(err.usage?.incomplete, true)
+    }
+
+    for (const code of [130, 143]) {
+      const h = harness(f, [version, json(status(f)), (proc) => proc.end(code)])
+      const err = await rejectsCode(h.worker.runAgent(spec(f), context()), "provider_exit")
+      assert.equal(err.retryable, false)
+      assert.equal(err.usage?.incomplete, true)
     }
 
     const versionAc = new AbortController()
@@ -543,6 +555,22 @@ test("worker neither reads interactive ~/.fx nor mutates managed or canonical pr
   } finally {
     if (previousHome === undefined) delete process.env.HOME
     else process.env.HOME = previousHome
+    f.cleanup()
+  }
+})
+
+test("managed auth metadata cannot alias another profile through a hard link", async () => {
+  const f = fixture()
+  const managedAuth = join(f.home, ".fx", "chatgpt-auth.json")
+  const interactiveAuth = join(f.root, "interactive-chatgpt-auth.json")
+  try {
+    rmSync(managedAuth)
+    writeFileSync(interactiveAuth, "{}", { mode: 0o600 })
+    linkSync(interactiveAuth, managedAuth)
+    const h = harness(f, [])
+    await rejectsCode(h.worker.runAgent(spec(f), context()), "unsafe_profile")
+    assert.equal(h.spawned.length, 0)
+  } finally {
     f.cleanup()
   }
 })

@@ -78,6 +78,10 @@ never silently ride another provider's call.
 Provider-native options stay deliberately provider-specific:
 - Claude Code: `claudeAgent` selects a user-level custom agent. OmegaCode loads only the user
   setting source for that call; ordinary calls continue to load no settings sources.
+- Claude Code: `claudeProfile` selects a stable Subscription Picker profile ID for a new direct
+  Agent SDK call. Resolve names with `bb subscription resolve-omega --reference ... --json`, persist
+  only `profileId`, and never use an `acp-sub-*` route. It is outside cache identity and cannot be
+  combined with `claudeAgent`.
 - Codex: `codexChildRole` uses provider thread metadata to prove an exact native child role completed,
   then deletes that temporary provider thread subtree; `codexWebSearch` is `"disabled"`, `"cached"`, or `"live"`;
   and `codexNetworkAccess` controls network access inside read-only/workspace-write sandboxes.

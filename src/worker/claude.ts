@@ -11,8 +11,9 @@ import { homedir } from "node:os"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { query, type Options, type PermissionResult, type SDKMessage } from "@anthropic-ai/claude-agent-sdk"
 import { addUsage, emptyUsage, type AgentResult, type AgentSpec, type AgentUsage, type Effort, type Sandbox } from "../dsl/types.js"
-import type { Worker, WorkerContext } from "./index.js"
+import type { PreparedAgentCall, Worker, WorkerContext } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
+import { prepareClaudeProfile, resolveClaudeProfile, type ClaudeProfileResolver } from "./claude-profile.js"
 import { assertValidSchema, toClaudeOutputFormat } from "./schema.js"
 
 const WRITE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"])
@@ -50,6 +51,9 @@ export interface ClaudeWorkerOpts {
   pathToClaudeCodeExecutable?: string
   /** Test seam: replaces the SDK's query(). Production (the factory) never sets this. */
   queryFn?: QueryFn
+  profileResolver?: ClaudeProfileResolver
+  /** Test seam for inherited auth and call-local environment isolation. */
+  baseEnv?: NodeJS.ProcessEnv
 }
 
 // The SDK supports low/medium/high/xhigh/max. The codex-only tiers ("none", "minimal") have no
@@ -71,7 +75,17 @@ export class ClaudeWorker implements Worker {
   readonly id = "claude-code" as const
   constructor(private readonly opts: ClaudeWorkerOpts = {}) {}
 
+  async prepareAgentCall(spec: AgentSpec, ctx: WorkerContext): Promise<PreparedAgentCall> {
+    this.preflight(spec, ctx)
+    const env = await prepareClaudeProfile(spec, ctx.signal, this.opts.profileResolver ?? resolveClaudeProfile, this.opts.baseEnv ?? process.env)
+    return (attemptSpec, attemptContext) => this.runAgentWithEnv(attemptSpec, attemptContext, env)
+  }
+
   async runAgent(spec: AgentSpec, ctx: WorkerContext): Promise<AgentResult> {
+    return this.runAgentWithEnv(spec, ctx)
+  }
+
+  private preflight(spec: AgentSpec, ctx: WorkerContext): void {
     if (ctx.signal.aborted) throw new AgentInterrupted()
     if (spec.serviceTier !== undefined) {
       throw new AgentError({
@@ -88,6 +102,10 @@ export class ClaudeWorker implements Worker {
         throw new AgentError({ provider: "claude-code", code: "invalid_schema", message: `output schema does not compile: ${(err as Error).message}` })
       }
     }
+  }
+
+  private async runAgentWithEnv(spec: AgentSpec, ctx: WorkerContext, env?: NodeJS.ProcessEnv): Promise<AgentResult> {
+    this.preflight(spec, ctx)
     const abort = new AbortController()
     const onAbort = () => abort.abort()
     ctx.signal.addEventListener("abort", onAbort, { once: true })
@@ -101,6 +119,7 @@ export class ClaudeWorker implements Worker {
         : { settingSources: [] }),
       permissionMode: "default",
       abortController: abort,
+      ...(env ? { env: { ...env } } : {}),
       canUseTool: (toolName: string, input: Record<string, unknown>): Promise<PermissionResult> => {
         const verdict = checkTool(spec.sandbox, spec.cwd, toolName, input)
         if (verdict) return Promise.resolve({ behavior: "deny", message: verdict })

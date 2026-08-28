@@ -225,6 +225,83 @@ test("claudeAgent selects a user-level SDK agent without loading project or loca
   assert.deepEqual(calls[1]!.options.settingSources, [])
 })
 
+test("profile preparation binds a fresh call-local SDK environment while ordinary calls leave env unset", async () => {
+  const calls: QueryCall[] = []
+  let resolutions = 0
+  const worker = new ClaudeWorker({
+    queryFn: scripted([resultMsg(), resultMsg(), resultMsg()], calls),
+    baseEnv: { ORDINARY: "kept", CLAUDE_CONFIG_DIR: "/ordinary" },
+    profileResolver: async (profileId) => {
+      resolutions += 1
+      return { profileId, label: profileId.toUpperCase(), configDir: `/profiles/${profileId}` }
+    },
+  })
+  const context = ctx()
+
+  const preparedA = await worker.prepareAgentCall(spec({ claudeProfile: "a" }), context)
+  const preparedB = await worker.prepareAgentCall(spec({ claudeProfile: "b" }), context)
+  await Promise.all([
+    preparedA(spec({ prompt: "A", claudeProfile: "a" }), context),
+    preparedB(spec({ prompt: "B", claudeProfile: "b" }), context),
+  ])
+  await worker.runAgent(spec({ prompt: "ordinary" }), context)
+
+  assert.equal(resolutions, 2)
+  assert.deepEqual(calls[0]!.options.env, { ORDINARY: "kept", CLAUDE_CONFIG_DIR: "/profiles/a" })
+  assert.deepEqual(calls[1]!.options.env, { ORDINARY: "kept", CLAUDE_CONFIG_DIR: "/profiles/b" })
+  assert.notEqual(calls[0]!.options.env, calls[1]!.options.env)
+  assert.equal(calls[2]!.options.env, undefined)
+})
+
+for (const [key, value] of [
+  ["CLAUDE_CODE_CUSTOM_OAUTH_URL", "https://oauth.redirect.invalid"],
+  ["ANTHROPIC_UNIX_SOCKET", "/tmp/alternate-anthropic.sock"],
+  ["CLAUDE_SECURESTORAGE_CONFIG_DIR", ""],
+] as const) {
+  test(`${key} blocks a profiled worker before profile resolution and SDK query`, async () => {
+    let resolutions = 0
+    let queries = 0
+    const worker = new ClaudeWorker({
+      baseEnv: { [key]: value },
+      profileResolver: async (profileId) => {
+        resolutions += 1
+        return { profileId, label: "A", configDir: "/profiles/a" }
+      },
+      queryFn: () => {
+        queries += 1
+        return (async function* () { yield resultMsg() })()
+      },
+    })
+
+    await assert.rejects(
+      worker.prepareAgentCall(spec({ claudeProfile: "a" }), ctx()),
+      (error: unknown) => error instanceof AgentError && error.code === "claude_profile_auth_conflict",
+    )
+    assert.equal(resolutions, 0)
+    assert.equal(queries, 0)
+  })
+}
+
+test("prepared retries reuse profile environment while accepting the current attempt spec", async () => {
+  const calls: QueryCall[] = []
+  const worker = new ClaudeWorker({
+    queryFn: scripted([resultMsg(), resultMsg()], calls),
+    baseEnv: { ORDINARY: "kept" },
+    profileResolver: async (profileId) => ({ profileId, label: "A", configDir: "/profiles/a" }),
+  })
+  const context = ctx()
+  const prepared = await worker.prepareAgentCall(spec({ claudeProfile: "a" }), context)
+
+  await prepared(spec({ prompt: "first", instructions: "first instructions", claudeProfile: "a" }), context)
+  await prepared(spec({ prompt: "corrective", instructions: "corrective instructions", claudeProfile: "a" }), context)
+
+  assert.equal(calls[0]!.prompt, "first")
+  assert.deepEqual(calls[0]!.options.systemPrompt, { type: "preset", preset: "claude_code", append: "first instructions" })
+  assert.equal(calls[1]!.prompt, "corrective")
+  assert.deepEqual(calls[1]!.options.systemPrompt, { type: "preset", preset: "claude_code", append: "corrective instructions" })
+  assert.deepEqual(calls[0]!.options.env, calls[1]!.options.env)
+})
+
 test("a claudeAgent SDK resolution failure is a hard provider failure", async () => {
   const worker = new ClaudeWorker({
     queryFn: () => (async function* () {

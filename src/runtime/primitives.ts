@@ -227,6 +227,15 @@ export class Runtime {
 
   private resolveSpec(prompt: string, opts: AgentOpts | undefined): AgentSpec {
     const d = this.o.defaults
+    const rawClaudeProfile: unknown = opts?.claudeProfile
+    if (rawClaudeProfile !== undefined && (typeof rawClaudeProfile !== "string" || !rawClaudeProfile.trim())) {
+      throw new AgentError({
+        provider: opts?.provider ?? d.provider,
+        code: "unsupported_option",
+        message: "claudeProfile must be a non-empty stable profile id",
+      })
+    }
+    const claudeProfile = rawClaudeProfile === undefined ? undefined : rawClaudeProfile.trim()
     const spec: AgentSpec = {
       prompt,
       provider: opts?.provider ?? d.provider,
@@ -240,6 +249,7 @@ export class Runtime {
       maxTurns: opts?.maxTurns,
       serviceTier: opts?.serviceTier,
       claudeAgent: opts?.claudeAgent,
+      claudeProfile,
       codexChildRole: opts?.codexChildRole,
       codexWebSearch: opts?.codexWebSearch,
       codexNetworkAccess: opts?.codexNetworkAccess,
@@ -272,6 +282,12 @@ export class Runtime {
         code: "unsupported_option",
         message: "claudeAgent is claude-code-only; omit it or use the claude-code provider",
       })
+    }
+    if (spec.claudeProfile !== undefined && spec.provider !== "claude-code") {
+      throw new AgentError({ provider: spec.provider, code: "unsupported_option", message: "claudeProfile is claude-code-only; omit it or use the claude-code provider" })
+    }
+    if (spec.claudeProfile !== undefined && spec.claudeAgent !== undefined) {
+      throw new AgentError({ provider: spec.provider, code: "unsupported_option", message: "claudeProfile cannot be combined with claudeAgent" })
     }
     if (
       spec.provider !== "codex"
@@ -436,9 +452,16 @@ export class Runtime {
             }
           },
         }
+        const prepared = runSpec.claudeProfile !== undefined
+          ? await worker.prepareAgentCall?.(runSpec, workerCtx)
+          : undefined
+        if (runSpec.claudeProfile !== undefined && !prepared) {
+          throw new AgentError({ provider: runSpec.provider, code: "claude_profile_unavailable", message: `Claude profile ${runSpec.claudeProfile} cannot be prepared by this worker; no fallback occurred` })
+        }
+        const runAttempt = prepared ?? ((attemptSpec: AgentSpec, attemptContext: typeof workerCtx) => worker.runAgent(attemptSpec, attemptContext))
         // Wrap the worker call in withRetry so a retryable AgentError (429/overload) backs off
         // instead of killing the agent and usually the whole run.
-        let result = await withRetry(() => worker.runAgent(runSpec, workerCtx), this.o.signal, {
+        let result = await withRetry(() => runAttempt(runSpec, workerCtx), this.o.signal, {
           onRetry: ({ attempt, maxAttempts, delayMs, error }) => {
             this.o.events.emit({ type: "log", message: `[${label}] retrying after ${error.code} (attempt ${attempt}/${maxAttempts}, backoff ${delayMs}ms): ${error.message}` })
           },
@@ -455,7 +478,7 @@ export class Runtime {
               ...runSpec,
               instructions: `${runSpec.instructions ?? ""}\n\nYour previous response did not match the required JSON schema (${err.message}). Respond again with ONLY a JSON value that exactly matches the schema.`.trim(),
             }
-            result = await withRetry(() => worker.runAgent(corrective, workerCtx), this.o.signal, {
+            result = await withRetry(() => runAttempt(corrective, workerCtx), this.o.signal, {
               onRetry: ({ attempt, maxAttempts, delayMs, error }) => {
                 this.o.events.emit({ type: "log", message: `[${label}] corrective retry after ${error.code} (attempt ${attempt}/${maxAttempts}, backoff ${delayMs}ms): ${error.message}` })
               },

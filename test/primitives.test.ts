@@ -14,7 +14,6 @@ import type { EventSink, WorkflowEventInput } from "../src/runtime/events.ts"
 import type { PreparedAgentCall, Worker, WorkerContext, WorkerFactory } from "../src/worker/index.ts"
 import { AgentError, AgentInterrupted } from "../src/worker/index.ts"
 import { addUsage, DEFAULTS, emptyUsage, type AgentResult, type AgentSpec, type RunDefaults } from "../src/dsl/types.ts"
-import { explicitKey } from "../src/runtime/keys.ts"
 
 // ---- test harness ----------------------------------------------------------------------------
 

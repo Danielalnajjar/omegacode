@@ -277,10 +277,12 @@ test("feature selection skips keys absent from the local CLI inventory", () => {
 })
 
 test("resolveCodexExecutionProfile fails fast with the valid names", () => {
-  assert.throws(
-    () => resolveCodexExecutionProfile("workflow-unknown"),
-    /unknown Codex execution profile "workflow-unknown".*workflow-bulk-v1, workflow-plan-v1, workflow-research-v1/,
-  )
+  for (const name of ["workflow-unknown", "toString", "constructor", "__proto__"]) {
+    assert.throws(
+      () => resolveCodexExecutionProfile(name),
+      new RegExp(`unknown Codex execution profile "${name}".*workflow-bulk-v1, workflow-plan-v1, workflow-research-v1`),
+    )
+  }
 })
 
 // ===========================================================================
@@ -431,9 +433,9 @@ function makeServedWorker(
     appServerArgs?: string[]
     disableLocalMcps?: boolean
     serviceTier?: string
-    readMcpInventory?: (bin: string) => Promise<string>
+    readMcpInventory?: (bin: string, signal?: AbortSignal) => Promise<string>
     executionProfile?: CodexExecutionProfileName
-    readFeatureInventory?: (bin: string) => Promise<string>
+    readFeatureInventory?: (bin: string, signal?: AbortSignal) => Promise<string>
     logProfileWarning?: (message: string) => void
     requestTimeoutMs?: number
     turnStallTimeoutMs?: number
@@ -686,6 +688,96 @@ test("profile feature probe failure is pre-launch and honest", async () => {
     worker.runAgent(spec(), ctx()),
     (error) => error instanceof AgentError && error.code === "feature_inventory_failed" && /feature probe timed out/.test(error.message),
   )
+  assert.equal(spawned, false)
+})
+
+test("profile feature inventory fails closed when empty", async () => {
+  let spawned = false
+  const worker = new CodexWorker({
+    executionProfile: "workflow-plan-v1",
+    readMcpInventory: async () => "[]",
+    readFeatureInventory: async () => "",
+    spawnChild: () => {
+      spawned = true
+      return new FakeChild() as any
+    },
+  })
+  await assert.rejects(
+    worker.runAgent(spec(), ctx()),
+    (error) => error instanceof AgentError
+      && error.code === "feature_inventory_failed"
+      && /zero feature names/.test(error.message),
+  )
+  assert.equal(spawned, false)
+})
+
+test("profile feature inventory fails closed when all override keys are unknown", async () => {
+  let spawned = false
+  const worker = new CodexWorker({
+    executionProfile: "workflow-plan-v1",
+    readMcpInventory: async () => "[]",
+    readFeatureInventory: async () => "unrelated_feature stable true\n",
+    spawnChild: () => {
+      spawned = true
+      return new FakeChild() as any
+    },
+  })
+  await assert.rejects(
+    worker.runAgent(spec(), ctx()),
+    (error) => error instanceof AgentError
+      && error.code === "feature_inventory_failed"
+      && /none of 15 profile feature override keys/.test(error.message),
+  )
+  assert.equal(spawned, false)
+})
+
+test("execution profiles reject shared app-server proxy mode before probing", async () => {
+  let probed = false
+  let spawned = false
+  const worker = new CodexWorker({
+    executionProfile: "workflow-plan-v1",
+    appServerSocket: "/tmp/shared-codex.sock",
+    readMcpInventory: async () => {
+      probed = true
+      return "[]"
+    },
+    spawnChild: () => {
+      spawned = true
+      return new FakeChild() as any
+    },
+  })
+  await assert.rejects(
+    worker.runAgent(spec(), ctx()),
+    (error) => error instanceof AgentError
+      && error.code === "profile_proxy_unsupported"
+      && error.retryable === false
+      && /dedicated app-server/.test(error.message),
+  )
+  assert.equal(probed, false)
+  assert.equal(spawned, false)
+})
+
+test("abort during the first startup probe settles promptly without spawning", async () => {
+  const controller = new AbortController()
+  let spawned = false
+  const worker = new CodexWorker({
+    executionProfile: "workflow-plan-v1",
+    readMcpInventory: async (_bin, signal) => await new Promise<string>((_resolve, reject) => {
+      signal?.addEventListener("abort", () => reject(signal.reason), { once: true })
+    }),
+    spawnChild: () => {
+      spawned = true
+      return new FakeChild() as any
+    },
+  })
+  const run = worker.runAgent(spec(), ctx(controller.signal))
+  await tick()
+  controller.abort()
+  const result = await Promise.race([
+    run.then(() => "resolved", (error) => error),
+    new Promise<"timed-out">((resolve) => setTimeout(() => resolve("timed-out"), 500)),
+  ])
+  assert.ok(result instanceof AgentInterrupted)
   assert.equal(spawned, false)
 })
 

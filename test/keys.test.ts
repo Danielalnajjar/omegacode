@@ -77,6 +77,26 @@ test("provider-native options each invalidate the cache key", () => {
   }
 })
 
+test("codex execution profiles invalidate keys without changing unprofiled journal hashes", () => {
+  const b = branchKey(ROOT_KEY, "root", 0)
+  const unprofiled = keyedSpec({ provider: "codex", model: "gpt-5.6-sol" }, undefined)
+  const explicitlyUnprofiled = keyedSpec({
+    provider: "codex",
+    model: "gpt-5.6-sol",
+    codexExecutionProfile: undefined,
+  }, undefined)
+  const profiled = keyedSpec({
+    provider: "codex",
+    model: "gpt-5.6-sol",
+    codexExecutionProfile: "workflow-plan-v1",
+  }, undefined)
+  const golden = "80b50fc68347c3d15c194b334515d6a568941dd7c43b58ef7009d32ee3371e24"
+
+  assert.equal(chainKey(b, 0, "p", unprofiled), golden)
+  assert.equal(chainKey(b, 0, "p", explicitlyUnprofiled), golden)
+  assert.notEqual(chainKey(b, 0, "p", profiled), golden)
+})
+
 test("claudeProfile is an endpoint selector outside key identity and KEY_VERSION stays v4", () => {
   const b = branchKey(ROOT_KEY, "root", 0)
   const without = chainKey(b, 0, "p", keyedSpec({ provider: "claude-code", model: "claude-fable-5" }, undefined))

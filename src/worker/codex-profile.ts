@@ -64,9 +64,9 @@ const PROFILE_DEFINITIONS: Readonly<Record<CodexExecutionProfileName, CodexExecu
 })
 
 export function resolveCodexExecutionProfile(name: string): CodexExecutionProfileDefinition {
-  const profile = PROFILE_DEFINITIONS[name as CodexExecutionProfileName]
-  if (!profile) {
+  if (!Object.hasOwn(PROFILE_DEFINITIONS, name)) {
     throw new Error(`unknown Codex execution profile "${name}" — must be one of ${CODEX_EXECUTION_PROFILE_NAMES.join(", ")}`)
   }
+  const profile = PROFILE_DEFINITIONS[name as CodexExecutionProfileName]
   return profile
 }

@@ -54,9 +54,9 @@ export interface CodexWorkerOpts {
   /** Disable local user MCPs that are expensive in high-fanout worker runs. */
   disableLocalMcps?: boolean
   /** Override Codex MCP inventory loading (tests inject a hermetic result). */
-  readMcpInventory?: (bin: string) => Promise<string>
+  readMcpInventory?: (bin: string, signal?: AbortSignal) => Promise<string>
   /** Override Codex feature inventory loading (tests inject a hermetic result). */
-  readFeatureInventory?: (bin: string) => Promise<string>
+  readFeatureInventory?: (bin: string, signal?: AbortSignal) => Promise<string>
   /** Override non-fatal profile compatibility warnings. */
   logProfileWarning?: (message: string) => void
   /** Maximum concurrent thread/start requests. Model turns remain governed by
@@ -267,6 +267,7 @@ export function selectCodexFeatureOverrides(
   overrides: readonly { key: string; value: boolean }[],
 ): { selected: readonly { key: string; value: boolean }[]; skippedKeys: readonly string[] } {
   const knownNames = new Set(stdout.split(/\r?\n/).map((line) => line.trim().split(/\s+/, 1)[0]).filter(Boolean))
+  if (knownNames.size === 0) throw new Error("Codex feature inventory contained zero feature names")
   const selected: Array<{ key: string; value: boolean }> = []
   const skippedKeys: string[] = []
   for (const override of overrides) {
@@ -274,23 +275,28 @@ export function selectCodexFeatureOverrides(
     if (knownNames.has(name)) selected.push(override)
     else skippedKeys.push(override.key)
   }
+  if (overrides.length > 0 && selected.length === 0) {
+    throw new Error(`Codex feature inventory recognized none of ${overrides.length} profile feature override keys`)
+  }
   return { selected, skippedKeys }
 }
 
-async function readCodexMcpInventory(bin: string): Promise<string> {
+async function readCodexMcpInventory(bin: string, signal?: AbortSignal): Promise<string> {
   const { stdout } = await exec(bin, ["mcp", "list", "--json"], {
     encoding: "utf8",
     timeout: MCP_INVENTORY_TIMEOUT_MS,
     maxBuffer: 4 * 1024 * 1024,
+    signal,
   })
   return stdout
 }
 
-async function readCodexFeatureInventory(bin: string): Promise<string> {
+async function readCodexFeatureInventory(bin: string, signal?: AbortSignal): Promise<string> {
   const { stdout } = await exec(bin, ["features", "list"], {
     encoding: "utf8",
     timeout: FEATURE_INVENTORY_TIMEOUT_MS,
     maxBuffer: 4 * 1024 * 1024,
+    signal,
   })
   return stdout
 }
@@ -341,8 +347,8 @@ export class CodexWorker implements Worker {
   private readonly disableLocalMcps: boolean
   private readonly serviceTier?: string
   private readonly executionProfile?: CodexExecutionProfileName
-  private readonly readMcpInventory: (bin: string) => Promise<string>
-  private readonly readFeatureInventory: (bin: string) => Promise<string>
+  private readonly readMcpInventory: (bin: string, signal?: AbortSignal) => Promise<string>
+  private readonly readFeatureInventory: (bin: string, signal?: AbortSignal) => Promise<string>
   private readonly logProfileWarning: (message: string) => void
   private readonly spawnChild?: SpawnChild
   private readonly requestTimeoutMs: number
@@ -386,7 +392,7 @@ export class CodexWorker implements Worker {
         message: "codex does not support maxTurns; omit it or use the claude-code provider",
       })
     }
-    await this.ensureStarted()
+    await this.ensureStarted(ctx.signal)
 
     // 1. thread/start → obtain providerThreadId.
     const startParams: ThreadStartParams = {
@@ -619,17 +625,17 @@ export class CodexWorker implements Worker {
   // Process lifecycle + handshake
   // -------------------------------------------------------------------------
 
-  private ensureStarted(): Promise<void> {
+  private ensureStarted(signal: AbortSignal): Promise<void> {
     if (this.initPromise) return this.initPromise
-    this.initPromise = this.startAndHandshake().catch((err: unknown) => {
+    this.initPromise = this.startAndHandshake(signal).catch((err: unknown) => {
       this.initPromise = null
       throw err
     })
     return this.initPromise
   }
 
-  private async startAndHandshake(): Promise<void> {
-    const appServerArgs = await this.resolveAppServerArgs()
+  private async startAndHandshake(signal: AbortSignal): Promise<void> {
+    const appServerArgs = await this.resolveAppServerArgs(signal)
     const client = new JsonRpcStdioClient({
       bin: this.bin,
       args: appServerArgs,
@@ -680,8 +686,17 @@ export class CodexWorker implements Worker {
     }
   }
 
-  private async resolveAppServerArgs(): Promise<string[]> {
+  private async resolveAppServerArgs(signal: AbortSignal): Promise<string[]> {
+    if (this.executionProfile !== undefined && this.appServerSocket !== undefined) {
+      throw new AgentError({
+        provider: PROVIDER,
+        code: "profile_proxy_unsupported",
+        message: "Codex execution profiles require a dedicated app-server; the caller must resolve the app-server socket and execution profile combination",
+        retryable: false,
+      })
+    }
     if (this.appServerArgs) return this.appServerArgs
+    if (signal.aborted) throw new AgentInterrupted()
 
     let disabledLocalMcpServerNames: string[] = []
     let profileMcpServersToDisable: CodexMcpServerToDisable[] = []
@@ -689,7 +704,7 @@ export class CodexWorker implements Worker {
     const profile = this.executionProfile === undefined ? undefined : resolveCodexExecutionProfile(this.executionProfile)
     if (profile || this.disableLocalMcps) {
       try {
-        const inventory = await this.readMcpInventory(this.bin)
+        const inventory = await this.readMcpInventory(this.bin, signal)
         if (profile) {
           const allowedServerNames = profile.mcp === "none" ? [] : profile.mcp.allowedServerNames
           profileMcpServersToDisable = selectCodexProfileMcpServersToDisable(inventory, allowedServerNames)
@@ -697,6 +712,7 @@ export class CodexWorker implements Worker {
           disabledLocalMcpServerNames = selectCodexMcpServersToDisable(inventory)
         }
       } catch (error) {
+        if (signal.aborted) throw new AgentInterrupted()
         const message = error instanceof Error ? error.message : String(error)
         throw new AgentError({
           provider: PROVIDER,
@@ -708,14 +724,16 @@ export class CodexWorker implements Worker {
         })
       }
     }
+    if (signal.aborted) throw new AgentInterrupted()
     if (profile) {
       try {
-        const selected = selectCodexFeatureOverrides(await this.readFeatureInventory(this.bin), profile.featureOverrides)
+        const selected = selectCodexFeatureOverrides(await this.readFeatureInventory(this.bin, signal), profile.featureOverrides)
         featureOverrides = selected.selected
         if (selected.skippedKeys.length > 0) {
           this.logProfileWarning(`[omegacode] Codex execution profile ${profile.name} skipped unknown features: ${selected.skippedKeys.join(", ")}`)
         }
       } catch (error) {
+        if (signal.aborted) throw new AgentInterrupted()
         const message = error instanceof Error ? error.message : String(error)
         throw new AgentError({
           provider: PROVIDER,

@@ -63,6 +63,7 @@ export interface KeyedFields {
   maxTurns: number | null
   claudeAgent: string | null
   codexChildRole: string | null
+  codexExecutionProfile: string | undefined
   codexWebSearch: string | null
   codexNetworkAccess: boolean | null
   worktree: unknown
@@ -81,6 +82,7 @@ export function keyedSpec(spec: KeyedSpecInput, worktree: unknown): KeyedFields 
     maxTurns: spec.maxTurns ?? null,
     claudeAgent: spec.claudeAgent ?? null,
     codexChildRole: spec.codexChildRole ?? null,
+    codexExecutionProfile: spec.codexExecutionProfile,
     codexWebSearch: spec.codexWebSearch ?? null,
     codexNetworkAccess: spec.codexNetworkAccess ?? null,
     worktree: worktree ?? null,
@@ -99,6 +101,7 @@ export interface KeyedSpecInput {
   maxTurns?: number
   claudeAgent?: string
   codexChildRole?: string
+  codexExecutionProfile?: string
   codexWebSearch?: string
   codexNetworkAccess?: boolean
 }

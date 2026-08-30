@@ -14,6 +14,7 @@ import { emptyUsage } from "../dsl/types.js"
 import { Semaphore } from "../runtime/semaphore.js"
 import type { Worker, WorkerContext } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
+import { resolveCodexExecutionProfile, type CodexExecutionProfileName } from "./codex-profile.js"
 import { toCodexOutputSchema, parseJsonLoose, parseValidJson } from "./schema.js"
 import { JsonRpcStdioClient, StdioTransportError, JsonRpcResponseError, type SpawnChild } from "./jsonrpc-stdio.js"
 import {
@@ -54,11 +55,17 @@ export interface CodexWorkerOpts {
   disableLocalMcps?: boolean
   /** Override Codex MCP inventory loading (tests inject a hermetic result). */
   readMcpInventory?: (bin: string) => Promise<string>
+  /** Override Codex feature inventory loading (tests inject a hermetic result). */
+  readFeatureInventory?: (bin: string) => Promise<string>
+  /** Override non-fatal profile compatibility warnings. */
+  logProfileWarning?: (message: string) => void
   /** Maximum concurrent thread/start requests. Model turns remain governed by
    *  workflow concurrency; this only prevents app-server boot stampedes. */
   threadStartConcurrency?: number
   /** Codex service tier for every turn served by this worker's app-server. */
   serviceTier?: string
+  /** Role-scoped app-server capability profile. */
+  executionProfile?: CodexExecutionProfileName
   /** Override the underlying spawn (tests inject a scripted fake child). */
   spawnChild?: SpawnChild
   /** Per-request timeout (ms). 0 disables. Guards against a wedged app-server. */
@@ -116,15 +123,18 @@ const exec = promisify(execFile)
 const MCP_SERVER_NAMES_DISABLED_BY_DEFAULT = ["onepassword", "node_repl", "paos-recall-mcp"] as const
 
 const MCP_INVENTORY_TIMEOUT_MS = 30_000
+const FEATURE_INVENTORY_TIMEOUT_MS = 30_000
 
 export const CODEX_SERVICE_TIERS = ["default", "flex", "priority", "fast"] as const
 
 export interface CodexAppServerArgsOptions {
   appServerSocket?: string
   disabledLocalMcpServerNames?: readonly string[]
+  profileMcpServersToDisable?: readonly CodexMcpServerToDisable[]
   /** Codex service tier for every turn served by this app-server ("fast" canonicalizes to
    *  "priority" on the wire, codex-side). Falls back to OMEGACODE_CODEX_SERVICE_TIER. */
   serviceTier?: string
+  featureOverrides?: readonly { key: string; value: boolean }[]
 }
 
 export function buildCodexAppServerArgs(options: CodexAppServerArgsOptions = {}): string[] {
@@ -141,12 +151,29 @@ export function buildCodexAppServerArgs(options: CodexAppServerArgsOptions = {})
       args.push("-c", `mcp_servers.${name}.enabled=false`)
     }
   }
+  if (options.profileMcpServersToDisable?.length) {
+    args.push("-c", renderProfileMcpOverride(options.profileMcpServersToDisable))
+  }
+  for (const override of options.featureOverrides ?? []) {
+    args.push("-c", `${override.key}=${override.value}`)
+  }
   args.push("app-server")
   if (options.appServerSocket) args.push("proxy", "--sock", options.appServerSocket)
   return args
 }
 
-export function selectCodexMcpServersToDisable(stdout: string): string[] {
+interface CodexMcpInventoryEntry {
+  readonly name: string
+  readonly enabled: boolean
+  readonly transport: string
+}
+
+export interface CodexMcpServerToDisable {
+  readonly name: string
+  readonly transport: "stdio" | "streamable_http"
+}
+
+function parseCodexMcpInventory(stdout: string): CodexMcpInventoryEntry[] {
   let value: unknown
   try {
     value = JSON.parse(stdout)
@@ -156,7 +183,7 @@ export function selectCodexMcpServersToDisable(stdout: string): string[] {
   if (!Array.isArray(value)) throw new Error("codex mcp list --json returned a non-array inventory")
 
   const seen = new Set<string>()
-  const enabledStdio = new Set<string>()
+  const inventory: CodexMcpInventoryEntry[] = []
   for (const [index, entry] of value.entries()) {
     if (!isObject(entry)) throw new Error(`codex MCP inventory entry ${index} is not an object`)
     if (typeof entry.name !== "string" || entry.name.length === 0) {
@@ -170,16 +197,99 @@ export function selectCodexMcpServersToDisable(stdout: string): string[] {
     if (!isObject(entry.transport) || typeof entry.transport.type !== "string") {
       throw new Error(`codex MCP inventory entry "${entry.name}" has no transport type`)
     }
-    if (entry.enabled && entry.transport.type === "stdio") enabledStdio.add(entry.name)
+    inventory.push({ name: entry.name, enabled: entry.enabled, transport: entry.transport.type })
   }
+  return inventory
+}
 
+export function selectCodexMcpServersToDisable(stdout: string): string[] {
+  const enabledStdio = new Set(
+    parseCodexMcpInventory(stdout)
+      .filter((entry) => entry.enabled && entry.transport === "stdio")
+      .map((entry) => entry.name),
+  )
   return MCP_SERVER_NAMES_DISABLED_BY_DEFAULT.filter((name) => enabledStdio.has(name))
+}
+
+export function selectCodexProfileMcpServersToDisable(
+  stdout: string,
+  allowedServerNames: readonly string[],
+): CodexMcpServerToDisable[] {
+  const allowed = new Set(allowedServerNames)
+  return parseCodexMcpInventory(stdout)
+    .filter((entry) => !allowed.has(entry.name))
+    .map((entry) => {
+      if (entry.transport !== "stdio" && entry.transport !== "streamable_http") {
+        throw new Error(`cannot disable Codex MCP server "${entry.name}": unsupported transport "${entry.transport}"`)
+      }
+      return { name: entry.name, transport: entry.transport }
+    })
+}
+
+export function renderTomlDynamicKeySegment(value: string): string {
+  if (/^[A-Za-z0-9_-]+$/.test(value)) return value
+  let rendered = "\""
+  for (const char of value) {
+    const codePoint = char.codePointAt(0)!
+    if (codePoint >= 0xd800 && codePoint <= 0xdfff) throw new Error("cannot render malformed TOML key segment")
+    switch (char) {
+      case "\"": rendered += "\\\""; break
+      case "\\": rendered += "\\\\"; break
+      case "\b": rendered += "\\b"; break
+      case "\t": rendered += "\\t"; break
+      case "\n": rendered += "\\n"; break
+      case "\f": rendered += "\\f"; break
+      case "\r": rendered += "\\r"; break
+      default:
+        if (codePoint < 0x20 || codePoint === 0x7f) rendered += `\\u${codePoint.toString(16).padStart(4, "0")}`
+        else rendered += char
+    }
+  }
+  return `${rendered}\"`
+}
+
+function renderProfileMcpOverride(servers: readonly CodexMcpServerToDisable[]): string {
+  // Multiple dotted mcp_servers overrides break Codex config deserialization. One table value
+  // deep-merges inert transports for disabled servers while preserving unmentioned allowlisted
+  // servers. Never restate credential-bearing command, URL, or environment data from inventory.
+  const entries = servers.map((server) => {
+    const key = renderTomlDynamicKeySegment(server.name)
+    const inertTransport = server.transport === "stdio"
+      ? 'command=""'
+      : 'url="http://127.0.0.1:9/omegacode-managed-disabled"'
+    return `${key}={${inertTransport},enabled=false}`
+  })
+  return `mcp_servers={${entries.join(",")}}`
+}
+
+export function selectCodexFeatureOverrides(
+  stdout: string,
+  overrides: readonly { key: string; value: boolean }[],
+): { selected: readonly { key: string; value: boolean }[]; skippedKeys: readonly string[] } {
+  const knownNames = new Set(stdout.split(/\r?\n/).map((line) => line.trim().split(/\s+/, 1)[0]).filter(Boolean))
+  const selected: Array<{ key: string; value: boolean }> = []
+  const skippedKeys: string[] = []
+  for (const override of overrides) {
+    const name = override.key.startsWith("features.") ? override.key.slice("features.".length) : override.key
+    if (knownNames.has(name)) selected.push(override)
+    else skippedKeys.push(override.key)
+  }
+  return { selected, skippedKeys }
 }
 
 async function readCodexMcpInventory(bin: string): Promise<string> {
   const { stdout } = await exec(bin, ["mcp", "list", "--json"], {
     encoding: "utf8",
     timeout: MCP_INVENTORY_TIMEOUT_MS,
+    maxBuffer: 4 * 1024 * 1024,
+  })
+  return stdout
+}
+
+async function readCodexFeatureInventory(bin: string): Promise<string> {
+  const { stdout } = await exec(bin, ["features", "list"], {
+    encoding: "utf8",
+    timeout: FEATURE_INVENTORY_TIMEOUT_MS,
     maxBuffer: 4 * 1024 * 1024,
   })
   return stdout
@@ -230,7 +340,10 @@ export class CodexWorker implements Worker {
   private readonly appServerSocket?: string
   private readonly disableLocalMcps: boolean
   private readonly serviceTier?: string
+  private readonly executionProfile?: CodexExecutionProfileName
   private readonly readMcpInventory: (bin: string) => Promise<string>
+  private readonly readFeatureInventory: (bin: string) => Promise<string>
+  private readonly logProfileWarning: (message: string) => void
   private readonly spawnChild?: SpawnChild
   private readonly requestTimeoutMs: number
   private readonly turnStallTimeoutMs: number
@@ -251,7 +364,10 @@ export class CodexWorker implements Worker {
     this.appServerSocket = opts.appServerSocket
     this.disableLocalMcps = opts.disableLocalMcps === true
     this.serviceTier = opts.serviceTier ?? process.env.OMEGACODE_CODEX_SERVICE_TIER
+    this.executionProfile = opts.executionProfile
     this.readMcpInventory = opts.readMcpInventory ?? readCodexMcpInventory
+    this.readFeatureInventory = opts.readFeatureInventory ?? readCodexFeatureInventory
+    this.logProfileWarning = opts.logProfileWarning ?? ((message) => console.warn(message))
     this.spawnChild = opts.spawnChild
     this.requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
     this.turnStallTimeoutMs = opts.turnStallTimeoutMs ?? DEFAULT_TURN_STALL_TIMEOUT_MS
@@ -568,15 +684,43 @@ export class CodexWorker implements Worker {
     if (this.appServerArgs) return this.appServerArgs
 
     let disabledLocalMcpServerNames: string[] = []
-    if (this.disableLocalMcps) {
+    let profileMcpServersToDisable: CodexMcpServerToDisable[] = []
+    let featureOverrides: readonly { key: string; value: boolean }[] = []
+    const profile = this.executionProfile === undefined ? undefined : resolveCodexExecutionProfile(this.executionProfile)
+    if (profile || this.disableLocalMcps) {
       try {
-        disabledLocalMcpServerNames = selectCodexMcpServersToDisable(await this.readMcpInventory(this.bin))
+        const inventory = await this.readMcpInventory(this.bin)
+        if (profile) {
+          const allowedServerNames = profile.mcp === "none" ? [] : profile.mcp.allowedServerNames
+          profileMcpServersToDisable = selectCodexProfileMcpServersToDisable(inventory, allowedServerNames)
+        } else {
+          disabledLocalMcpServerNames = selectCodexMcpServersToDisable(inventory)
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         throw new AgentError({
           provider: PROVIDER,
           code: "mcp_inventory_failed",
-          message: `cannot inspect Codex MCP configuration before launching a lean app-server: ${message}. Use --codex-enable-local-mcps or OMEGACODE_CODEX_DISABLE_LOCAL_MCPS=0 only when worker agents need the full local MCP set.`,
+          message: profile
+            ? `cannot inspect Codex MCP configuration before launching execution profile ${profile.name}: ${message}`
+            : `cannot inspect Codex MCP configuration before launching a lean app-server: ${message}. Use --codex-enable-local-mcps or OMEGACODE_CODEX_DISABLE_LOCAL_MCPS=0 only when worker agents need the full local MCP set.`,
+          retryable: false,
+        })
+      }
+    }
+    if (profile) {
+      try {
+        const selected = selectCodexFeatureOverrides(await this.readFeatureInventory(this.bin), profile.featureOverrides)
+        featureOverrides = selected.selected
+        if (selected.skippedKeys.length > 0) {
+          this.logProfileWarning(`[omegacode] Codex execution profile ${profile.name} skipped unknown features: ${selected.skippedKeys.join(", ")}`)
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        throw new AgentError({
+          provider: PROVIDER,
+          code: "feature_inventory_failed",
+          message: `cannot inspect Codex features before launching execution profile ${profile.name}: ${message}`,
           retryable: false,
         })
       }
@@ -585,7 +729,9 @@ export class CodexWorker implements Worker {
     this.appServerArgs = buildCodexAppServerArgs({
       appServerSocket: this.appServerSocket,
       disabledLocalMcpServerNames,
+      profileMcpServersToDisable,
       serviceTier: this.serviceTier,
+      featureOverrides,
     })
     return this.appServerArgs
   }

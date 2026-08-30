@@ -1,4 +1,5 @@
 import type { AgentResult, AgentSpec, AgentUsage, ProviderId } from "../dsl/types.js"
+import type { CodexExecutionProfileName } from "./codex-profile.js"
 
 /** Conversation/progress signals a worker emits while a turn runs (drives the live chat feed). */
 export type WorkerProgress =
@@ -26,7 +27,7 @@ export interface Worker {
 
 /** Lazily constructs and caches workers by provider and provider-wide launch options. */
 export interface WorkerFactory {
-  get(id: ProviderId, serviceTier?: string): Worker
+  get(id: ProviderId, serviceTier?: string, codexExecutionProfile?: CodexExecutionProfileName): Worker
   shutdownAll(): Promise<void>
 }
 

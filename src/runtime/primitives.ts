@@ -22,6 +22,7 @@ import { addUsage, emptyUsage, PROVIDER_IDS } from "../dsl/types.js"
 import type { WorkerFactory, WorkerProgress } from "../worker/index.js"
 import { AgentError, AgentInterrupted } from "../worker/index.js"
 import { CODEX_SERVICE_TIERS } from "../worker/codex.js"
+import { CODEX_EXECUTION_PROFILE_NAMES } from "../worker/codex-profile.js"
 import { withRetry } from "../worker/errors.js"
 import { stripNullOptionals, validate } from "../worker/schema.js"
 import { Journal, type LoadedJournal } from "./journal.js"
@@ -47,6 +48,7 @@ export const SPEC_ENUMS = {
   effort: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
   approval: ["never", "on-request"],
   serviceTier: CODEX_SERVICE_TIERS,
+  codexExecutionProfile: CODEX_EXECUTION_PROFILE_NAMES,
   codexWebSearch: ["disabled", "cached", "live"],
 } as const satisfies Record<string, readonly string[]>
 
@@ -248,6 +250,7 @@ export class Runtime {
       schema: opts?.schema,
       maxTurns: opts?.maxTurns,
       serviceTier: opts?.serviceTier,
+      codexExecutionProfile: opts?.codexExecutionProfile,
       claudeAgent: opts?.claudeAgent,
       claudeProfile,
       codexChildRole: opts?.codexChildRole,
@@ -262,6 +265,7 @@ export class Runtime {
     checkSpecEnum("effort", spec.effort)
     checkSpecEnum("approval", spec.approval)
     checkSpecEnum("serviceTier", spec.serviceTier)
+    checkSpecEnum("codexExecutionProfile", spec.codexExecutionProfile)
     checkSpecEnum("codexWebSearch", spec.codexWebSearch)
     // Pairing is checked on the RAW opts (after the enum checks, so a typo'd provider still reports
     // as invalid): a lone provider/model here would silently mix with the other half of the run
@@ -274,6 +278,13 @@ export class Runtime {
         provider: spec.provider,
         code: "unsupported_option",
         message: "serviceTier is codex-only; omit it or use the codex provider",
+      })
+    }
+    if (spec.codexExecutionProfile !== undefined && spec.provider !== "codex") {
+      throw new AgentError({
+        provider: spec.provider,
+        code: "unsupported_option",
+        message: "codexExecutionProfile is codex-only; omit it or use the codex provider",
       })
     }
     if (spec.claudeAgent !== undefined && spec.provider !== "claude-code") {
@@ -415,7 +426,7 @@ export class Runtime {
         if (opts?.worktree) {
           worktree = await this.setupWorktree(runSpec, opts.worktree, index)
         }
-        const worker = this.o.factory.get(runSpec.provider, runSpec.serviceTier)
+        const worker = this.o.factory.get(runSpec.provider, runSpec.serviceTier, runSpec.codexExecutionProfile)
         const workerCtx = {
           signal: this.o.signal,
           onProgress: (e: WorkerProgress) => {

@@ -13,8 +13,12 @@ import {
   DEFAULT_THREAD_START_CONCURRENCY,
   DEFAULT_TURN_STALL_TIMEOUT_MS,
   buildCodexAppServerArgs,
+  renderTomlDynamicKeySegment,
+  selectCodexFeatureOverrides,
   selectCodexMcpServersToDisable,
+  selectCodexProfileMcpServersToDisable,
 } from "../src/worker/codex.js"
+import { resolveCodexExecutionProfile, type CodexExecutionProfileName } from "../src/worker/codex-profile.js"
 import { JsonRpcStdioClient, StdioTransportError, JsonRpcResponseError } from "../src/worker/jsonrpc-stdio.js"
 import { AgentError, AgentInterrupted, type WorkerProgress } from "../src/worker/index.js"
 import type { AgentSpec } from "../src/dsl/types.js"
@@ -154,7 +158,7 @@ test("buildCodexAppServerArgs prefers an explicit per-worker service tier", () =
   assert.deepEqual(buildCodexAppServerArgs({ serviceTier: "fast" }), ["-c", "service_tier=fast", "app-server"])
 })
 
-test("buildCodexAppServerArgs disables only the resolved local MCP names", () => {
+test("buildCodexAppServerArgs preserves the legacy dotted local MCP overrides exactly", () => {
   assert.deepEqual(buildCodexAppServerArgs({ disabledLocalMcpServerNames: ["onepassword", "paos-recall-mcp"] }), [
     "-c",
     "mcp_servers.onepassword.enabled=false",
@@ -211,6 +215,71 @@ test("selectCodexMcpServersToDisable rejects inventory schema drift", () => {
   assert.throws(
     () => selectCodexMcpServersToDisable(JSON.stringify([mcpInventoryEntry("onepassword"), mcpInventoryEntry("onepassword")])),
     /duplicate name/,
+  )
+})
+
+test("profile MCP selection carries transports for inventory minus the allowlist", () => {
+  const inventory = JSON.stringify([
+    mcpInventoryEntry("context7", { type: "streamable_http" }),
+    mcpInventoryEntry("executor", { type: "streamable_http" }),
+    mcpInventoryEntry("node_repl"),
+    mcpInventoryEntry("whiteboard", { enabled: false }),
+  ])
+  assert.deepEqual(selectCodexProfileMcpServersToDisable(inventory, ["context7"]), [
+    { name: "executor", transport: "streamable_http" },
+    { name: "node_repl", transport: "stdio" },
+    { name: "whiteboard", transport: "stdio" },
+  ])
+  assert.deepEqual(selectCodexProfileMcpServersToDisable(inventory, []), [
+    { name: "context7", transport: "streamable_http" },
+    { name: "executor", transport: "streamable_http" },
+    { name: "node_repl", transport: "stdio" },
+    { name: "whiteboard", transport: "stdio" },
+  ])
+})
+
+test("profile MCP table quotes and escapes dynamic TOML keys", () => {
+  assert.equal(renderTomlDynamicKeySegment("plain-name_1"), "plain-name_1")
+  assert.equal(renderTomlDynamicKeySegment('odd."name\\server'), '"odd.\\"name\\\\server"')
+  assert.deepEqual(buildCodexAppServerArgs({
+    profileMcpServersToDisable: [{ name: 'odd."name\\server', transport: "stdio" }],
+  }), ["-c", 'mcp_servers={"odd.\\"name\\\\server"={command="",enabled=false}}', "app-server"])
+})
+
+test("profile MCP selection rejects an unsupported transport only when it would be disabled", () => {
+  const inventory = JSON.stringify([
+    mcpInventoryEntry("allowed-sse", { type: "sse" }),
+    mcpInventoryEntry("blocked-sse", { type: "sse" }),
+  ])
+  assert.throws(
+    () => selectCodexProfileMcpServersToDisable(inventory, ["allowed-sse"]),
+    /cannot disable Codex MCP server "blocked-sse": unsupported transport "sse"/,
+  )
+  assert.deepEqual(selectCodexProfileMcpServersToDisable(
+    JSON.stringify([mcpInventoryEntry("allowed-sse", { type: "sse" })]),
+    ["allowed-sse"],
+  ), [])
+})
+
+test("feature selection skips keys absent from the local CLI inventory", () => {
+  const result = selectCodexFeatureOverrides("apps stable true\nmulti_agent stable true\n", [
+    { key: "features.apps", value: false },
+    { key: "features.nonexistent_key_xyz", value: false },
+    { key: "features.multi_agent", value: true },
+  ])
+  assert.deepEqual(result, {
+    selected: [
+      { key: "features.apps", value: false },
+      { key: "features.multi_agent", value: true },
+    ],
+    skippedKeys: ["features.nonexistent_key_xyz"],
+  })
+})
+
+test("resolveCodexExecutionProfile fails fast with the valid names", () => {
+  assert.throws(
+    () => resolveCodexExecutionProfile("workflow-unknown"),
+    /unknown Codex execution profile "workflow-unknown".*workflow-bulk-v1, workflow-plan-v1, workflow-research-v1/,
   )
 })
 
@@ -363,6 +432,9 @@ function makeServedWorker(
     disableLocalMcps?: boolean
     serviceTier?: string
     readMcpInventory?: (bin: string) => Promise<string>
+    executionProfile?: CodexExecutionProfileName
+    readFeatureInventory?: (bin: string) => Promise<string>
+    logProfileWarning?: (message: string) => void
     requestTimeoutMs?: number
     turnStallTimeoutMs?: number
     threadEphemeral?: boolean
@@ -381,6 +453,9 @@ function makeServedWorker(
     disableLocalMcps: opts.disableLocalMcps,
     serviceTier: opts.serviceTier,
     readMcpInventory: opts.readMcpInventory,
+    executionProfile: opts.executionProfile,
+    readFeatureInventory: opts.readFeatureInventory,
+    logProfileWarning: opts.logProfileWarning,
     requestTimeoutMs: opts.requestTimeoutMs,
     turnStallTimeoutMs: opts.turnStallTimeoutMs,
     threadEphemeral: opts.threadEphemeral,
@@ -499,6 +574,131 @@ test("lean worker inventory failure is pre-launch and names the existing opt-out
   assert.equal(spawned, false)
 })
 
+const COMMON_PROFILE_FEATURE_ARGS = [
+  "features.apps=false",
+  "features.enable_mcp_apps=false",
+  "features.browser_use=false",
+  "features.browser_use_external=false",
+  "features.browser_use_full_cdp_access=false",
+  "features.in_app_browser=false",
+  "features.computer_use=false",
+  "features.image_generation=false",
+  "features.plugins=false",
+  "features.plugin_sharing=false",
+  "features.remote_plugin=false",
+  "features.shell_snapshot=false",
+  "features.standalone_web_search=false",
+  "features.web_search_cached=false",
+  "features.web_search_request=false",
+] as const
+
+const PROFILE_FEATURE_ARGS: Record<CodexExecutionProfileName, readonly string[]> = {
+  "workflow-bulk-v1": [
+    ...COMMON_PROFILE_FEATURE_ARGS,
+    "features.goals=false",
+    "features.hooks=false",
+    "features.memories=false",
+    "features.multi_agent=false",
+    "features.multi_agent_v2=false",
+    "features.skip_host_skill_discovery=true",
+  ],
+  "workflow-plan-v1": [
+    ...COMMON_PROFILE_FEATURE_ARGS,
+    "features.multi_agent=false",
+    "features.multi_agent_v2=false",
+  ],
+  "workflow-research-v1": [
+    ...COMMON_PROFILE_FEATURE_ARGS,
+    "features.multi_agent=true",
+    "features.multi_agent_v2=true",
+  ],
+}
+
+function configValues(args: readonly string[]): string[] {
+  return args.flatMap((arg, index) => args[index - 1] === "-c" ? [arg] : [])
+}
+
+test("execution profiles build their exact known feature and MCP override sets", async () => {
+  const inventory = JSON.stringify([
+    mcpInventoryEntry("btca"),
+    mcpInventoryEntry("context7", { type: "streamable_http" }),
+    mcpInventoryEntry("executor", { type: "streamable_http" }),
+    mcpInventoryEntry("node_repl"),
+  ])
+  for (const executionProfile of ["workflow-bulk-v1", "workflow-plan-v1", "workflow-research-v1"] as const) {
+    let featureReads = 0
+    const { worker } = makeServedWorker(
+      (_req, reply) => {
+        reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
+        reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
+      },
+      {
+        executionProfile,
+        // A profile owns MCP policy; the legacy flag must not narrow the research roster behavior.
+        disableLocalMcps: executionProfile === "workflow-research-v1",
+        readMcpInventory: async () => inventory,
+        readFeatureInventory: async () => {
+          featureReads += 1
+          return PROFILE_FEATURE_ARGS[executionProfile]
+            .map((override) => `${override.slice("features.".length).split("=")[0]} stable true`)
+            .join("\n")
+        },
+      },
+    )
+
+    await worker.runAgent(spec(), ctx())
+    await worker.runAgent(spec(), ctx())
+    assert.equal(featureReads, 1)
+    const expectedMcp = executionProfile === "workflow-research-v1"
+      ? 'mcp_servers={executor={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},node_repl={command="",enabled=false}}'
+      : 'mcp_servers={btca={command="",enabled=false},context7={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},executor={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},node_repl={command="",enabled=false}}'
+    assert.deepEqual(configValues((worker as any).appServerArgs), [expectedMcp, ...PROFILE_FEATURE_ARGS[executionProfile]])
+    await worker.shutdown()
+  }
+})
+
+test("profile skips unknown local features with one non-fatal warning", async () => {
+  const warnings: string[] = []
+  const { worker } = makeServedWorker(
+    (_req, reply) => {
+      reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
+      reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
+    },
+    {
+      executionProfile: "workflow-plan-v1",
+      readMcpInventory: async () => "[]",
+      readFeatureInventory: async () => PROFILE_FEATURE_ARGS["workflow-plan-v1"]
+        .filter((override) => override !== "features.apps=false")
+        .map((override) => `${override.slice("features.".length).split("=")[0]} stable true`)
+        .join("\n"),
+      logProfileWarning: (message) => warnings.push(message),
+    },
+  )
+
+  await worker.runAgent(spec(), ctx())
+  assert.ok(!configValues((worker as any).appServerArgs).includes("features.apps=false"))
+  assert.deepEqual(warnings, ["[omegacode] Codex execution profile workflow-plan-v1 skipped unknown features: features.apps"])
+  await worker.shutdown()
+})
+
+test("profile feature probe failure is pre-launch and honest", async () => {
+  let spawned = false
+  const worker = new CodexWorker({
+    executionProfile: "workflow-bulk-v1",
+    readMcpInventory: async () => "[]",
+    readFeatureInventory: async () => { throw new Error("feature probe timed out") },
+    spawnChild: () => {
+      spawned = true
+      return new FakeChild() as any
+    },
+  })
+  await assert.rejects(
+    worker.runAgent(spec(), ctx()),
+    (error) => error instanceof AgentError && error.code === "feature_inventory_failed" && /feature probe timed out/.test(error.message),
+  )
+  assert.equal(spawned, false)
+})
+
 test("local-MCP opt-out and explicit app-server args bypass inventory", async () => {
   for (const options of [
     { disableLocalMcps: false, serviceTier: "default", expected: ["-c", "service_tier=default", "app-server"] },
@@ -513,6 +713,9 @@ test("local-MCP opt-out and explicit app-server args bypass inventory", async ()
         ...options,
         readMcpInventory: async () => {
           throw new Error("inventory must be bypassed")
+        },
+        readFeatureInventory: async () => {
+          throw new Error("feature inventory must be bypassed without a profile")
         },
       },
     )

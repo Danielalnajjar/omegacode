@@ -1,5 +1,7 @@
 // Shared type contracts for the whole system. Everything compiles against these.
 
+import type { CodexExecutionProfileName } from "../worker/codex-profile.js"
+
 /** The closed set of backend providers. Model strings stay open — each backend is authoritative. */
 export const PROVIDER_IDS = ["codex", "claude-code", "opencode", "pi", "grok"] as const
 export type ProviderId = (typeof PROVIDER_IDS)[number]
@@ -45,6 +47,8 @@ interface AgentOptsBase {
   maxTurns?: number
   /** Codex-only service tier; `fast` canonicalizes to `priority` codex-side. */
   serviceTier?: string
+  /** Codex-only app-server capability profile for role-scoped workflow workers. */
+  codexExecutionProfile?: CodexExecutionProfileName
   /** Claude Code user-level custom agent name. */
   claudeAgent?: string
   /** Stable Subscription Picker profile id for this direct Claude call. */
@@ -72,6 +76,7 @@ export interface AgentSpec {
   schema?: JSONSchema
   maxTurns?: number
   serviceTier?: string
+  codexExecutionProfile?: CodexExecutionProfileName
   claudeAgent?: string
   claudeProfile?: string
   codexChildRole?: string

@@ -6,6 +6,7 @@ import { ClaudeWorker } from "./claude.js"
 import { OpencodeWorker } from "./opencode.js"
 import { PiWorker } from "./pi.js"
 import { GrokWorker } from "./grok.js"
+import type { CodexExecutionProfileName } from "./codex-profile.js"
 
 export interface FactoryOpts {
   /** Use the in-process FakeWorker for every provider (smoke tests, --fake). */
@@ -26,17 +27,17 @@ export class DefaultWorkerFactory implements WorkerFactory {
   private readonly cache = new Map<string, Worker>()
   constructor(private readonly opts: FactoryOpts = {}) {}
 
-  get(id: ProviderId, serviceTier?: string): Worker {
-    const cacheKey = `${id}::${serviceTier ?? ""}`
+  get(id: ProviderId, serviceTier?: string, codexExecutionProfile?: CodexExecutionProfileName): Worker {
+    const cacheKey = `${id}::${serviceTier ?? ""}::${codexExecutionProfile ?? ""}`
     let w = this.cache.get(cacheKey)
     if (!w) {
-      w = this.create(id, serviceTier)
+      w = this.create(id, serviceTier, codexExecutionProfile)
       this.cache.set(cacheKey, w)
     }
     return w
   }
 
-  private create(id: ProviderId, serviceTier?: string): Worker {
+  private create(id: ProviderId, serviceTier?: string, codexExecutionProfile?: CodexExecutionProfileName): Worker {
     if (this.opts.fake) return new FakeWorker()
     switch (id) {
       case "codex":
@@ -46,6 +47,7 @@ export class DefaultWorkerFactory implements WorkerFactory {
           disableLocalMcps: this.opts.codexDisableLocalMcps,
           threadStartConcurrency: this.opts.codexThreadStartConcurrency,
           serviceTier,
+          executionProfile: codexExecutionProfile,
         })
       case "claude-code":
         return new ClaudeWorker({

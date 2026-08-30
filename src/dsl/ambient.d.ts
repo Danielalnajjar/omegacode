@@ -17,6 +17,8 @@ declare global {
 
   type OmegacodeCodexWebSearch = "disabled" | "cached" | "live"
 
+  type OmegacodeCodexExecutionProfile = "workflow-bulk-v1" | "workflow-plan-v1" | "workflow-research-v1"
+
   type OmegacodeJSONSchema = Record<string, unknown>
 
   /** Options an author passes to `agent()`. All optional; defaults come from meta/config/CLI. */
@@ -36,6 +38,8 @@ declare global {
     maxTurns?: number
     /** Codex-only service tier; `fast` canonicalizes to `priority` codex-side. */
     serviceTier?: string
+    /** Codex-only app-server capability profile for role-scoped workflow workers. */
+    codexExecutionProfile?: OmegacodeCodexExecutionProfile
     /** Claude Code user-level custom agent name. */
     claudeAgent?: string
     /** Stable Subscription Picker profile id for this direct Claude call. */

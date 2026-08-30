@@ -681,7 +681,7 @@ test("random() varies with the run seed but is stable for the same seed", async 
   assert.notEqual(await run(7), await run(8)) // run-distinct
 })
 
-test("H14: agent() rejects invalid provider/sandbox/effort/approval/serviceTier values at spec resolution", async () => {
+test("H14: agent() rejects invalid provider/sandbox/effort/approval/serviceTier/profile values at spec resolution", async () => {
   // Workflow bodies are untyped JS: an unvalidated `sandbox: "readonly"` (typo for "read-only")
   // falls off the worker policy switches and is treated as writable — read-only silently bypassed.
   // Provider must be validated here too: an unknown provider would otherwise only fail at the
@@ -693,15 +693,23 @@ test("H14: agent() rejects invalid provider/sandbox/effort/approval/serviceTier 
     await assert.rejects(runBody(b, `return await agent("x", { effort: "hyper" })`), /invalid effort "hyper"/)
     await assert.rejects(runBody(b, `return await agent("x", { approval: "always" })`), /invalid approval "always"/)
     await assert.rejects(runBody(b, `return await agent("x", { serviceTier: "turbo" })`), /invalid serviceTier "turbo"/)
+    await assert.rejects(runBody(b, `return await agent("x", { codexExecutionProfile: "workflow-unknown" })`), /invalid codexExecutionProfile "workflow-unknown"/)
     await assert.rejects(
       runBody(b, `return await agent("x", { provider: "claude-code", model: "claude-fable-5", serviceTier: "fast" })`),
       (error: unknown) => error instanceof AgentError && error.code === "unsupported_option",
+    )
+    await assert.rejects(
+      runBody(b, `return await agent("x", { provider: "claude-code", model: "claude-fable-5", codexExecutionProfile: "workflow-plan-v1" })`),
+      (error: unknown) => error instanceof AgentError && error.code === "unsupported_option" && /codexExecutionProfile is codex-only/.test(error.message),
     )
     // the worker never saw an unvalidated policy
     assert.equal(b.worker.calls.length, 0)
     // valid values still resolve and run — including the new provider ids
     const ok = await runBody(b, `return await agent("y", { sandbox: "read-only", effort: "high", approval: "never" })`)
     assert.equal(ok, "echo:y")
+    const profiled = await runBody(b, `return await agent("profiled", { codexExecutionProfile: "workflow-plan-v1" })`)
+    assert.equal(profiled, "echo:profiled")
+    assert.equal(b.worker.calls.at(-1)?.codexExecutionProfile, "workflow-plan-v1")
     const pi = await runBody(b, `return await agent("z", { provider: "pi", model: "openrouter/moonshotai/kimi-k2.6", sandbox: "danger-full-access" })`)
     assert.equal(pi, "echo:z")
     assert.equal(b.worker.calls.at(-1)?.provider, "pi")

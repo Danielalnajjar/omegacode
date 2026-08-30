@@ -61,11 +61,16 @@ test("fake:true routes EVERY provider id to the FakeWorker", () => {
   assert.ok(f.get("anything" as ProviderId) instanceof FakeWorker)
 })
 
-test("caches workers by provider id and codex service tier", () => {
+test("caches workers by provider id, codex service tier, and execution profile", () => {
   const f = new DefaultWorkerFactory()
   assert.equal(f.get("codex"), f.get("codex"))
   assert.equal(f.get("codex", "fast"), f.get("codex", "fast"))
   assert.notEqual(f.get("codex"), f.get("codex", "fast"))
+  const bulk = f.get("codex", "fast", "workflow-bulk-v1")
+  assert.equal(bulk, f.get("codex", "fast", "workflow-bulk-v1"))
+  assert.notEqual(bulk, f.get("codex", "fast", "workflow-plan-v1"))
+  assert.notEqual(bulk, f.get("codex", "fast"))
+  assert.equal((bulk as unknown as { executionProfile?: string }).executionProfile, "workflow-bulk-v1")
   assert.equal(f.get("claude-code"), f.get("claude-code"))
   assert.equal(f.get("opencode"), f.get("opencode"))
   assert.equal(f.get("pi"), f.get("pi"))

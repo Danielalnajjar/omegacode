@@ -608,6 +608,15 @@ describe("verified packed global refresh", () => {
       assert.equal(JSON.parse(output).ok, true)
       assert.equal(JSON.parse(readFileSync(receipt, "utf8")).entryCount, 3)
 
+      const runtimeDependency = join(installed, "node_modules", "runtime-dependency")
+      mkdirSync(runtimeDependency, { recursive: true })
+      writeFileSync(join(runtimeDependency, "package.json"), "{}\n")
+      symlinkSync(join(runtimeDependency, "package.json"), join(runtimeDependency, "current-package.json"))
+      assert.equal(
+        JSON.parse(execFileSync(process.execPath, [join(root, "scripts", "verify-packed-install.mjs"), expected, installed, bin], { encoding: "utf8" })).ok,
+        true,
+      )
+
       writeFileSync(join(installed, "stale-extra"), "stale\n")
       assert.throws(
         () => execFileSync(process.execPath, [join(root, "scripts", "verify-packed-install.mjs"), expected, installed, bin], { encoding: "utf8", stdio: "pipe" }),

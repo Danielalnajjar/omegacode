@@ -18,10 +18,11 @@ function digest(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex")
 }
 
-function inventory(root) {
+function inventory(root, { ignoreTopLevelNodeModules = false } = {}) {
   const rows = []
   const visit = (directory) => {
     for (const name of readdirSync(directory).sort()) {
+      if (ignoreTopLevelNodeModules && directory === root && name === "node_modules") continue
       const path = join(directory, name)
       const info = lstatSync(path)
       const item = relative(root, path)
@@ -41,9 +42,16 @@ function inventory(root) {
 }
 
 const expected = inventory(expectedRoot)
-const installed = inventory(installedRoot)
+const installed = inventory(installedRoot, { ignoreTopLevelNodeModules: true })
 if (JSON.stringify(installed) !== JSON.stringify(expected)) {
-  throw new Error("installed package payload differs from the packed tarball (paths, types, modes, sizes, or hashes)")
+  const firstDifference = Array.from(
+    { length: Math.max(expected.length, installed.length) },
+    (_, index) => index,
+  ).find((index) => JSON.stringify(expected[index]) !== JSON.stringify(installed[index]))
+  throw new Error(
+    `installed package payload differs from the packed tarball (paths, types, modes, sizes, or hashes); `
+    + `first difference expected=${JSON.stringify(expected[firstDifference])} installed=${JSON.stringify(installed[firstDifference])}`,
+  )
 }
 
 const installedCli = resolve(installedRoot, "dist/cli.js")

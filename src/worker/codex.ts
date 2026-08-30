@@ -226,6 +226,11 @@ export function selectCodexProfileMcpServersToDisable(
     })
 }
 
+export function selectMissingAllowedMcpServerNames(stdout: string, allowedServerNames: readonly string[]): string[] {
+  const inventoried = new Set(parseCodexMcpInventory(stdout).map((entry) => entry.name))
+  return allowedServerNames.filter((name) => !inventoried.has(name))
+}
+
 export function renderTomlDynamicKeySegment(value: string): string {
   if (/^[A-Za-z0-9_-]+$/.test(value)) return value
   let rendered = "\""
@@ -708,6 +713,10 @@ export class CodexWorker implements Worker {
         if (profile) {
           const allowedServerNames = profile.mcp === "none" ? [] : profile.mcp.allowedServerNames
           profileMcpServersToDisable = selectCodexProfileMcpServersToDisable(inventory, allowedServerNames)
+          const missingAllowed = selectMissingAllowedMcpServerNames(inventory, allowedServerNames)
+          if (missingAllowed.length > 0) {
+            this.logProfileWarning(`[omegacode] Codex execution profile ${profile.name} expects MCP servers absent from this host's inventory: ${missingAllowed.join(", ")}`)
+          }
         } else {
           disabledLocalMcpServerNames = selectCodexMcpServersToDisable(inventory)
         }

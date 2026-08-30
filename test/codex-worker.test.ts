@@ -17,6 +17,7 @@ import {
   selectCodexFeatureOverrides,
   selectCodexMcpServersToDisable,
   selectCodexProfileMcpServersToDisable,
+  selectMissingAllowedMcpServerNames,
 } from "../src/worker/codex.js"
 import { resolveCodexExecutionProfile, type CodexExecutionProfileName } from "../src/worker/codex-profile.js"
 import { JsonRpcStdioClient, StdioTransportError, JsonRpcResponseError } from "../src/worker/jsonrpc-stdio.js"
@@ -1811,4 +1812,10 @@ test("thread/start with no thread id → AgentError", async () => {
   })
   await assert.rejects(worker.runAgent(spec(), ctx()), (e) => e instanceof AgentError && e.code === "no_thread_id")
   await worker.shutdown()
+})
+
+test("research profile warns when an allowlisted MCP server is missing from the host inventory", () => {
+  const inventory = JSON.stringify([mcpInventoryEntry("btca"), mcpInventoryEntry("executor", { type: "streamable_http" })])
+  assert.deepEqual(selectMissingAllowedMcpServerNames(inventory, ["btca", "context7", "exa"]), ["context7", "exa"])
+  assert.deepEqual(selectMissingAllowedMcpServerNames(inventory, ["btca"]), [])
 })

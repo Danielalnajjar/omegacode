@@ -202,6 +202,13 @@ else
   [[ "$staged_sha256" == "$tarball_sha256" ]] || { echo "error: staged Omega tarball digest changed" >&2; exit 74; }
   mv "$staged_tarball" "$stable_tarball"
 fi
+global_manifest="$active_prefix/install/global/package.json"
+if [[ -f "$global_manifest" ]] && node -e '
+  const manifest = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))
+  process.exit(manifest.dependencies?.omegacode ? 0 : 1)
+' "$global_manifest"; then
+  BUN_INSTALL="$active_prefix" bun remove -g omegacode >/dev/null
+fi
 BUN_INSTALL="$active_prefix" bun add -g "$stable_tarball" >/dev/null
 if [[ "${OMEGACODE_REFRESH_FAIL_AFTER_CUTOVER:-}" == "1" ]]; then
   echo "error: injected post-cutover refresh failure" >&2

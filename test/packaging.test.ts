@@ -732,6 +732,40 @@ describe("verified packed global refresh", () => {
     }
   })
 
+  test("successful refresh replaces a checkout-linked package with the verified packed payload", { skip: !bunAvailable }, () => {
+    const temp = mkdtempSync(join(tmpdir(), "omega-refresh-linked-success-"))
+    try {
+      const prefix = join(temp, "bun-prefix")
+      const source = join(temp, "checkout", "omegacode")
+      writeFixturePackage(source, "omegacode", "0.0.6", "linked-old")
+      symlinkSync(source, join(source, "recursive-link"))
+      execFileSync("bun", ["add", "-g", source], {
+        env: { ...process.env, BUN_INSTALL: prefix },
+        stdio: "pipe",
+      })
+
+      const packagePath = join(prefix, "install", "global", "node_modules", "omegacode")
+      const binPath = join(prefix, "bin", "omegacode")
+      assert.equal(containsSymlink(packagePath), true, "fixture did not create a checkout-linked Bun package")
+
+      const candidate = makeOmegaTarball(join(temp, "candidate"), "0.0.6", "candidate")
+      execFileSync("bash", [join(root, "scripts", "refresh-global.sh"), "--fast"], {
+        cwd: root,
+        env: {
+          ...process.env,
+          BUN_INSTALL: prefix,
+          OMEGACODE_REFRESH_TARBALL: candidate,
+        },
+        stdio: "pipe",
+      })
+
+      assert.equal(containsSymlink(packagePath), false, "packed refresh preserved checkout symlinks")
+      assert.equal(execFileSync(binPath, { encoding: "utf8" }), "candidate")
+    } finally {
+      rmSync(temp, { recursive: true, force: true })
+    }
+  })
+
   test("failed first Omega install restores absence without changing an unrelated global package", { skip: !bunAvailable }, () => {
     const temp = mkdtempSync(join(tmpdir(), "omega-refresh-absent-rollback-"))
     try {

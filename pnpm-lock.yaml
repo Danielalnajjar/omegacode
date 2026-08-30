@@ -11,6 +11,9 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: 0.3.237
         version: 0.3.237(@anthropic-ai/sdk@0.106.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(zod@4.4.3)
+      '@anthropic-ai/sdk':
+        specifier: 0.106.0
+        version: 0.106.0(zod@4.4.3)
       ajv:
         specifier: ^8.17.1
         version: 8.20.0

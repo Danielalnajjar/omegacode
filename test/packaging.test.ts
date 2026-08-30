@@ -620,8 +620,12 @@ describe("verified packed global refresh", () => {
 
   test("global refresh verifies isolation before cutover and restores only a started failed cutover", () => {
     const script = read("scripts/refresh-global.sh")
+    const typecheck = script.indexOf("pnpm typecheck")
+    const build = script.indexOf("pnpm build")
+    const tests = script.indexOf("pnpm test")
     const isolatedVerification = script.indexOf('"$isolated/install/global/node_modules/omegacode"')
     const cutover = script.indexOf("cutover_started=1")
+    assert.ok(typecheck >= 0 && typecheck < build && build < tests, "full refresh must rebuild dist before packaging tests")
     assert.ok(isolatedVerification >= 0 && isolatedVerification < cutover, "isolated payload verification must precede active cutover")
     assert.match(script, /status -ne 0 && \$cutover_started -eq 1 && \$committed -eq 0/)
     assert.match(script, /bun install --cwd "\$active_prefix\/install\/global" --frozen-lockfile/)

@@ -5,7 +5,7 @@
 # under an isolated BUN_INSTALL prefix, then snapshots the active package/bin
 # and Bun global metadata so any failed cutover restores the previous install.
 # Usage:
-#   bash scripts/refresh-global.sh          # full gate: typecheck + test + build + install
+#   bash scripts/refresh-global.sh          # full gate: typecheck + build + test + install
 #   bash scripts/refresh-global.sh --fast   # skip typecheck/test (only when they just ran green)
 set -euo pipefail
 
@@ -16,9 +16,11 @@ prebuilt_tarball="${OMEGACODE_REFRESH_TARBALL:-}"
 if [[ -z "$prebuilt_tarball" ]]; then
   if [[ "${1:-}" != "--fast" ]]; then
     pnpm typecheck
-    pnpm test
   fi
   pnpm build
+  if [[ "${1:-}" != "--fast" ]]; then
+    pnpm test
+  fi
 else
   [[ "$prebuilt_tarball" = /* && -f "$prebuilt_tarball" ]] || {
     echo "error: OMEGACODE_REFRESH_TARBALL must name an absolute existing tarball" >&2

@@ -434,9 +434,9 @@ function makeServedWorker(
     appServerArgs?: string[]
     disableLocalMcps?: boolean
     serviceTier?: string
-    readMcpInventory?: (bin: string, signal?: AbortSignal) => Promise<string>
+    readMcpInventory?: (bin: string) => Promise<string>
     executionProfile?: CodexExecutionProfileName
-    readFeatureInventory?: (bin: string, signal?: AbortSignal) => Promise<string>
+    readFeatureInventory?: (bin: string) => Promise<string>
     logProfileWarning?: (message: string) => void
     requestTimeoutMs?: number
     turnStallTimeoutMs?: number
@@ -758,19 +758,81 @@ test("execution profiles reject shared app-server proxy mode before probing", as
   assert.equal(spawned, false)
 })
 
-test("abort during the first startup probe settles promptly without spawning", async () => {
-  const controller = new AbortController()
+test("execution profiles reject explicit app-server args before probing", async () => {
+  let probed = false
   let spawned = false
   const worker = new CodexWorker({
     executionProfile: "workflow-plan-v1",
-    readMcpInventory: async (_bin, signal) => await new Promise<string>((_resolve, reject) => {
-      signal?.addEventListener("abort", () => reject(signal.reason), { once: true })
-    }),
+    appServerArgs: ["app-server", "custom"],
+    readMcpInventory: async () => {
+      probed = true
+      return "[]"
+    },
     spawnChild: () => {
       spawned = true
       return new FakeChild() as any
     },
   })
+  await assert.rejects(
+    worker.runAgent(spec(), ctx()),
+    (error) => error instanceof AgentError
+      && error.code === "profile_explicit_args_unsupported"
+      && error.retryable === false
+      && /explicit app-server args/.test(error.message),
+  )
+  assert.equal(probed, false)
+  assert.equal(spawned, false)
+})
+
+test("one caller aborting shared initialization does not interrupt another caller", async () => {
+  const controller = new AbortController()
+  let releaseInventory!: (inventory: string) => void
+  let inventoryReads = 0
+  const inventory = new Promise<string>((resolve) => { releaseInventory = resolve })
+  const { worker } = makeServedWorker(
+    (_req, reply) => {
+      reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
+      reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
+    },
+    {
+      executionProfile: "workflow-plan-v1",
+      readMcpInventory: async () => {
+        inventoryReads += 1
+        return await inventory
+      },
+      readFeatureInventory: async () => PROFILE_FEATURE_ARGS["workflow-plan-v1"]
+        .map((override) => `${override.slice("features.".length).split("=")[0]} stable true`)
+        .join("\n"),
+    },
+  )
+  const runA = worker.runAgent(spec(), ctx(controller.signal))
+  await tick()
+  const runB = worker.runAgent(spec(), ctx())
+  controller.abort()
+  await assert.rejects(runA, (error) => error instanceof AgentInterrupted)
+  releaseInventory("[]")
+  assert.equal((await runB).text, "done")
+  assert.equal(inventoryReads, 1)
+  await worker.shutdown()
+})
+
+test("abort settles promptly while shared initialization continues", async () => {
+  const controller = new AbortController()
+  let releaseInventory!: (inventory: string) => void
+  const inventory = new Promise<string>((resolve) => { releaseInventory = resolve })
+  const { worker } = makeServedWorker(
+    (_req, reply) => {
+      reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
+      reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
+    },
+    {
+      executionProfile: "workflow-plan-v1",
+      readMcpInventory: async () => await inventory,
+      readFeatureInventory: async () => PROFILE_FEATURE_ARGS["workflow-plan-v1"]
+        .map((override) => `${override.slice("features.".length).split("=")[0]} stable true`)
+        .join("\n"),
+    },
+  )
   const run = worker.runAgent(spec(), ctx(controller.signal))
   await tick()
   controller.abort()
@@ -779,7 +841,9 @@ test("abort during the first startup probe settles promptly without spawning", a
     new Promise<"timed-out">((resolve) => setTimeout(() => resolve("timed-out"), 500)),
   ])
   assert.ok(result instanceof AgentInterrupted)
-  assert.equal(spawned, false)
+  releaseInventory("[]")
+  assert.equal((await worker.runAgent(spec(), ctx())).text, "done")
+  await worker.shutdown()
 })
 
 test("local-MCP opt-out and explicit app-server args bypass inventory", async () => {

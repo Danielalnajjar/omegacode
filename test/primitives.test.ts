@@ -49,6 +49,16 @@ class SingleFactory implements WorkerFactory {
   async shutdownAll(): Promise<void> {}
 }
 
+class RecordingFactory implements WorkerFactory {
+  readonly calls: Array<Parameters<WorkerFactory["get"]>> = []
+  constructor(private readonly worker: Worker) {}
+  get(...args: Parameters<WorkerFactory["get"]>): Worker {
+    this.calls.push(args)
+    return this.worker
+  }
+  async shutdownAll(): Promise<void> {}
+}
+
 class MemSink implements EventSink {
   events: WorkflowEventInput[] = []
   emit(e: WorkflowEventInput): void {
@@ -87,6 +97,7 @@ function build(opts: {
   defaults?: Partial<RunDefaults>
   hooks?: WorkerHooks
   worker?: TestWorker
+  factory?: WorkerFactory
   ac?: AbortController
   declaredPhases?: Array<{ title: string; detail?: string }>
 } = {}): Built {
@@ -101,7 +112,7 @@ function build(opts: {
   const runtime = new Runtime({
     runId,
     defaults: defaults(opts.defaults),
-    factory: new SingleFactory(worker),
+    factory: opts.factory ?? new SingleFactory(worker),
     journal,
     loaded: opts.loaded ?? { results: new Map(), indexByKey: new Map() },
     events: sink,
@@ -713,6 +724,18 @@ test("H14: agent() rejects invalid provider/sandbox/effort/approval/serviceTier/
     const pi = await runBody(b, `return await agent("z", { provider: "pi", model: "openrouter/moonshotai/kimi-k2.6", sandbox: "danger-full-access" })`)
     assert.equal(pi, "echo:z")
     assert.equal(b.worker.calls.at(-1)?.provider, "pi")
+  } finally {
+    b.cleanup()
+  }
+})
+
+test("agent() forwards codexExecutionProfile to the worker factory", async () => {
+  const worker = new TestWorker()
+  const factory = new RecordingFactory(worker)
+  const b = build({ worker, factory })
+  try {
+    assert.equal(await runBody(b, `return await agent("profiled", { codexExecutionProfile: "workflow-plan-v1" })`), "echo:profiled")
+    assert.deepEqual(factory.calls, [["codex", undefined, "workflow-plan-v1"]])
   } finally {
     b.cleanup()
   }

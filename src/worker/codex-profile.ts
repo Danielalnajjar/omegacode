@@ -47,24 +47,18 @@ function definition(
   return Object.freeze({ name, featureOverrides, mcp })
 }
 
+// Profiles own startup cost (MCP subprocesses, feature subsystems, skill
+// discovery), never turn behavior: multi_agent stays inherited from the host so
+// an ultra-effort worker keeps its subagent mode under every profile.
 const PROFILE_DEFINITIONS: Readonly<Record<CodexExecutionProfileName, CodexExecutionProfileDefinition>> = Object.freeze({
   "workflow-bulk-v1": definition("workflow-bulk-v1", overrides([
     { key: "features.goals", value: false },
     { key: "features.hooks", value: false },
     { key: "features.memories", value: false },
-    { key: "features.multi_agent", value: false },
-    { key: "features.multi_agent_v2", value: false },
     { key: "features.skip_host_skill_discovery", value: true },
   ]), "none"),
-  "workflow-plan-v1": definition("workflow-plan-v1", overrides([
-    { key: "features.multi_agent", value: false },
-    { key: "features.multi_agent_v2", value: false },
-  ]), "none"),
-  "workflow-research-v1": definition("workflow-research-v1", overrides([
-    // Research lanes deliberately retain Codex's own subagent fan-out.
-    { key: "features.multi_agent", value: true },
-    { key: "features.multi_agent_v2", value: true },
-  ]), Object.freeze({
+  "workflow-plan-v1": definition("workflow-plan-v1", overrides([]), "none"),
+  "workflow-research-v1": definition("workflow-research-v1", overrides([]), Object.freeze({
     allowedServerNames: Object.freeze(["btca", "context7", "deepwiki", "exa", "firecrawl", "grok_search", "mintlify"]),
   })),
 })

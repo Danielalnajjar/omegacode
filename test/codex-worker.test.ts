@@ -598,20 +598,10 @@ const PROFILE_FEATURE_ARGS: Record<CodexExecutionProfileName, readonly string[]>
     "features.goals=false",
     "features.hooks=false",
     "features.memories=false",
-    "features.multi_agent=false",
-    "features.multi_agent_v2=false",
     "features.skip_host_skill_discovery=true",
   ],
-  "workflow-plan-v1": [
-    ...COMMON_PROFILE_FEATURE_ARGS,
-    "features.multi_agent=false",
-    "features.multi_agent_v2=false",
-  ],
-  "workflow-research-v1": [
-    ...COMMON_PROFILE_FEATURE_ARGS,
-    "features.multi_agent=true",
-    "features.multi_agent_v2=true",
-  ],
+  "workflow-plan-v1": [...COMMON_PROFILE_FEATURE_ARGS],
+  "workflow-research-v1": [...COMMON_PROFILE_FEATURE_ARGS],
 }
 
 function configValues(args: readonly string[]): string[] {

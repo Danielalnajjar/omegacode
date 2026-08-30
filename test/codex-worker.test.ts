@@ -816,6 +816,37 @@ test("one caller aborting shared initialization does not interrupt another calle
   await worker.shutdown()
 })
 
+test("a re-entrant abort during the synchronous startup prologue still interrupts the caller", async () => {
+  const controller = new AbortController()
+  let releaseInventory!: (inventory: string) => void
+  const inventory = new Promise<string>((resolve) => { releaseInventory = resolve })
+  const { worker } = makeServedWorker(
+    (_req, reply) => {
+      reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
+      reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
+    },
+    {
+      executionProfile: "workflow-plan-v1",
+      readMcpInventory: async () => {
+        // Aborts synchronously inside ensureStarted()'s prologue, before
+        // waitForStarted has registered its abort listener.
+        controller.abort()
+        return await inventory
+      },
+      readFeatureInventory: async () => PROFILE_FEATURE_ARGS["workflow-plan-v1"]
+        .map((override) => `${override.slice("features.".length).split("=")[0]} stable true`)
+        .join("\n"),
+    },
+  )
+  await assert.rejects(
+    worker.runAgent(spec(), ctx(controller.signal)),
+    (error) => error instanceof AgentInterrupted,
+  )
+  releaseInventory("[]")
+  assert.equal((await worker.runAgent(spec(), ctx())).text, "done")
+  await worker.shutdown()
+})
+
 test("abort settles promptly while shared initialization continues", async () => {
   const controller = new AbortController()
   let releaseInventory!: (inventory: string) => void

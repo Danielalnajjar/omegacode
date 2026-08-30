@@ -646,6 +646,13 @@ export class CodexWorker implements Worker {
     const started = this.ensureStarted()
     let onAbort: (() => void) | undefined
     const interrupted = new Promise<never>((_resolve, reject) => {
+      // ensureStarted()'s synchronous prologue can re-entrantly abort the
+      // signal (injected probes); an already-aborted signal never fires the
+      // "abort" event, so recheck before relying on the listener.
+      if (signal.aborted) {
+        reject(new AgentInterrupted())
+        return
+      }
       onAbort = () => reject(new AgentInterrupted())
       signal.addEventListener("abort", onAbort, { once: true })
     })

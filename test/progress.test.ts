@@ -31,6 +31,14 @@ function agentEvent(over: Partial<Extract<WorkflowEvent, { type: "agent" }>>): W
   } as WorkflowEvent
 }
 
+test("done rows include the authored Claude subscription name", () => {
+  const out = capture((r) => {
+    r.handle(agentEvent({ index: 1, label: "retrieve:Q1", state: "running" }))
+    r.handle(agentEvent({ index: 1, label: "retrieve:Q1", state: "done", claudeProfileLabel: "Work Max" }))
+  })
+  assert.match(out, /retrieve:Q1.*Work Max/)
+})
+
 test("M17: only the first running transition prints a line (no duplicate running rows)", () => {
   const out = capture((r) => {
     r.handle(agentEvent({ index: 1, state: "running" }))

@@ -62,6 +62,7 @@ export function foldEvents(runId: string, events: WorkflowEvent[]): RunSnapshot 
           label: ev.label ?? prev?.label ?? "",
           provider: ev.provider ?? prev?.provider ?? "codex",
           model: ev.model ?? prev?.model,
+          claudeProfileLabel: ev.claudeProfileLabel ?? prev?.claudeProfileLabel,
           state: ev.state,
           cached: ev.cached ?? prev?.cached,
           durationMs: ev.durationMs ?? prev?.durationMs,

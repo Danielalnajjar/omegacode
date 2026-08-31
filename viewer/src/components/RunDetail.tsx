@@ -52,6 +52,7 @@ function AgentRow({
   onClick: () => void
 }) {
   const meta = [
+    agent.claudeProfileLabel,
     agent.model,
     agent.outputTokens ? `${fmtTokens((agent.inputTokens ?? 0) + agent.outputTokens)} tok` : null,
     agent.lastTool,

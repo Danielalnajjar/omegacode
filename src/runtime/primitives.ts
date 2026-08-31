@@ -377,6 +377,7 @@ export class Runtime {
         cached: true,
         durationMs: cached.durationMs,
         resultPreview: preview(cached.result),
+        ...(cached.claudeProfileLabel ? { claudeProfileLabel: cached.claudeProfileLabel } : {}),
       })
       this.totalUsage = addUsage(this.totalUsage, cached.usage)
       return cached.result as T
@@ -408,6 +409,7 @@ export class Runtime {
       this.o.journal.append({ type: "started", key, index, label, provider: spec.provider })
 
       let worktree: (Worktree & { gitRoot: string }) | undefined
+      let claudeProfileLabel: string | undefined
       const runSpec = { ...spec }
       // Transcript files are agents/<index>.jsonl — the address the server/viewer resolve from agent
       // events. The index is journal-key-stable across resume attempts (see above), so a re-run
@@ -436,7 +438,18 @@ export class Runtime {
                 break
               case "tool":
                 transcript.write({ kind: "tool", id: e.id, name: e.name, input: e.input })
-                this.o.events.emit({ type: "agent", index, phaseIndex, phaseTitle, label, provider: spec.provider, model: spec.model, state: "running", lastTool: e.name })
+                this.o.events.emit({
+                  type: "agent",
+                  index,
+                  phaseIndex,
+                  phaseTitle,
+                  label,
+                  provider: spec.provider,
+                  model: spec.model,
+                  state: "running",
+                  lastTool: e.name,
+                  ...(claudeProfileLabel ? { claudeProfileLabel } : {}),
+                })
                 break
               case "tool-result":
                 transcript.write({ kind: "tool-result", id: e.id, name: e.name, output: e.output, isError: e.isError })
@@ -455,8 +468,26 @@ export class Runtime {
                   outputTokens: e.usage.outputTokens,
                   cacheReadInputTokens: e.usage.cacheReadInputTokens,
                   cacheCreationInputTokens: e.usage.cacheCreationInputTokens,
+                  ...(claudeProfileLabel ? { claudeProfileLabel } : {}),
                 })
                 break
+              case "claude-profile": {
+                const name = e.label.trim()
+                if (!name) break
+                claudeProfileLabel = name
+                this.o.events.emit({
+                  type: "agent",
+                  index,
+                  phaseIndex,
+                  phaseTitle,
+                  label,
+                  provider: spec.provider,
+                  model: spec.model,
+                  state: "running",
+                  claudeProfileLabel,
+                })
+                break
+              }
             }
           },
         }
@@ -500,7 +531,18 @@ export class Runtime {
         const durationMs = Date.now() - startedAt
         this.totalUsage = addUsage(this.totalUsage, attemptUsage)
         const branch = worktree?.branch
-        this.o.journal.append({ type: "result", key, index, status: result.status, result: value, usage: attemptUsage, provider: spec.provider, worktreeBranch: branch, durationMs })
+        this.o.journal.append({
+          type: "result",
+          key,
+          index,
+          status: result.status,
+          result: value,
+          usage: attemptUsage,
+          provider: spec.provider,
+          worktreeBranch: branch,
+          durationMs,
+          ...(claudeProfileLabel ? { claudeProfileLabel } : {}),
+        })
         // Surface the validated structured output in the chat feed as a JSON code block
         // (uniform across providers — Claude's lives only in the result channel, and codex's
         // extraction turn is silent).
@@ -525,6 +567,7 @@ export class Runtime {
           cacheCreationInputTokens: attemptUsage.cacheCreationInputTokens,
           costUsd: attemptUsage.costUsd,
           resultPreview: preview(value),
+          ...(claudeProfileLabel ? { claudeProfileLabel } : {}),
         })
         succeeded = true
         return value as T
@@ -545,6 +588,7 @@ export class Runtime {
           usage: attemptUsage,
           provider: spec.provider,
           durationMs,
+          ...(claudeProfileLabel ? { claudeProfileLabel } : {}),
         })
         transcript.write({ kind: "status", state: "failed", error: message })
         this.o.events.emit({
@@ -563,6 +607,7 @@ export class Runtime {
           cacheCreationInputTokens: attemptUsage.cacheCreationInputTokens,
           costUsd: attemptUsage.costUsd,
           error: message,
+          ...(claudeProfileLabel ? { claudeProfileLabel } : {}),
         })
         throw err instanceof AgentError || err instanceof AgentInterrupted ? err : new AgentFailedError(`agent failed: ${message}`)
       } finally {
@@ -576,7 +621,19 @@ export class Runtime {
           if (teardown?.changed) {
             // Trailing event re-stating the terminal state with where the preserved edits live (L14)
             // — renderers dedupe terminal rows, so this only surfaces the worktree fields.
-            this.o.events.emit({ type: "agent", index, phaseIndex, phaseTitle, label, provider: spec.provider, model: spec.model, state: succeeded ? "done" : "failed", worktreeBranch: teardown.preservedBranch, worktreePath: teardown.preservedPath })
+            this.o.events.emit({
+              type: "agent",
+              index,
+              phaseIndex,
+              phaseTitle,
+              label,
+              provider: spec.provider,
+              model: spec.model,
+              state: succeeded ? "done" : "failed",
+              worktreeBranch: teardown.preservedBranch,
+              worktreePath: teardown.preservedPath,
+              ...(claudeProfileLabel ? { claudeProfileLabel } : {}),
+            })
           }
         }
       }

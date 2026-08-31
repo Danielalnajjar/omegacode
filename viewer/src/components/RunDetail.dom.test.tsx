@@ -50,6 +50,19 @@ const phaseHeader = (): HTMLElement => {
   return header
 }
 
+describe("Claude profile display", () => {
+  it("shows the authored subscription name in the agent meta line", () => {
+    renderDetail(makeSnap([makeAgent({
+      index: 0,
+      state: "running",
+      provider: "claude-code",
+      model: "claude-opus-5",
+      claudeProfileLabel: "Work Max",
+    })]))
+    expect(screen.getByText(/Work Max/)).toBeTruthy()
+  })
+})
+
 describe("PhaseGroup collapse toggle (L28)", () => {
   it("collapses a phase containing the selected agent on an explicit toggle (was a no-op)", () => {
     const agents = [makeAgent({ index: 0, state: "running" }), makeAgent({ index: 1, state: "running" })]

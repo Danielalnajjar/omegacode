@@ -11,6 +11,7 @@ export interface AgentSnapshot {
   label: string
   provider: ProviderId
   model?: string
+  claudeProfileLabel?: string
   state: AgentState
   cached?: boolean
   durationMs?: number

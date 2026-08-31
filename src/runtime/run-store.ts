@@ -12,6 +12,7 @@ export type AgentSnapshot = {
   label: string
   provider: ProviderId
   model?: string
+  claudeProfileLabel?: string
   state: AgentState
   cached?: boolean
   durationMs?: number
@@ -155,6 +156,7 @@ export function foldSnapshot(runId: string, events: WorkflowEvent[], lastBeat?: 
           label: ev.label ?? prev?.label ?? "",
           provider: ev.provider ?? prev?.provider ?? "codex",
           model: ev.model ?? prev?.model,
+          claudeProfileLabel: ev.claudeProfileLabel ?? prev?.claudeProfileLabel,
           state: ev.state,
           cached: ev.cached ?? prev?.cached,
           durationMs: ev.durationMs ?? prev?.durationMs,

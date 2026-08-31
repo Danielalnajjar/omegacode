@@ -40,6 +40,8 @@ export interface JournalResult {
   provider: ProviderId
   worktreeBranch?: string
   durationMs: number
+  /** Authored subscription name at run time. Display-only; not routing identity. */
+  claudeProfileLabel?: string
 }
 
 export type JournalEntry = JournalMeta | JournalStarted | JournalResult

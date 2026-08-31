@@ -83,7 +83,8 @@ Provider-native options stay deliberately provider-specific:
   only `profileId`, and never use an `acp-sub-*` route. At runtime the strict resolver also returns
   `configDir` and `claudeCodeExecutable`; OmegaCode binds both to that call without changing the
   parent process. The profile joins cache identity so it can accompany `claudeAgent`; the named
-  agent then loads from the selected home.
+  agent then loads from the selected home. The viewer shows that profile's authored subscription
+  name, not the stable id.
 - Codex: `codexChildRole` uses provider thread metadata to prove an exact native child role completed,
   then deletes that temporary provider thread subtree; `codexWebSearch` is `"disabled"`, `"cached"`, or `"live"`;
   and `codexNetworkAccess` controls network access inside read-only/workspace-write sandboxes.

@@ -245,6 +245,10 @@ test("profile preparation binds a fresh call-local SDK environment while ordinar
 
   const preparedA = await worker.prepareAgentCall(spec({ claudeProfile: "a" }), context)
   const preparedB = await worker.prepareAgentCall(spec({ claudeProfile: "b" }), context)
+  assert.deepEqual(context.events.filter((event) => event.kind === "claude-profile"), [
+    { kind: "claude-profile", label: "A" },
+    { kind: "claude-profile", label: "B" },
+  ])
   await Promise.all([
     preparedA(spec({ prompt: "A", claudeProfile: "a" }), context),
     preparedB(spec({ prompt: "B", claudeProfile: "b" }), context),

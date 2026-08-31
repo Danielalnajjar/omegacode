@@ -797,6 +797,61 @@ test("provider-native options are rejected at the public boundary even with a fa
   }
 })
 
+test("a resolved Claude profile name is shown on agent events without leaking the profile id", async () => {
+  const b = build({
+    defaults: { provider: "claude-code", model: "claude-fable-5" },
+    hooks: {
+      prepare: async (_spec, ctx) => {
+        ctx.onProgress({ kind: "claude-profile", label: "Work Max" })
+        return async () => ({ text: "ok", status: "completed", usage: emptyUsage() })
+      },
+    },
+  })
+  try {
+    assert.equal(await runBody(b, `return await agent("x", { claudeProfile: "PROFILE-MUST-STAY-PRIVATE", label: "retrieve:Q1" })`), "ok")
+    const named = b.sink.events.filter((event) => event.type === "agent" && "claudeProfileLabel" in event)
+    assert.ok(named.length >= 1)
+    for (const event of named) {
+      assert.equal(event.type, "agent")
+      if (event.type === "agent") assert.equal(event.claudeProfileLabel, "Work Max")
+    }
+    const journal = readFileSync(join(b.home, "runs", "run_test", "journal.jsonl"), "utf8")
+    assert.match(journal, /"claudeProfileLabel":"Work Max"/)
+    assert.equal(journal.includes("PROFILE-MUST-STAY-PRIVATE"), false)
+    assert.equal(readFileSync(agentTranscriptPath("run_test", 1), "utf8").includes("PROFILE-MUST-STAY-PRIVATE"), false)
+    assert.equal(readFileSync(agentTranscriptPath("run_test", 1), "utf8").includes("Work Max"), false)
+  } finally {
+    b.cleanup()
+  }
+})
+
+test("cached Claude agents replay the journaled subscription name", async () => {
+  const key = explicitKey("profile-cache")
+  const loaded: LoadedJournal = {
+    results: new Map([[key, {
+      type: "result", key, index: 1, status: "completed", result: "cached", usage: emptyUsage(),
+      provider: "claude-code", durationMs: 1, claudeProfileLabel: "Work Max",
+    }]]),
+    indexByKey: new Map([[key, 1]]),
+  }
+  const b = build({
+    loaded,
+    defaults: { provider: "claude-code", model: "claude-fable-5" },
+    hooks: { prepare: async () => { throw new Error("must not prepare") } },
+  })
+  try {
+    assert.equal(await runBody(b, `return await agent("x", { key: "profile-cache", claudeProfile: "PROFILE-MUST-STAY-PRIVATE" })`), "cached")
+    const done = b.sink.events.find((event) => event.type === "agent" && event.state === "done")
+    assert.equal(done?.type, "agent")
+    if (done?.type === "agent") {
+      assert.equal(done.cached, true)
+      assert.equal(done.claudeProfileLabel, "Work Max")
+    }
+  } finally {
+    b.cleanup()
+  }
+})
+
 test("claudeProfile can accompany claudeAgent on a Claude call", async () => {
   const seen: AgentSpec[] = []
   const b = build({

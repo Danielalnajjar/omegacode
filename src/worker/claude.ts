@@ -77,8 +77,9 @@ export class ClaudeWorker implements Worker {
 
   async prepareAgentCall(spec: AgentSpec, ctx: WorkerContext): Promise<PreparedAgentCall> {
     this.preflight(spec, ctx)
-    const env = await prepareClaudeProfile(spec, ctx.signal, this.opts.profileResolver ?? resolveClaudeProfile, this.opts.baseEnv ?? process.env)
-    return (attemptSpec, attemptContext) => this.runAgentWithEnv(attemptSpec, attemptContext, env)
+    const prepared = await prepareClaudeProfile(spec, ctx.signal, this.opts.profileResolver ?? resolveClaudeProfile, this.opts.baseEnv ?? process.env)
+    ctx.onProgress({ kind: "claude-profile", label: prepared.label })
+    return (attemptSpec, attemptContext) => this.runAgentWithEnv(attemptSpec, attemptContext, prepared.env)
   }
 
   async runAgent(spec: AgentSpec, ctx: WorkerContext): Promise<AgentResult> {

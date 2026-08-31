@@ -50,7 +50,7 @@ export class TerminalRenderer {
           if (!this.finished.has(e.index)) {
             this.finished.add(e.index)
             this.running.delete(e.index)
-            this.write(`  ${C.green("✓")} [${e.index}] ${e.label}${e.cached ? C.dim(" (cached)") : ""} ${C.dim(this.stats(e))}\n`)
+            this.write(`  ${C.green("✓")} [${e.index}] ${e.label}${e.claudeProfileLabel ? C.dim(` · ${e.claudeProfileLabel}`) : ""}${e.cached ? C.dim(" (cached)") : ""} ${C.dim(this.stats(e))}\n`)
           }
         } else if (e.state === "failed") {
           if (!this.finished.has(e.index)) {

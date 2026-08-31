@@ -23,6 +23,8 @@ export type WorkflowEvent =
       label: string
       provider: ProviderId
       model?: string
+      /** Authored Subscription Picker name for a pinned Claude call. Display-only. */
+      claudeProfileLabel?: string
       state: AgentState
       cached?: boolean
       queuedAt?: number

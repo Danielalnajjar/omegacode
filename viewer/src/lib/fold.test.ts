@@ -56,12 +56,14 @@ describe("foldEvents — basic folding", () => {
   it("keeps the latest agent per index and merges missing fields from prev", () => {
     const snap = foldEvents(RUN, [
       ev({ type: "agent", t: 1, index: 0, label: "a0", provider: "codex", state: "running" }),
-      ev({ type: "agent", t: 2, index: 0, state: "done", durationMs: 1200, outputTokens: 5 }),
+      ev({ type: "agent", t: 2, index: 0, state: "running", claudeProfileLabel: "Work Max" }),
+      ev({ type: "agent", t: 3, index: 0, state: "done", durationMs: 1200, outputTokens: 5 }),
     ])
     expect(snap.agents).toHaveLength(1)
     const a = snap.agents[0]!
     expect(a.state).toBe("done")
     expect(a.label).toBe("a0") // carried from prev
+    expect(a.claudeProfileLabel).toBe("Work Max")
     expect(a.durationMs).toBe(1200)
     expect(a.outputTokens).toBe(5)
   })

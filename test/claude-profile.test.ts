@@ -25,11 +25,12 @@ test("profile preparation binds one immutable environment without mutating the c
   original.ORDINARY = "changed while resolving"
   original.ANTHROPIC_API_KEY = "late override"
   release()
-  const env = await pending
-  assert.deepEqual(env, { ORDINARY: "kept", CLAUDE_CONFIG_DIR: "/profiles/a", CLAUDE_CODE_EXECUTABLE: "/launchers/claude-a" })
+  const prepared = await pending
+  assert.deepEqual(prepared.env, { ORDINARY: "kept", CLAUDE_CONFIG_DIR: "/profiles/a", CLAUDE_CODE_EXECUTABLE: "/launchers/claude-a" })
+  assert.equal(prepared.label, "A")
   assert.deepEqual(original, { ORDINARY: "changed while resolving", CLAUDE_CONFIG_DIR: "/old", CLAUDE_CODE_EXECUTABLE: "/old/claude", ANTHROPIC_API_KEY: "late override" })
   assert.equal(calls, 1)
-  assert.ok(Object.isFrozen(env))
+  assert.ok(Object.isFrozen(prepared.env))
 })
 
 test("every pinned auth override fails before resolution and never leaks its value", () => {
@@ -50,12 +51,13 @@ test("every pinned auth override fails before resolution and never leaks its val
 test("host-managed boolean spellings are enforced at profile preparation", async () => {
   for (const value of ["", "0", "false", "FALSE", "no", "off", "  off  "]) {
     let resolutions = 0
-    const env = await prepareClaudeProfile(spec, new AbortController().signal, async (profileId) => {
+    const prepared = await prepareClaudeProfile(spec, new AbortController().signal, async (profileId) => {
       resolutions++
       return { profileId, label: "A", configDir: "/profiles/a", claudeCodeExecutable: "/launchers/claude-a" }
     }, { CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: value })
     assert.equal(resolutions, 1, `disabled spelling ${JSON.stringify(value)} blocked resolution`)
-    assert.equal(env.CLAUDE_CONFIG_DIR, "/profiles/a")
+    assert.equal(prepared.env.CLAUDE_CONFIG_DIR, "/profiles/a")
+    assert.equal(prepared.label, "A")
   }
 
   for (const value of ["1", "true", "TRUE", "yes", "on", "enabled"]) {

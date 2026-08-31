@@ -9,6 +9,7 @@ export type WorkerProgress =
   | { kind: "tool-result"; id?: string; name?: string; output?: string; isError?: boolean }
   | { kind: "usage"; usage: Partial<AgentUsage> }
   | { kind: "phase"; phase: string } // worker-internal phase marker (e.g. codex working/extraction turn) for observability; consumers may ignore it
+  | { kind: "claude-profile"; label: string } // authored subscription name after profile resolve; display-only, never a chat chunk
 
 export interface WorkerContext {
   signal: AbortSignal

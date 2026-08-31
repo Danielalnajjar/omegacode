@@ -85,13 +85,21 @@ function unavailable(cause: string): AgentError {
   return new AgentError({ provider: "claude-code", code: "claude_profile_unavailable", message: `Selected Claude profile is unavailable: ${cause}. Repair it with Subscription Picker; no fallback occurred` })
 }
 
-export function prepareClaudeProfile(spec: AgentSpec, signal: AbortSignal, resolver: ClaudeProfileResolver, env = process.env): Promise<NodeJS.ProcessEnv> {
+export interface PreparedClaudeProfile {
+  env: NodeJS.ProcessEnv
+  label: string
+}
+
+export function prepareClaudeProfile(spec: AgentSpec, signal: AbortSignal, resolver: ClaudeProfileResolver, env = process.env): Promise<PreparedClaudeProfile> {
   if (!spec.claudeProfile) throw new Error("claudeProfile is required")
   const snapshot = { ...env }
   assertNoClaudeProfileAuthConflict(snapshot)
-  return resolver(spec.claudeProfile, signal).then(({ configDir, claudeCodeExecutable }) => Object.freeze({
-    ...snapshot,
-    CLAUDE_CONFIG_DIR: configDir,
-    CLAUDE_CODE_EXECUTABLE: claudeCodeExecutable,
+  return resolver(spec.claudeProfile, signal).then((profile) => ({
+    env: Object.freeze({
+      ...snapshot,
+      CLAUDE_CONFIG_DIR: profile.configDir,
+      CLAUDE_CODE_EXECUTABLE: profile.claudeCodeExecutable,
+    }),
+    label: profile.label,
   }))
 }

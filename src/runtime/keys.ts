@@ -19,14 +19,15 @@
 import { createHash } from "node:crypto"
 import type { AgentOpts } from "../dsl/types.js"
 
-// v4: provider-native options join the semantic field set. v3 added per-branch key lineage PLUS a
+// v5: claudeProfile joins the semantic field set so named Claude agents can pin a subscription
+// without sharing cache slots across homes. v4: provider-native options join the semantic field set. v3 added per-branch key lineage PLUS a
 // per-branch fan-out call counter (v2 lacked the counter, so two
 // sequential identical parallel()/pipeline() calls in one branch derived identical child keys —
 // demonstrated wrong-result replay). v2 introduced per-branch lineage over v1's global
 // completion-ordered prevKey and folded the full resolved spec (sandbox/worktree/approval/etc.)
 // into the key. Older-version journals are intentionally rejected on resume (see
 // checkResumePreconditions).
-export const KEY_VERSION = "v4"
+export const KEY_VERSION = "v5"
 
 /** Stable JSON: object keys sorted recursively so equal values hash equally. */
 export function canonical(value: unknown): string {
@@ -62,6 +63,7 @@ export interface KeyedFields {
   schema: unknown
   maxTurns: number | null
   claudeAgent: string | null
+  claudeProfile: string | null
   codexChildRole: string | null
   codexExecutionProfile: string | undefined
   codexWebSearch: string | null
@@ -81,6 +83,7 @@ export function keyedSpec(spec: KeyedSpecInput, worktree: unknown): KeyedFields 
     schema: spec.schema ?? null,
     maxTurns: spec.maxTurns ?? null,
     claudeAgent: spec.claudeAgent ?? null,
+    claudeProfile: spec.claudeProfile ?? null,
     codexChildRole: spec.codexChildRole ?? null,
     codexExecutionProfile: spec.codexExecutionProfile,
     codexWebSearch: spec.codexWebSearch ?? null,
@@ -100,6 +103,7 @@ export interface KeyedSpecInput {
   schema?: unknown
   maxTurns?: number
   claudeAgent?: string
+  claudeProfile?: string
   codexChildRole?: string
   codexExecutionProfile?: string
   codexWebSearch?: string

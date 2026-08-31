@@ -781,7 +781,6 @@ test("provider-native options are rejected at the public boundary even with a fa
       `return await agent("x", { provider: "claude-code", model: "claude-fable-5", claudeProfile: "   " })`,
       `return await agent("x", { provider: "claude-code", model: "claude-fable-5", claudeProfile: null })`,
       `return await agent("x", { provider: "claude-code", model: "claude-fable-5", claudeProfile: 42 })`,
-      `return await agent("x", { provider: "claude-code", model: "claude-fable-5", claudeProfile: "profile-a", claudeAgent: "librarian" })`,
       `return await agent("x", { provider: "claude-code", model: "claude-fable-5", codexChildRole: "librarian" })`,
       `return await agent("x", { provider: "claude-code", model: "claude-fable-5", codexWebSearch: "live" })`,
       `return await agent("x", { provider: "claude-code", model: "claude-fable-5", codexNetworkAccess: true })`,
@@ -793,6 +792,27 @@ test("provider-native options are rejected at the public boundary even with a fa
       /invalid codexWebSearch "sometimes"/,
     )
     assert.equal(b.worker.calls.length, 0)
+  } finally {
+    b.cleanup()
+  }
+})
+
+test("claudeProfile can accompany claudeAgent on a Claude call", async () => {
+  const seen: AgentSpec[] = []
+  const b = build({
+    defaults: { provider: "claude-code", model: "claude-fable-5" },
+    hooks: {
+      prepare: async (preparedSpec) => {
+        seen.push(preparedSpec)
+        return async () => ({ text: "ok", structured: {}, status: "completed", usage: emptyUsage() })
+      },
+    },
+  })
+  try {
+    assert.equal(await runBody(b, `return await agent("x", { provider: "claude-code", model: "claude-fable-5", claudeProfile: "profile-a", claudeAgent: "librarian" })`), "ok")
+    assert.equal(seen.length, 1)
+    assert.equal(seen[0]?.claudeProfile, "profile-a")
+    assert.equal(seen[0]?.claudeAgent, "librarian")
   } finally {
     b.cleanup()
   }

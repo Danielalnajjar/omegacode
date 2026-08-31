@@ -16,10 +16,10 @@ import type { AgentOpts } from "../src/dsl/types.ts"
 // helper: build the keyed-fields object the way chainKey now expects it
 const fields = (opts?: AgentOpts) => keyedOpts(opts)
 
-test("KEY_VERSION is v4 (bumped for provider-native option cache identity)", () => {
+test("KEY_VERSION is v5 (bumped for claudeProfile cache identity)", () => {
   // Adding provider-native semantic fields changes the derivation. The version must change too so
   // older journals fail fast rather than silently miss every key and re-bill.
-  assert.equal(KEY_VERSION, "v4")
+  assert.equal(KEY_VERSION, "v5")
 })
 
 test("canonical sorts object keys recursively and drops __proto__", () => {
@@ -90,21 +90,30 @@ test("codex execution profiles invalidate keys without changing unprofiled journ
     model: "gpt-5.6-sol",
     codexExecutionProfile: "workflow-plan-v1",
   }, undefined)
-  const golden = "80b50fc68347c3d15c194b334515d6a568941dd7c43b58ef7009d32ee3371e24"
+  const golden = "a9e6957b93f465f36680b65b2718dc4e482c2144d8d86f269b5ad74b77bd1805"
 
   assert.equal(chainKey(b, 0, "p", unprofiled), golden)
   assert.equal(chainKey(b, 0, "p", explicitlyUnprofiled), golden)
   assert.notEqual(chainKey(b, 0, "p", profiled), golden)
 })
 
-test("claudeProfile is an endpoint selector outside key identity and KEY_VERSION stays v4", () => {
+test("claudeProfile joins key identity so named agents can pin a home", () => {
   const b = branchKey(ROOT_KEY, "root", 0)
   const without = chainKey(b, 0, "p", keyedSpec({ provider: "claude-code", model: "claude-fable-5" }, undefined))
-  const profiled = { provider: "claude-code", model: "claude-fable-5", claudeProfile: "profile-a" }
-  const withProfile = chainKey(b, 0, "p", keyedSpec(profiled, undefined))
-  assert.equal(withProfile, without)
-  assert.equal(KEY_VERSION, "v4")
-  assert.ok(!("claudeProfile" in keyedOpts({ claudeProfile: "profile-a" })))
+  const withProfile = chainKey(b, 0, "p", keyedSpec({
+    provider: "claude-code",
+    model: "claude-fable-5",
+    claudeProfile: "profile-a",
+  }, undefined))
+  const otherProfile = chainKey(b, 0, "p", keyedSpec({
+    provider: "claude-code",
+    model: "claude-fable-5",
+    claudeProfile: "profile-b",
+  }, undefined))
+  assert.notEqual(withProfile, without)
+  assert.notEqual(withProfile, otherProfile)
+  assert.equal(KEY_VERSION, "v5")
+  assert.equal(keyedOpts({ claudeProfile: "profile-a" }).claudeProfile, "profile-a")
 })
 
 test("keyedSpec captures RESOLVED provider/model so default/CLI overrides invalidate (H8)", () => {

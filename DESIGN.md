@@ -135,7 +135,8 @@ process (bb confirms this model). We cap concurrency and clean up threads when d
   `usage`, `total_cost_usd`, `num_turns`. Errors come as `SDKResultError` with subtypes
   (`error_max_turns`, `error_max_budget_usd`, `error_max_structured_output_retries`, …).
 - **Options we use:** `cwd`, `model`, `maxTurns`, `agent` for `claudeAgent`, `settingSources: []`
-  for ordinary calls or `["user"]` for native-agent calls (never project/local sources), a
+  for ordinary calls or `["user"]` for native-agent calls (never project/local sources; a
+  `claudeProfile` pin may accompany `claudeAgent` so those user settings load from the selected home), a
   call-local `env` containing the selected `CLAUDE_CONFIG_DIR` and `CLAUDE_CODE_EXECUTABLE` for
   profiled calls, `pathToClaudeCodeExecutable` set from that resolved executable,
   **`canUseTool`** callback (the sandbox tool-gate, §6.4), and **`outputFormat: { type: 'json_schema',

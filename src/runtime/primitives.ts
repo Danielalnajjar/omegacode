@@ -297,9 +297,6 @@ export class Runtime {
     if (spec.claudeProfile !== undefined && spec.provider !== "claude-code") {
       throw new AgentError({ provider: spec.provider, code: "unsupported_option", message: "claudeProfile is claude-code-only; omit it or use the claude-code provider" })
     }
-    if (spec.claudeProfile !== undefined && spec.claudeAgent !== undefined) {
-      throw new AgentError({ provider: spec.provider, code: "unsupported_option", message: "claudeProfile cannot be combined with claudeAgent" })
-    }
     if (
       spec.provider !== "codex"
       && (spec.codexChildRole !== undefined || spec.codexWebSearch !== undefined || spec.codexNetworkAccess !== undefined)

@@ -34,7 +34,7 @@ export function assertNoClaudeProfileAuthConflict(env: NodeJS.ProcessEnv): void 
   })
 }
 
-export interface OmegaProfile { profileId: string; label: string; configDir: string }
+export interface OmegaProfile { profileId: string; label: string; configDir: string; claudeCodeExecutable: string }
 export type ClaudeProfileResolver = (profileId: string, signal: AbortSignal) => Promise<OmegaProfile>
 
 export function resolveClaudeProfile(profileId: string, signal: AbortSignal, runExecFile: typeof execFile = execFile): Promise<OmegaProfile> {
@@ -53,10 +53,17 @@ export function resolveClaudeProfile(profileId: string, signal: AbortSignal, run
         const value: unknown = JSON.parse(outcome.stdout)
         if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error()
         const record = value as Record<string, unknown>
-        if (Object.keys(record).sort().join(",") !== "configDir,label,profileId"
+        if (Object.keys(record).sort().join(",") !== "claudeCodeExecutable,configDir,label,profileId"
           || typeof record.profileId !== "string" || typeof record.label !== "string" || typeof record.configDir !== "string"
-          || !record.label.trim() || !record.configDir.trim() || record.profileId !== profileId) throw new Error()
-        resolve({ profileId: record.profileId, label: record.label, configDir: record.configDir })
+          || typeof record.claudeCodeExecutable !== "string"
+          || !record.label.trim() || !record.configDir.trim() || !record.claudeCodeExecutable.trim()
+          || record.profileId !== profileId) throw new Error()
+        resolve({
+          profileId: record.profileId,
+          label: record.label,
+          configDir: record.configDir,
+          claudeCodeExecutable: record.claudeCodeExecutable,
+        })
       } catch {
         reject(unavailable("resolver returned an invalid response"))
       }
@@ -82,5 +89,9 @@ export function prepareClaudeProfile(spec: AgentSpec, signal: AbortSignal, resol
   if (!spec.claudeProfile) throw new Error("claudeProfile is required")
   const snapshot = { ...env }
   assertNoClaudeProfileAuthConflict(snapshot)
-  return resolver(spec.claudeProfile, signal).then(({ configDir }) => Object.freeze({ ...snapshot, CLAUDE_CONFIG_DIR: configDir }))
+  return resolver(spec.claudeProfile, signal).then(({ configDir, claudeCodeExecutable }) => Object.freeze({
+    ...snapshot,
+    CLAUDE_CONFIG_DIR: configDir,
+    CLAUDE_CODE_EXECUTABLE: claudeCodeExecutable,
+  }))
 }

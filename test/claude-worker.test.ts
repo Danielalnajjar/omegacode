@@ -230,10 +230,15 @@ test("profile preparation binds a fresh call-local SDK environment while ordinar
   let resolutions = 0
   const worker = new ClaudeWorker({
     queryFn: scripted([resultMsg(), resultMsg(), resultMsg()], calls),
-    baseEnv: { ORDINARY: "kept", CLAUDE_CONFIG_DIR: "/ordinary" },
+    baseEnv: { ORDINARY: "kept", CLAUDE_CONFIG_DIR: "/ordinary", CLAUDE_CODE_EXECUTABLE: "/ordinary/claude" },
     profileResolver: async (profileId) => {
       resolutions += 1
-      return { profileId, label: profileId.toUpperCase(), configDir: `/profiles/${profileId}` }
+      return {
+        profileId,
+        label: profileId.toUpperCase(),
+        configDir: `/profiles/${profileId}`,
+        claudeCodeExecutable: `/launchers/claude-${profileId}`,
+      }
     },
   })
   const context = ctx()
@@ -247,10 +252,34 @@ test("profile preparation binds a fresh call-local SDK environment while ordinar
   await worker.runAgent(spec({ prompt: "ordinary" }), context)
 
   assert.equal(resolutions, 2)
-  assert.deepEqual(calls[0]!.options.env, { ORDINARY: "kept", CLAUDE_CONFIG_DIR: "/profiles/a" })
-  assert.deepEqual(calls[1]!.options.env, { ORDINARY: "kept", CLAUDE_CONFIG_DIR: "/profiles/b" })
+  assert.deepEqual(calls[0]!.options.env, {
+    ORDINARY: "kept", CLAUDE_CONFIG_DIR: "/profiles/a", CLAUDE_CODE_EXECUTABLE: "/launchers/claude-a",
+  })
+  assert.deepEqual(calls[1]!.options.env, {
+    ORDINARY: "kept", CLAUDE_CONFIG_DIR: "/profiles/b", CLAUDE_CODE_EXECUTABLE: "/launchers/claude-b",
+  })
+  assert.equal(calls[0]!.options.pathToClaudeCodeExecutable, "/launchers/claude-a")
+  assert.equal(calls[1]!.options.pathToClaudeCodeExecutable, "/launchers/claude-b")
   assert.notEqual(calls[0]!.options.env, calls[1]!.options.env)
   assert.equal(calls[2]!.options.env, undefined)
+  assert.equal(calls[2]!.options.pathToClaudeCodeExecutable, undefined)
+})
+
+test("an explicit worker executable overrides the selected profile launcher without changing its environment", async () => {
+  const calls: QueryCall[] = []
+  const worker = new ClaudeWorker({
+    queryFn: scripted([resultMsg()], calls),
+    pathToClaudeCodeExecutable: "/explicit/claude",
+    profileResolver: async (profileId) => ({
+      profileId, label: "A", configDir: "/profiles/a", claudeCodeExecutable: "/launchers/claude-a",
+    }),
+  })
+
+  const prepared = await worker.prepareAgentCall(spec({ claudeProfile: "a" }), ctx())
+  await prepared(spec({ claudeProfile: "a" }), ctx())
+
+  assert.equal(calls[0]!.options.pathToClaudeCodeExecutable, "/explicit/claude")
+  assert.equal(calls[0]!.options.env?.CLAUDE_CODE_EXECUTABLE, "/launchers/claude-a")
 })
 
 for (const [key, value] of [
@@ -265,7 +294,7 @@ for (const [key, value] of [
       baseEnv: { [key]: value },
       profileResolver: async (profileId) => {
         resolutions += 1
-        return { profileId, label: "A", configDir: "/profiles/a" }
+        return { profileId, label: "A", configDir: "/profiles/a", claudeCodeExecutable: "/launchers/claude-a" }
       },
       queryFn: () => {
         queries += 1
@@ -287,7 +316,9 @@ test("prepared retries reuse profile environment while accepting the current att
   const worker = new ClaudeWorker({
     queryFn: scripted([resultMsg(), resultMsg()], calls),
     baseEnv: { ORDINARY: "kept" },
-    profileResolver: async (profileId) => ({ profileId, label: "A", configDir: "/profiles/a" }),
+    profileResolver: async (profileId) => ({
+      profileId, label: "A", configDir: "/profiles/a", claudeCodeExecutable: "/launchers/claude-a",
+    }),
   })
   const context = ctx()
   const prepared = await worker.prepareAgentCall(spec({ claudeProfile: "a" }), context)

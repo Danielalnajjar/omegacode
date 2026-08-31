@@ -137,9 +137,10 @@ function resolveBinding(realBb, profileId, signal) {
       let value
       try { value = JSON.parse(stdout) } catch { return reject(new Error(`profile smoke received malformed exact-resolution output for ${profileId}`)) }
       if (!value || typeof value !== "object" || Array.isArray(value)
-        || Object.keys(value).sort().join(",") !== "configDir,label,profileId"
+        || Object.keys(value).sort().join(",") !== "claudeCodeExecutable,configDir,label,profileId"
         || value.profileId !== profileId || typeof value.label !== "string" || !value.label.trim()
-        || typeof value.configDir !== "string" || !value.configDir.trim()) {
+        || typeof value.configDir !== "string" || !value.configDir.trim()
+        || typeof value.claudeCodeExecutable !== "string" || !value.claudeCodeExecutable.trim()) {
         return reject(new Error(`profile smoke received an invalid exact-resolution binding for ${profileId}`))
       }
       resolve(value)

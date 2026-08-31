@@ -131,6 +131,7 @@ export interface CodexAppServerArgsOptions {
   appServerSocket?: string
   disabledLocalMcpServerNames?: readonly string[]
   profileMcpServersToDisable?: readonly CodexMcpServerToDisable[]
+  profileMcpServerNamesToEnable?: readonly string[]
   /** Codex service tier for every turn served by this app-server ("fast" canonicalizes to
    *  "priority" on the wire, codex-side). Falls back to OMEGACODE_CODEX_SERVICE_TIER. */
   serviceTier?: string
@@ -151,8 +152,11 @@ export function buildCodexAppServerArgs(options: CodexAppServerArgsOptions = {})
       args.push("-c", `mcp_servers.${name}.enabled=false`)
     }
   }
-  if (options.profileMcpServersToDisable?.length) {
-    args.push("-c", renderProfileMcpOverride(options.profileMcpServersToDisable))
+  if (options.profileMcpServersToDisable?.length || options.profileMcpServerNamesToEnable?.length) {
+    args.push("-c", renderProfileMcpOverride(
+      options.profileMcpServersToDisable ?? [],
+      options.profileMcpServerNamesToEnable ?? [],
+    ))
   }
   for (const override of options.featureOverrides ?? []) {
     args.push("-c", `${override.key}=${override.value}`)
@@ -253,17 +257,21 @@ export function renderTomlDynamicKeySegment(value: string): string {
   return `${rendered}\"`
 }
 
-function renderProfileMcpOverride(servers: readonly CodexMcpServerToDisable[]): string {
+function renderProfileMcpOverride(
+  serversToDisable: readonly CodexMcpServerToDisable[],
+  serverNamesToEnable: readonly string[],
+): string {
   // Multiple dotted mcp_servers overrides break Codex config deserialization. One table value
-  // deep-merges inert transports for disabled servers while preserving unmentioned allowlisted
+  // deep-merges inert transports for disabled servers and explicitly re-enables allowlisted
   // servers. Never restate credential-bearing command, URL, or environment data from inventory.
-  const entries = servers.map((server) => {
+  const entries = serversToDisable.map((server) => {
     const key = renderTomlDynamicKeySegment(server.name)
     const inertTransport = server.transport === "stdio"
       ? 'command=""'
       : 'url="http://127.0.0.1:9/omegacode-managed-disabled"'
     return `${key}={${inertTransport},enabled=false}`
   })
+  entries.push(...serverNamesToEnable.map((name) => `${renderTomlDynamicKeySegment(name)}={enabled=true}`))
   return `mcp_servers={${entries.join(",")}}`
 }
 
@@ -736,6 +744,7 @@ export class CodexWorker implements Worker {
 
     let disabledLocalMcpServerNames: string[] = []
     let profileMcpServersToDisable: CodexMcpServerToDisable[] = []
+    let profileMcpServerNamesToEnable: readonly string[] = []
     let featureOverrides: readonly { key: string; value: boolean }[] = []
     const profile = this.executionProfile === undefined ? undefined : resolveCodexExecutionProfile(this.executionProfile)
     if (profile || this.disableLocalMcps) {
@@ -743,11 +752,12 @@ export class CodexWorker implements Worker {
         const inventory = await this.readMcpInventory(this.bin)
         if (profile) {
           const allowedServerNames = profile.mcp === "none" ? [] : profile.mcp.allowedServerNames
-          profileMcpServersToDisable = selectCodexProfileMcpServersToDisable(inventory, allowedServerNames)
           const missingAllowed = selectMissingAllowedMcpServerNames(inventory, allowedServerNames)
           if (missingAllowed.length > 0) {
-            this.logProfileWarning(`[omegacode] Codex execution profile ${profile.name} expects MCP servers absent from this host's inventory: ${missingAllowed.join(", ")}`)
+            throw new Error(`required MCP servers are absent from this host's inventory: ${missingAllowed.join(", ")}`)
           }
+          profileMcpServersToDisable = selectCodexProfileMcpServersToDisable(inventory, allowedServerNames)
+          profileMcpServerNamesToEnable = allowedServerNames
         } else {
           disabledLocalMcpServerNames = selectCodexMcpServersToDisable(inventory)
         }
@@ -785,6 +795,7 @@ export class CodexWorker implements Worker {
       appServerSocket: this.appServerSocket,
       disabledLocalMcpServerNames,
       profileMcpServersToDisable,
+      profileMcpServerNamesToEnable,
       serviceTier: this.serviceTier,
       featureOverrides,
     })

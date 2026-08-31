@@ -139,7 +139,7 @@ test("profile smoke missing-third path aborts, settles owned children, and remov
     `#!${process.execPath}`,
     `const id = process.argv[process.argv.indexOf("--profile-id") + 1]`,
     `if (!['profile-a', 'profile-b'].includes(id)) process.exit(78)`,
-    `process.stdout.write(JSON.stringify({ profileId: id, label: id, configDir: '/profiles/' + id }))`,
+    `process.stdout.write(JSON.stringify({ profileId: id, label: id, configDir: '/profiles/' + id, claudeCodeExecutable: ${JSON.stringify(fakeClaude)} }))`,
   ].join("\n"), { mode: 0o700 })
   writeFileSync(fakeClaude, `#!${process.execPath}\nsetInterval(() => {}, 1000)\n`, { mode: 0o700 })
   chmodSync(fakeBb, 0o700)
@@ -187,7 +187,7 @@ test("profile smoke abandons wrong child bindings without invoking real Claude",
     `if (!['profile-a', 'profile-b'].includes(id)) process.exit(78)`,
     `const wrongAfterValidation = Boolean(process.env.OMEGA_PROFILE_SMOKE_TRACE) && id === 'profile-a'`,
     `const configDir = wrongAfterValidation ? '/profiles/wrong-profile-a' : '/profiles/' + id`,
-    `process.stdout.write(JSON.stringify({ profileId: id, label: id, configDir }))`,
+    `process.stdout.write(JSON.stringify({ profileId: id, label: id, configDir, claudeCodeExecutable: ${JSON.stringify(fakeClaude)} }))`,
   ].join("\n"), { mode: 0o700 })
   writeFileSync(fakeClaude, [
     `#!${process.execPath}`,
@@ -234,7 +234,7 @@ test("profile smoke proves a successful direct-SDK A/B/A run and ignores inherit
     `#!${process.execPath}`,
     `const id = process.argv[process.argv.indexOf("--profile-id") + 1]`,
     `if (!['profile-a', 'profile-b'].includes(id)) process.exit(78)`,
-    `process.stdout.write(JSON.stringify({ profileId: id, label: id, configDir: '/profiles/' + id }))`,
+    `process.stdout.write(JSON.stringify({ profileId: id, label: id, configDir: '/profiles/' + id, claudeCodeExecutable: ${JSON.stringify(fakeClaude)} }))`,
   ].join("\n"), { mode: 0o700 })
   writeFileSync(fakeClaude, [
     `#!${process.execPath}`,

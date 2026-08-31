@@ -59,7 +59,7 @@ const PROFILE_DEFINITIONS: Readonly<Record<CodexExecutionProfileName, CodexExecu
   ]), "none"),
   "workflow-plan-v1": definition("workflow-plan-v1", overrides([]), "none"),
   "workflow-research-v1": definition("workflow-research-v1", overrides([]), Object.freeze({
-    allowedServerNames: Object.freeze(["btca", "context7", "deepwiki", "exa", "firecrawl", "grok_search", "mintlify"]),
+    allowedServerNames: Object.freeze(["btca", "executor_research", "grok_search", "mintlify"]),
   })),
 })
 

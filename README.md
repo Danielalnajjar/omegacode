@@ -80,12 +80,16 @@ Provider-native options stay deliberately provider-specific:
   setting source for that call; ordinary calls continue to load no settings sources.
 - Claude Code: `claudeProfile` selects a stable Subscription Picker profile ID for a new direct
   Agent SDK call. Resolve names with `bb subscription resolve-omega --reference ... --json`, persist
-  only `profileId`, and never use an `acp-sub-*` route. It is outside cache identity and cannot be
-  combined with `claudeAgent`.
+  only `profileId`, and never use an `acp-sub-*` route. At runtime the strict resolver also returns
+  `configDir` and `claudeCodeExecutable`; OmegaCode binds both to that call without changing the
+  parent process. The profile is outside cache identity and cannot be combined with `claudeAgent`.
 - Codex: `codexChildRole` uses provider thread metadata to prove an exact native child role completed,
   then deletes that temporary provider thread subtree; `codexWebSearch` is `"disabled"`, `"cached"`, or `"live"`;
   and `codexNetworkAccess` controls network access inside read-only/workspace-write sandboxes.
   These options affect resume identity and are rejected when paired with another provider.
+- Codex's `workflow-research-v1` execution profile exposes only `btca`, `executor_research`,
+  `grok_search`, and `mintlify`. It explicitly disables the full `executor` server and fails before
+  worker launch if any allowlisted server is absent from the host inventory.
 
 ## CLI
 

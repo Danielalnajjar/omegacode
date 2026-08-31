@@ -13,21 +13,21 @@ const spec: AgentSpec = { prompt: "x", provider: "claude-code", cwd: "/tmp", san
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 
 test("profile preparation binds one immutable environment without mutating the caller", async () => {
-  const original: NodeJS.ProcessEnv = { ORDINARY: "kept", CLAUDE_CONFIG_DIR: "/old" }
+  const original: NodeJS.ProcessEnv = { ORDINARY: "kept", CLAUDE_CONFIG_DIR: "/old", CLAUDE_CODE_EXECUTABLE: "/old/claude" }
   let calls = 0
   let release!: () => void
   const resolving = new Promise<void>((resolve) => { release = resolve })
   const pending = prepareClaudeProfile(spec, new AbortController().signal, async (id) => {
     calls++
     await resolving
-    return { profileId: id, label: "A", configDir: "/profiles/a" }
+    return { profileId: id, label: "A", configDir: "/profiles/a", claudeCodeExecutable: "/launchers/claude-a" }
   }, original)
   original.ORDINARY = "changed while resolving"
   original.ANTHROPIC_API_KEY = "late override"
   release()
   const env = await pending
-  assert.deepEqual(env, { ORDINARY: "kept", CLAUDE_CONFIG_DIR: "/profiles/a" })
-  assert.deepEqual(original, { ORDINARY: "changed while resolving", CLAUDE_CONFIG_DIR: "/old", ANTHROPIC_API_KEY: "late override" })
+  assert.deepEqual(env, { ORDINARY: "kept", CLAUDE_CONFIG_DIR: "/profiles/a", CLAUDE_CODE_EXECUTABLE: "/launchers/claude-a" })
+  assert.deepEqual(original, { ORDINARY: "changed while resolving", CLAUDE_CONFIG_DIR: "/old", CLAUDE_CODE_EXECUTABLE: "/old/claude", ANTHROPIC_API_KEY: "late override" })
   assert.equal(calls, 1)
   assert.ok(Object.isFrozen(env))
 })
@@ -52,7 +52,7 @@ test("host-managed boolean spellings are enforced at profile preparation", async
     let resolutions = 0
     const env = await prepareClaudeProfile(spec, new AbortController().signal, async (profileId) => {
       resolutions++
-      return { profileId, label: "A", configDir: "/profiles/a" }
+      return { profileId, label: "A", configDir: "/profiles/a", claudeCodeExecutable: "/launchers/claude-a" }
     }, { CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: value })
     assert.equal(resolutions, 1, `disabled spelling ${JSON.stringify(value)} blocked resolution`)
     assert.equal(env.CLAUDE_CONFIG_DIR, "/profiles/a")
@@ -63,7 +63,7 @@ test("host-managed boolean spellings are enforced at profile preparation", async
     await assert.rejects(
       async () => prepareClaudeProfile(spec, new AbortController().signal, async (profileId) => {
         resolutions++
-        return { profileId, label: "A", configDir: "/profiles/a" }
+        return { profileId, label: "A", configDir: "/profiles/a", claudeCodeExecutable: "/launchers/claude-a" }
       }, { CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: value }),
       (error: unknown) => error instanceof AgentError && error.code === "claude_profile_auth_conflict",
     )
@@ -133,13 +133,13 @@ async function withResolverFixture<T>(
 
 test("resolver invokes the exact public bb command and accepts only the strict matching payload", async () => {
   await withResolverFixture(
-    `const fs = require("node:fs"); fs.writeFileSync(process.env.ARGV_RECEIPT, JSON.stringify(process.argv.slice(2))); process.stdout.write(JSON.stringify({ profileId: "profile-a", label: "A", configDir: "/profiles/a" }));`,
+    `const fs = require("node:fs"); fs.writeFileSync(process.env.ARGV_RECEIPT, JSON.stringify(process.argv.slice(2))); process.stdout.write(JSON.stringify({ profileId: "profile-a", label: "A", configDir: "/profiles/a", claudeCodeExecutable: "/launchers/claude-a" }));`,
     async (root, resolve) => {
       const receipt = join(root, "argv.json")
       process.env.ARGV_RECEIPT = receipt
       try {
         assert.deepEqual(await resolve("profile-a", new AbortController().signal), {
-          profileId: "profile-a", label: "A", configDir: "/profiles/a",
+          profileId: "profile-a", label: "A", configDir: "/profiles/a", claudeCodeExecutable: "/launchers/claude-a",
         })
         assert.deepEqual(JSON.parse(readFileSync(receipt, "utf8")), [
           "subscription", "resolve-omega", "--profile-id", "profile-a", "--json",
@@ -153,7 +153,7 @@ test("resolver invokes the exact public bb command and accepts only the strict m
 
 test("resolver passes metacharacters as one literal profile-id argument without a shell", async () => {
   await withResolverFixture(
-    `const fs = require("node:fs"); fs.writeFileSync(process.env.ARGV_RECEIPT, JSON.stringify(process.argv.slice(2))); process.stdout.write(JSON.stringify({ profileId: process.argv[5], label: "Literal", configDir: "/profiles/literal" }));`,
+    `const fs = require("node:fs"); fs.writeFileSync(process.env.ARGV_RECEIPT, JSON.stringify(process.argv.slice(2))); process.stdout.write(JSON.stringify({ profileId: process.argv[5], label: "Literal", configDir: "/profiles/literal", claudeCodeExecutable: "/launchers/claude-literal" }));`,
     async (root, resolve) => {
       const receipt = join(root, "argv.json")
       const shellMarker = join(root, "shell-marker")
@@ -196,8 +196,10 @@ test("resolver reports missing and arbitrary nonzero commands as unavailable wit
 })
 
 for (const [label, payload] of [
-  ["wrong id", `{ profileId: "profile-b", label: "A", configDir: "/profiles/a" }`],
-  ["extra field", `{ profileId: "profile-a", label: "A", configDir: "/profiles/a", email: "secret@example.com" }`],
+  ["wrong id", `{ profileId: "profile-b", label: "A", configDir: "/profiles/a", claudeCodeExecutable: "/launchers/claude-a" }`],
+  ["missing executable", `{ profileId: "profile-a", label: "A", configDir: "/profiles/a" }`],
+  ["blank executable", `{ profileId: "profile-a", label: "A", configDir: "/profiles/a", claudeCodeExecutable: "  " }`],
+  ["extra field", `{ profileId: "profile-a", label: "A", configDir: "/profiles/a", claudeCodeExecutable: "/launchers/claude-a", email: "secret@example.com" }`],
   ["malformed", `null`],
 ] as const) {
   test(`resolver fails closed on ${label} without exposing output`, async () => {

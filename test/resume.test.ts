@@ -625,7 +625,7 @@ test("profiled public resume replays through the default factory without resolve
       `#!${process.execPath}`,
       `const fs = require('node:fs')`,
       `fs.appendFileSync(process.env.RESOLVER_CALLS, JSON.stringify(process.argv.slice(2)) + '\\n')`,
-      `process.stdout.write(JSON.stringify({ profileId: 'profile-a', label: 'A', configDir: '/profiles/a' }))`,
+      `process.stdout.write(JSON.stringify({ profileId: 'profile-a', label: 'A', configDir: '/profiles/a', claudeCodeExecutable: ${JSON.stringify(claude)} }))`,
     ].join("\n"), { mode: 0o700 })
     writeFileSync(claude, [
       `#!${process.execPath}`,

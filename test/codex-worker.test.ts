@@ -244,7 +244,8 @@ test("profile MCP table quotes and escapes dynamic TOML keys", () => {
   assert.equal(renderTomlDynamicKeySegment('odd."name\\server'), '"odd.\\"name\\\\server"')
   assert.deepEqual(buildCodexAppServerArgs({
     profileMcpServersToDisable: [{ name: 'odd."name\\server', transport: "stdio" }],
-  }), ["-c", 'mcp_servers={"odd.\\"name\\\\server"={command="",enabled=false}}', "app-server"])
+    profileMcpServerNamesToEnable: ['allowed."name\\server'],
+  }), ["-c", 'mcp_servers={"odd.\\"name\\\\server"={command="",enabled=false},"allowed.\\"name\\\\server"={enabled=true}}', "app-server"])
 })
 
 test("profile MCP selection rejects an unsupported transport only when it would be disabled", () => {
@@ -616,6 +617,9 @@ test("execution profiles build their exact known feature and MCP override sets",
     mcpInventoryEntry("btca"),
     mcpInventoryEntry("context7", { type: "streamable_http" }),
     mcpInventoryEntry("executor", { type: "streamable_http" }),
+    mcpInventoryEntry("executor_research", { enabled: false, type: "streamable_http" }),
+    mcpInventoryEntry("grok_search", { type: "streamable_http" }),
+    mcpInventoryEntry("mintlify", { type: "streamable_http" }),
     mcpInventoryEntry("node_repl"),
   ])
   for (const executionProfile of ["workflow-bulk-v1", "workflow-plan-v1", "workflow-research-v1"] as const) {
@@ -643,11 +647,44 @@ test("execution profiles build their exact known feature and MCP override sets",
     await worker.runAgent(spec(), ctx())
     assert.equal(featureReads, 1)
     const expectedMcp = executionProfile === "workflow-research-v1"
-      ? 'mcp_servers={executor={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},node_repl={command="",enabled=false}}'
-      : 'mcp_servers={btca={command="",enabled=false},context7={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},executor={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},node_repl={command="",enabled=false}}'
+      ? 'mcp_servers={context7={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},executor={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},node_repl={command="",enabled=false},btca={enabled=true},executor_research={enabled=true},grok_search={enabled=true},mintlify={enabled=true}}'
+      : 'mcp_servers={btca={command="",enabled=false},context7={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},executor={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},executor_research={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},grok_search={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},mintlify={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},node_repl={command="",enabled=false}}'
     assert.deepEqual(configValues((worker as any).appServerArgs), [expectedMcp, ...PROFILE_FEATURE_ARGS[executionProfile]])
     await worker.shutdown()
   }
+})
+
+test("research profile fails before worker launch when executor_research is absent", async () => {
+  let featureReads = 0
+  let spawned = false
+  const worker = new CodexWorker({
+    executionProfile: "workflow-research-v1",
+    readMcpInventory: async () => JSON.stringify([
+      mcpInventoryEntry("btca"),
+      mcpInventoryEntry("grok_search", { type: "streamable_http" }),
+      mcpInventoryEntry("mintlify", { type: "streamable_http" }),
+    ]),
+    readFeatureInventory: async () => {
+      featureReads += 1
+      return PROFILE_FEATURE_ARGS["workflow-research-v1"]
+        .map((override) => `${override.slice("features.".length).split("=")[0]} stable true`)
+        .join("\n")
+    },
+    spawnChild: () => {
+      spawned = true
+      return new FakeChild() as any
+    },
+  })
+
+  await assert.rejects(
+    worker.runAgent(spec(), ctx()),
+    (error) => error instanceof AgentError
+      && error.code === "mcp_inventory_failed"
+      && error.retryable === false
+      && /required MCP servers.*executor_research/.test(error.message),
+  )
+  assert.equal(featureReads, 0)
+  assert.equal(spawned, false)
 })
 
 test("profile skips unknown local features with one non-fatal warning", async () => {
@@ -1909,7 +1946,7 @@ test("thread/start with no thread id → AgentError", async () => {
   await worker.shutdown()
 })
 
-test("research profile warns when an allowlisted MCP server is missing from the host inventory", () => {
+test("research profile identifies every allowlisted MCP server missing from the host inventory", () => {
   const inventory = JSON.stringify([mcpInventoryEntry("btca"), mcpInventoryEntry("executor", { type: "streamable_http" })])
   assert.deepEqual(selectMissingAllowedMcpServerNames(inventory, ["btca", "context7", "exa"]), ["context7", "exa"])
   assert.deepEqual(selectMissingAllowedMcpServerNames(inventory, ["btca"]), [])

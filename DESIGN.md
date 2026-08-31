@@ -136,14 +136,17 @@ process (bb confirms this model). We cap concurrency and clean up threads when d
   (`error_max_turns`, `error_max_budget_usd`, `error_max_structured_output_retries`, …).
 - **Options we use:** `cwd`, `model`, `maxTurns`, `agent` for `claudeAgent`, `settingSources: []`
   for ordinary calls or `["user"]` for native-agent calls (never project/local sources), a
-  call-local `env` containing the selected `CLAUDE_CONFIG_DIR` for profiled calls,
+  call-local `env` containing the selected `CLAUDE_CONFIG_DIR` and `CLAUDE_CODE_EXECUTABLE` for
+  profiled calls, `pathToClaudeCodeExecutable` set from that resolved executable,
   **`canUseTool`** callback (the sandbox tool-gate, §6.4), and **`outputFormat: { type: 'json_schema',
   schema }`** for structured output (verified in the installed typings + the [Agent SDK
   structured-outputs docs](https://code.claude.com/docs/en/agent-sdk/structured-outputs)).
 - **Auth:** ordinary calls inherit the host's existing Claude auth. A call with `claudeProfile`
   exact-resolves that Subscription Picker profile once and gives only that SDK subprocess a copied
-  environment whose `CLAUDE_CONFIG_DIR` selects the profile home. Direct credential, endpoint, host-auth,
-  or provider-selector overrides that could bypass the selected home fail before resolution; Omega does
+  environment whose `CLAUDE_CONFIG_DIR` selects the profile home and whose
+  `CLAUDE_CODE_EXECUTABLE` selects the profile's canonical launcher. An explicit worker executable
+  remains the higher-precedence test/embedding override. Direct credential, endpoint, host-auth, or
+  provider-selector overrides that could bypass the selected home fail before resolution; Omega does
   not delete them or fall back to another profile.
 - **Process model:** each `query()` is its own session/subprocess (heavier per-call than Codex's
   multiplexed threads) — fine for v1; pool/reuse later if wide fan-out makes it bite (§8).
@@ -359,6 +362,9 @@ small registry of live workers and lazily starts each provider the first time it
 ### 6.1 `CodexWorker` (codex app-server)
 - Spawn `codex app-server` (one process per run, multiplexes threads — a pool is the throughput escape
   hatch, §8); newline-delimited JSON-RPC framing; `initialize`/`initialized` handshake.
+- Named execution profiles own the app-server's startup surface. `workflow-research-v1` enables only
+  `btca`, `executor_research`, `grok_search`, and `mintlify`, disables every other inventoried MCP
+  server (including full `executor`), and fails before spawn if any allowlisted server is missing.
 - `runAgent`: `thread/start` (cwd, model, sandbox, approvalPolicy, instructions, optional
   `config.web_search`, `experimentalRawEvents:
   false`) → `thread/start` returns a `threadId` → `turn/start` (input text, model, effort, sandboxPolicy,
@@ -380,7 +386,8 @@ small registry of live workers and lazily starts each provider the first time it
   the `canUseTool` sandbox gate (§6.4), and `outputFormat` (when `schema` is
   set). Abort via the generator's abort/interrupt.
 - A `claudeProfile` call exact-resolves once before retry and reuses one immutable call-local environment
-  across ordinary and corrective attempts. Concurrent calls, including two using the same profile, keep
+  across ordinary and corrective attempts. The resolved `configDir` and `claudeCodeExecutable` select
+  both the profile home and its launcher. Concurrent calls, including two using the same profile, keep
   independent environment values and never mutate `process.env`.
 - One `query()` per agent (its own session/subprocess). Errors come as `SDKResultError` subtypes
   (rate-limit/turns/budget/structured-retries) → mapped to the same typed `AgentError` with the same

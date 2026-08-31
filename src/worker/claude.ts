@@ -130,7 +130,8 @@ export class ClaudeWorker implements Worker {
     if (spec.effort) options.effort = toClaudeEffort(spec.effort)
     if (spec.schema) options.outputFormat = toClaudeOutputFormat(spec.schema)
     if (spec.instructions) options.systemPrompt = { type: "preset", preset: "claude_code", append: spec.instructions }
-    if (this.opts.pathToClaudeCodeExecutable) options.pathToClaudeCodeExecutable = this.opts.pathToClaudeCodeExecutable
+    const claudeCodeExecutable = this.opts.pathToClaudeCodeExecutable ?? env?.CLAUDE_CODE_EXECUTABLE
+    if (claudeCodeExecutable) options.pathToClaudeCodeExecutable = claudeCodeExecutable
 
     try {
       // The CLI normally ends the stream with a `result` message carrying the final text, usage,

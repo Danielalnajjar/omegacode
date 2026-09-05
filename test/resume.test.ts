@@ -9,7 +9,6 @@
 
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { createHash } from "node:crypto"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -180,31 +179,6 @@ test("ACCEPTANCE: nested parallel-in-pipeline resumes at 100% cache hits despite
     assert.equal(second.worker.calls.length, 0, "nested resume re-ran agents")
     assert.deepEqual(JSON.parse(JSON.stringify(first.out)), JSON.parse(JSON.stringify(second.out)))
   })
-})
-
-// ---- proof the OLD design is order-dependent (documents WHY C1 was a bug) ----------------------
-
-test("the OLD global-prevKey scheme produces DIFFERENT keys under different completion order", () => {
-  // Reproduces the v1 algorithm: a single mutable prevKey advanced in COMPLETION order.
-  const V = "v1"
-  const oldChain = (prev: string, prompt: string): string =>
-    createHash("sha256").update(V).update(prev).update("\0").update(prompt).update("\0").digest("hex")
-
-  const keysInOrder = (completionOrder: string[]): string[] => {
-    let prev = "root"
-    const keys: string[] = []
-    for (const prompt of completionOrder) {
-      prev = oldChain(prev, prompt)
-      keys.push(prev)
-    }
-    return keys
-  }
-
-  // Same set of agents, two different completion orders (as concurrency would produce).
-  const a = keysInOrder(["alpha", "beta", "gamma", "delta"])
-  const b = keysInOrder(["delta", "gamma", "beta", "alpha"])
-  // The multiset of keys differs → on resume, lookups miss → re-billing. This is the C1 bug.
-  assert.notDeepEqual([...a].sort(), [...b].sort())
 })
 
 test("the NEW per-branch scheme is INVARIANT to completion order (keys depend on position only)", async () => {

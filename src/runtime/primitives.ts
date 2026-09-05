@@ -256,6 +256,15 @@ export class Runtime {
       codexChildRole: opts?.codexChildRole,
       codexWebSearch: opts?.codexWebSearch,
       codexNetworkAccess: opts?.codexNetworkAccess,
+      codexPermissions: opts?.codexPermissions,
+    }
+    if (spec.codexPermissions !== undefined) {
+      if (typeof spec.codexPermissions !== "string" || spec.codexPermissions.trim() === "") {
+        throw new AgentError({ provider: spec.provider, code: "unsupported_option", message: "codexPermissions must be a non-empty named permission profile" })
+      }
+      if (spec.codexNetworkAccess !== undefined) {
+        throw new AgentError({ provider: spec.provider, code: "unsupported_option", message: "codexPermissions cannot be combined with codexNetworkAccess; the named profile owns network policy" })
+      }
     }
     // Validate the RESOLVED values so both per-call opts and run defaults are covered (H14).
     // Provider included: an unknown provider would otherwise only fail at the factory — and not
@@ -299,12 +308,12 @@ export class Runtime {
     }
     if (
       spec.provider !== "codex"
-      && (spec.codexChildRole !== undefined || spec.codexWebSearch !== undefined || spec.codexNetworkAccess !== undefined)
+      && (spec.codexChildRole !== undefined || spec.codexWebSearch !== undefined || spec.codexNetworkAccess !== undefined || spec.codexPermissions !== undefined)
     ) {
       throw new AgentError({
         provider: spec.provider,
         code: "unsupported_option",
-        message: "codexChildRole, codexWebSearch, and codexNetworkAccess are codex-only; omit them or use the codex provider",
+        message: "codexChildRole, codexWebSearch, codexNetworkAccess, and codexPermissions are codex-only; omit them or use the codex provider",
       })
     }
     return spec

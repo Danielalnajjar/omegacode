@@ -72,6 +72,7 @@ test("provider-native options each invalidate the cache key", () => {
     { codexChildRole: "librarian" },
     { codexWebSearch: "live" as const },
     { codexNetworkAccess: true },
+    { codexPermissions: "research" },
   ]) {
     assert.notEqual(chainKey(b, 0, "p", fields(opts)), baseline)
   }
@@ -204,4 +205,14 @@ test("determinismLint still flags code even when a string also mentions it", () 
 
 test("determinismLint handles escaped quotes inside strings", () => {
   assert.deepEqual(determinismLint('const s = "a \\" Date.now() still in string"'), [])
+})
+
+
+test("named permissions preserve absent-option keys and distinguish profiles", () => {
+  const b = branchKey(ROOT_KEY, "root", 0)
+  const base = { provider: "codex", model: "gpt-5.6-sol" }
+  const key = (permissions?: string) => chainKey(b, 0, "p", keyedSpec({ ...base, codexPermissions: permissions }, undefined))
+  assert.equal(key(), "a9e6957b93f465f36680b65b2718dc4e482c2144d8d86f269b5ad74b77bd1805")
+  assert.notEqual(key("research"), key())
+  assert.notEqual(key("research"), key("writer"))
 })

@@ -1951,3 +1951,27 @@ test("research profile identifies every allowlisted MCP server missing from the 
   assert.deepEqual(selectMissingAllowedMcpServerNames(inventory, ["btca", "context7", "exa"]), ["context7", "exa"])
   assert.deepEqual(selectMissingAllowedMcpServerNames(inventory, ["btca"]), [])
 })
+
+
+test("CodexWorker uses named permissions exclusively on thread, working, and extraction requests", async () => {
+  const requests: any[] = []
+  let turn = 0
+  const { worker } = makeServedWorker(
+    (_req, reply) => {
+      turn++
+      reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: turn === 1 ? "work complete" : '{"ok":true}' } } })
+      reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
+    },
+    { onServerReq: (_child, req) => { if (req.method === "thread/start" || req.method === "turn/start") requests.push(req) } },
+  )
+  try {
+    const result = await worker.runAgent(spec({ codexPermissions: "research", sandbox: "read-only", schema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] } }), ctx())
+    assert.deepEqual(result.structured, { ok: true })
+    assert.deepEqual(requests.map(req => req.method), ["thread/start", "turn/start", "turn/start"])
+    for (const request of requests) {
+      assert.equal(request.params.permissions, "research")
+      assert.equal(Object.hasOwn(request.params, "sandbox"), false)
+      assert.equal(Object.hasOwn(request.params, "sandboxPolicy"), false)
+    }
+  } finally { await worker.shutdown() }
+})

@@ -50,6 +50,8 @@ declare global {
     codexWebSearch?: OmegacodeCodexWebSearch
     /** Codex sandbox network access for read-only/workspace-write turns. */
     codexNetworkAccess?: boolean
+    /** Caller-owned Codex named filesystem/network permission profile. */
+    codexPermissions?: string
   }
 
   /** provider and model travel together (both-or-neither): a lone provider would inherit a model

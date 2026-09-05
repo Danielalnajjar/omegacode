@@ -412,7 +412,9 @@ export class CodexWorker implements Worker {
       cwd: spec.cwd,
       ...(spec.model ? { model: spec.model } : {}),
       approvalPolicy: toCodexApprovalPolicy(spec.sandbox, spec.approval),
-      sandbox: toCodexSandboxMode(spec.sandbox),
+      ...(spec.codexPermissions !== undefined
+        ? { permissions: spec.codexPermissions }
+        : { sandbox: toCodexSandboxMode(spec.sandbox) }),
       ...(spec.instructions ? { developerInstructions: spec.instructions } : {}),
       experimentalRawEvents: false,
       // Codex 0.149 does not list child metadata for ephemeral threads.
@@ -458,7 +460,9 @@ export class CodexWorker implements Worker {
     const baseTurn = {
       threadId,
       approvalPolicy: toCodexApprovalPolicy(spec.sandbox, spec.approval),
-      sandboxPolicy: toCodexSandboxPolicy(spec.sandbox, spec.cwd, spec.codexNetworkAccess),
+      ...(spec.codexPermissions !== undefined
+        ? { permissions: spec.codexPermissions }
+        : { sandboxPolicy: toCodexSandboxPolicy(spec.sandbox, spec.cwd, spec.codexNetworkAccess) }),
       ...(spec.model ? { model: spec.model } : {}),
       ...(toCodexEffort(spec.effort) ? { effort: toCodexEffort(spec.effort) } : {}),
     }

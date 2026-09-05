@@ -185,16 +185,15 @@ export interface InitializeParams {
   capabilities: { experimentalApi: boolean }
 }
 
-export interface ThreadStartParams {
+export type ThreadStartParams = {
   cwd: string
   model?: string
   approvalPolicy: CodexAskForApproval
-  sandbox: CodexSandboxMode
   developerInstructions?: string
   experimentalRawEvents: boolean
   ephemeral?: boolean
   config?: { web_search?: "disabled" | "cached" | "live" }
-}
+} & ({ permissions: string; sandbox?: never } | { sandbox: CodexSandboxMode; permissions?: never })
 
 export interface CodexTextUserInput {
   type: "text"
@@ -202,15 +201,14 @@ export interface CodexTextUserInput {
   text_elements: never[]
 }
 
-export interface TurnStartParams {
+export type TurnStartParams = {
   threadId: string
   input: CodexTextUserInput[]
   approvalPolicy: CodexAskForApproval
-  sandboxPolicy: CodexSandboxPolicy
   model?: string
   effort?: CodexReasoningEffort
   outputSchema?: JSONSchema
-}
+} & ({ permissions: string; sandboxPolicy?: never } | { sandboxPolicy: CodexSandboxPolicy; permissions?: never })
 
 export interface TurnInterruptParams {
   threadId: string

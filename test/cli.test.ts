@@ -897,3 +897,17 @@ function ensureDir(dir: string, leaf: string): string {
   mkdirSync(dir, { recursive: true })
   return join(dir, leaf)
 }
+
+
+test("capabilities reports named-permission support without provider or auth probes", () => {
+  const home = mkdtempSync(join(tmpdir(), "omega-capabilities-"))
+  try {
+    const output = execFileSync(process.execPath, ["--import", "tsx", CLI_ENTRY, "capabilities", "--json"], {
+      encoding: "utf8",
+      env: { ...process.env, OMEGACODE_HOME: join(home, "untouched"), CODEX_HOME: join(home, "no-codex-home"), OMEGACODE_CODEX_BIN: join(home, "no-codex-bin") },
+    })
+    assert.deepEqual(JSON.parse(output), { schemaVersion: 1, codexPermissions: true })
+    assert.equal(existsSync(join(home, "untouched")), false)
+    assert.equal(existsSync(join(home, "no-codex-home")), false)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})

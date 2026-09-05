@@ -88,6 +88,14 @@ Provider-native options stay deliberately provider-specific:
 - Codex: `codexChildRole` uses provider thread metadata to prove an exact native child role completed,
   then deletes that temporary provider thread subtree; `codexWebSearch` is `"disabled"`, `"cached"`, or `"live"`;
   and `codexNetworkAccess` controls network access inside read-only/workspace-write sandboxes.
+  `codexPermissions` selects a non-empty named permission profile in the caller-owned Codex
+  configuration (Codex 0.153.4+). It replaces legacy sandbox fields on thread and every turn;
+  the profile owns filesystem and network policy, so it cannot accompany `codexNetworkAccess`.
+  Keep `sandbox` aligned with the profile: it still governs OmegaCode approval/write bookkeeping,
+  not the named profile’s actual permissions. Omitting `codexPermissions` preserves legacy behavior.
+  Integrations can require `omegacode capabilities --json` to return
+  `{ "schemaVersion": 1, "codexPermissions": true }` before preparing credentials or running.
+  This static check reports OmegaCode bridge support; it does not probe the installed Codex or profile.
   These options affect resume identity and are rejected when paired with another provider.
 - Codex's `workflow-research-v1` execution profile exposes only `btca`, `executor_research`,
   `grok_search`, and `mintlify`. It explicitly disables the full `executor` server and fails before

@@ -399,11 +399,13 @@ test("M10: corrective-retry usage accumulates across both attempts", async () =>
   }
 })
 
-test("missing structured output gets the single corrective retry", async () => {
+test("missing structured output gets the single corrective retry with named permissions", async () => {
   let call = 0
   const b = build({
     hooks: {
-      run: async () => {
+      run: async (spec) => {
+        assert.equal(spec.codexPermissions, "research")
+        assert.equal(spec.sandbox, "read-only")
         call++
         if (call === 1) {
           return { text: "extraction prose without JSON", status: "completed", usage: emptyUsage() }
@@ -413,7 +415,7 @@ test("missing structured output gets the single corrective retry", async () => {
     },
   })
   try {
-    const out = await runBody(b, `return await agent("p", { schema: { type: "string" } })`)
+    const out = await runBody(b, `return await agent("p", { codexPermissions: "research", schema: { type: "string" } })`)
     assert.equal(out, "recovered")
     assert.equal(call, 2)
     const retryLogs = b.sink.events.filter((e) => e.type === "log" && e.message.includes("structured output retry"))
@@ -1206,4 +1208,25 @@ test("parallel branches draw from distinct random() substreams deterministically
   } finally {
     b2.cleanup()
   }
+})
+
+
+test("named Codex permissions validate before dispatch and preserve logical sandbox", async () => {
+  const b = build()
+  try {
+    for (const options of [
+      { codexPermissions: "" }, { codexPermissions: "   " },
+      { codexPermissions: null }, { codexPermissions: 42 },
+      { codexPermissions: "research", codexNetworkAccess: false },
+      { codexPermissions: "research", codexNetworkAccess: true },
+      { provider: "claude-code", model: "claude-fable-5", codexPermissions: "research" },
+    ]) {
+      await assert.rejects(runBody(b, `return await agent("x", ${JSON.stringify(options)})`),
+        (error: unknown) => error instanceof AgentError && error.code === "unsupported_option")
+    }
+    assert.equal(b.worker.calls.length, 0)
+    await runBody(b, `return await agent("x", { codexPermissions: "research", sandbox: "read-only" })`)
+    assert.equal(b.worker.calls[0]?.codexPermissions, "research")
+    assert.equal(b.worker.calls[0]?.sandbox, "read-only")
+  } finally { b.cleanup() }
 })

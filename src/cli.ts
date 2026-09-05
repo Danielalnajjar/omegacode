@@ -183,6 +183,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       return cmdSave(flags)
     case "validate":
       return cmdValidate(flags)
+    case "capabilities":
+      return cmdCapabilities(flags)
     case "doctor":
       return cmdDoctor()
     case "install-skill":
@@ -198,6 +200,14 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       printHelp()
       process.exitCode = 1
   }
+}
+
+/** Static integration contract: no provider process, auth, or model call. */
+function cmdCapabilities(flags: Flags): void {
+  const capabilities = { schemaVersion: 1, codexPermissions: true }
+  console.log(flags.json === true
+    ? JSON.stringify(capabilities)
+    : "OmegaCode capabilities (schema 1): codexPermissions")
 }
 
 async function cmdServe(flags: Flags): Promise<void> {
@@ -913,6 +923,7 @@ Usage:
   omegacode workflows [--json]                  List saved/named workflows (project, user, builtin)
   omegacode save <file.workflow.js> [--project] [--force]   Save a workflow under its meta.name
   omegacode validate <file.workflow.js | name>  Parse + check meta without running
+  omegacode capabilities [--json]               Report integration support without provider/auth probes
   omegacode doctor                              Check provider availability, versions, and data dir
   omegacode guide                               Print the full authoring guide (the skill text)
   omegacode install-skill [--claude] [--agents] Install the authoring skill into agent skill dirs

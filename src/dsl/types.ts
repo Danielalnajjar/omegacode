@@ -59,6 +59,8 @@ interface AgentOptsBase {
   codexWebSearch?: CodexWebSearch
   /** Codex sandbox network access for read-only/workspace-write turns. */
   codexNetworkAccess?: boolean
+  /** Codex named permission profile; caller owns filesystem/network policy. */
+  codexPermissions?: string
 }
 
 export type AgentOpts = AgentOptsBase & ProviderModelPair
@@ -82,6 +84,8 @@ export interface AgentSpec {
   codexChildRole?: string
   codexWebSearch?: CodexWebSearch
   codexNetworkAccess?: boolean
+  /** Codex named permission profile; caller owns filesystem/network policy. */
+  codexPermissions?: string
 }
 
 export interface AgentUsage {

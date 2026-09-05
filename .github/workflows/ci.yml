@@ -57,6 +57,8 @@ jobs:
       - run: pnpm typecheck
       # Full build: viewer workspace package, tsup, postbuild.
       - run: pnpm build
+      - run: pnpm --filter viewer test
+        if: matrix.os == 'ubuntu-latest' && matrix.node == '22'
       - run: pnpm test
         env:
           OMEGACODE_REQUIRE_BUN_TESTS: ${{ matrix.os == 'ubuntu-latest' && matrix.node == '22' && '1' || '0' }}

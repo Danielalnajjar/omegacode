@@ -420,7 +420,14 @@ export class CodexWorker implements Worker {
       // Codex 0.149 does not list child metadata for ephemeral threads.
       // Role-proof calls are briefly persisted, verified, then deleted as an exact subtree.
       ephemeral: spec.codexChildRole === undefined ? this.threadEphemeral : false,
-      ...(spec.codexWebSearch !== undefined ? { config: { web_search: spec.codexWebSearch } } : {}),
+      // Omega units are short packet-in / JSON-out jobs: keep every thread on
+      // classic compaction even when ~/.codex/config.toml (or a model-catalog
+      // default) enables Astra's experimental context management. Per-thread
+      // config wins over both.
+      config: {
+        "features.context_management": false,
+        ...(spec.codexWebSearch !== undefined ? { web_search: spec.codexWebSearch } : {}),
+      },
     }
     let startResult: unknown
     try {

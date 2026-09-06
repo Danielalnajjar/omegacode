@@ -277,7 +277,9 @@ string, claudeAgent?: string, claudeProfile?: string, codexChildRole?: string, c
   is mutually exclusive with `claudeAgent` because user agents are loaded from the selected home.
   `codexChildRole`, `codexWebSearch`, and `codexNetworkAccess` are Codex-only; child-role construction
   is accepted only from exact provider-owned parent, role, and completed-turn metadata, never from
-  prompt/result text.
+  prompt/result text. Every Codex `thread/start` also pins `features.context_management=false` so
+  units keep classic compaction even when the host config enables Astra's experimental
+  notes/history mode; that flag is per-thread in Codex and the override wins over `config.toml`.
 - `worktree` → run this agent in an isolated git worktree (§7), for parallel mutators.
 - `key` pins an explicit, stable resume cache key (§9) so the call replays even if its position or prompt
   wording changes; omit it to use the default chained key. (`label`/`phase`/`key` do **not** affect the

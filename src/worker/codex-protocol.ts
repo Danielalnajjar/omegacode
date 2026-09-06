@@ -192,7 +192,7 @@ export type ThreadStartParams = {
   developerInstructions?: string
   experimentalRawEvents: boolean
   ephemeral?: boolean
-  config?: { web_search?: "disabled" | "cached" | "live" }
+  config: { "features.context_management": false; web_search?: "disabled" | "cached" | "live" }
 } & ({ permissions: string; sandbox?: never } | { sandbox: CodexSandboxMode; permissions?: never })
 
 export interface CodexTextUserInput {

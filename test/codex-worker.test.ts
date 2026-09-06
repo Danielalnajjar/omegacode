@@ -1001,7 +1001,7 @@ test("CodexWorker maps web search to thread config and network access to the tur
     },
   )
   await worker.runAgent(spec({ codexWebSearch: "live", codexNetworkAccess: true }), ctx())
-  assert.deepEqual(threadStarts[0].config, { web_search: "live" })
+  assert.deepEqual(threadStarts[0].config, { "features.context_management": false, web_search: "live" })
   assert.equal(turnStarts[0].sandboxPolicy.networkAccess, true)
   assert.deepEqual(turnStarts[0].sandboxPolicy, { type: "readOnly", networkAccess: true })
   await worker.shutdown()
@@ -1150,6 +1150,8 @@ test("CodexWorker starts Codex provider threads as ephemeral by default", async 
   await worker.runAgent(spec(), ctx())
   assert.equal(threadStarts.length, 1)
   assert.equal(threadStarts[0].ephemeral, true)
+  // Every unit pins classic compaction regardless of the host's context_management flag.
+  assert.deepEqual(threadStarts[0].config, { "features.context_management": false })
   await worker.shutdown()
 })
 

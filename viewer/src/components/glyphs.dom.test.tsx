@@ -1,3 +1,4 @@
+import { PROVIDER_IDS } from "../../../src/dsl/types"
 // @vitest-environment jsdom
 //
 // StatusGlyph regressions (L26): "unknown" is a reachable run status (a run dir whose events file
@@ -60,9 +61,12 @@ describe("StatusGlyph (L26: unknown / future statuses must not look done)", () =
 })
 
 describe("ProviderIcon", () => {
-  it("renders Grok with its own monogram instead of the unknown-provider mark", () => {
-    const { container } = render(<ProviderIcon provider="grok" />)
-    expect(container.textContent).toBe("G")
+  // Regression: every registered provider gets its own mark, never the unknown fallback.
+  it.each(PROVIDER_IDS)("renders %s with a known provider mark", (provider) => {
+    const { container } = render(<ProviderIcon provider={provider} />)
+    expect(container.textContent).not.toBe("·")
+    if (provider === "muse") expect(container.textContent).toBe("M")
+    expect(container.firstElementChild).not.toBeNull()
   })
 
   it("keeps unknown providers visually neutral", () => {

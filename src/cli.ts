@@ -204,10 +204,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 
 /** Static integration contract: no provider process, auth, or model call. */
 function cmdCapabilities(flags: Flags): void {
-  const capabilities = { schemaVersion: 1, codexPermissions: true }
+  const capabilities = { schemaVersion: 1, codexPermissions: true, providers: PROVIDER_IDS }
   console.log(flags.json === true
     ? JSON.stringify(capabilities)
-    : "OmegaCode capabilities (schema 1): codexPermissions")
+    : `OmegaCode capabilities (schema 1): codexPermissions; providers: ${PROVIDER_IDS.join(", ")}`)
 }
 
 async function cmdServe(flags: Flags): Promise<void> {
@@ -401,7 +401,7 @@ function dirSize(dir: string): number {
 async function cmdRun(flags: Flags): Promise<void> {
   const file = (flags._ as string[])[1]
   if (!file) {
-    console.error("usage: omegacode run <file.workflow.js | name> [--args <json>] [--provider codex|claude-code|opencode|pi|grok] [--fake] [--json] [--start-json]")
+    console.error("usage: omegacode run <file.workflow.js | name> [--args <json>] [--provider codex|claude-code|opencode|pi|grok|muse] [--fake] [--json] [--start-json]")
     process.exitCode = 1
     return
   }
@@ -791,6 +791,7 @@ async function cmdDoctor(): Promise<void> {
   const { versionAtLeast } = await import("./worker/subprocess-jsonl.js")
   const { OPENCODE_MIN_VERSION } = await import("./worker/opencode.js")
   const { PI_MIN_VERSION } = await import("./worker/pi.js")
+  const { MUSE_MIN_VERSION } = await import("./worker/muse.js")
   const { GROK_MIN_VERSION } = await import("./worker/grok.js")
 
   const check = (bin: string, args: string[], opts: { env?: NodeJS.ProcessEnv; cwd?: string } = {}): string => {
@@ -816,6 +817,7 @@ async function cmdDoctor(): Promise<void> {
   const codexBin = process.env.CODEX_BIN ?? "codex"
   const opencodeBin = process.env.OPENCODE_BIN ?? "opencode"
   const piBin = process.env.PI_BIN ?? "pi"
+  const museBin = process.env.MUSE_BIN ?? "muse"
   const grokBin = process.env.GROK_BIN ?? "grok"
 
   // pi probes run isolated (scratch agent dir, neutral cwd): old binaries wrote lock files and a
@@ -835,6 +837,7 @@ async function cmdDoctor(): Promise<void> {
   console.log(`  opencode     : ${withMin(check(opencodeBin, ["--version"]), OPENCODE_MIN_VERSION, "upgrade the opencode CLI")}`)
   console.log(`  pi           : ${withMin(piOut, PI_MIN_VERSION, "bun add -g @earendil-works/pi-coding-agent")}`)
   console.log(`  grok         : ${withMin(check(grokBin, ["--version"]), GROK_MIN_VERSION, "upgrade the grok CLI")}`)
+  console.log(`  muse         : ${withMin(check(museBin, ["--version"]), MUSE_MIN_VERSION, "upgrade the Muse CLI")}`)
   console.log(`  data dir     : ${dataRoot()}`)
 }
 
@@ -887,7 +890,7 @@ Each agent() spawns a real provider agent; choose the provider per call or inher
 Usage:
   omegacode run <file.workflow.js | name> [options]   Run a workflow (by path or saved name)
       --args '<json>' | --args-file <f>    input exposed as the \`args\` global
-      --provider codex|claude-code|opencode|pi|grok   default provider (per-agent opts override)
+      --provider codex|claude-code|opencode|pi|grok|muse   default provider (per-agent opts override)
       --model <m>                          default model — set together with --provider (both or neither)
       --effort <e>  --sandbox read-only|workspace-write|danger-full-access
       --cwd <dir>  --concurrency <N>       working dir; max concurrent agents (default ${DEFAULTS.concurrency})

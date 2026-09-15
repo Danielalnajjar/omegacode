@@ -195,3 +195,39 @@ test("grok: GROK_BIN env drives a real spawn with prompt-file and policy flags",
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// Regression: Muse env/factory wiring and schema correction perform exactly one fresh corrective call.
+test("muse: MUSE_BIN drives runtime schema correction through a fake executable", posixOnly, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "omega-muse-env-"))
+  const prev = { OMEGACODE_HOME: process.env.OMEGACODE_HOME, MUSE_BIN: process.env.MUSE_BIN, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }
+  try {
+    const record = join(dir, "prompts.json")
+    const bin = join(dir, "muse-fake.cjs")
+    writeFileSync(bin, `#!/usr/bin/env node
+const fs = require('node:fs');
+if (process.argv.includes('--version')) { console.log('1.2.1'); process.exit(0); }
+const record = ${JSON.stringify(record)};
+const prompts = fs.existsSync(record) ? JSON.parse(fs.readFileSync(record, 'utf8')) : [];
+const path = process.argv[process.argv.indexOf('--prompt-file') + 1];
+prompts.push({path, text:fs.readFileSync(path,'utf8')}); fs.writeFileSync(record,JSON.stringify(prompts));
+const text = prompts.length === 1 ? '{"ok":"wrong type"}' : '{"ok":true}';
+console.log(JSON.stringify({payload_type:'run.terminal.completed',payload:{terminal:'completed',text}}));
+`)
+    chmodSync(bin, 0o755)
+    const wf = join(dir, "muse.workflow.js")
+    writeFileSync(wf, `export const meta = { name: "muse-env", description: "schema correction" }\nreturn await agent("read", { provider: "muse", model: "muse-spark-1.3-contributor", schema: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } }, cwd: ${JSON.stringify(dir)} })\n`)
+    process.env.OMEGACODE_HOME = join(dir, "home")
+    process.env.XDG_CONFIG_HOME = dir
+    process.env.MUSE_BIN = bin
+    const outcome = await runWorkflow({ file: wf, quiet: true })
+    assert.equal(outcome.status, "completed", outcome.error)
+    assert.deepEqual(outcome.result, { ok: true })
+    const prompts = JSON.parse(readFileSync(record, "utf8"))
+    assert.equal(prompts.length, 2)
+    assert.notEqual(prompts[0].path, prompts[1].path)
+    assert.match(prompts[1].text, /previous response did not match/)
+  } finally {
+    for (const [key, value] of Object.entries(prev)) restoreEnv(key, value)
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

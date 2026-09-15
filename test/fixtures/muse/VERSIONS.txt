@@ -1,0 +1,6 @@
+Muse Code 1.2.1 (1.2.1-R2847.1)
+Executable: /opt/homebrew/bin/muse
+Binary SHA-256: 020ebed5248767450413a7972a5cbc12c228ad82d4bdcf221e5d6350df39604c
+Embedded build hash candidate: f9fb6cc3010b20954b48f7f97ee6d0aa6fdbbc71
+Binary string context: its launch sourcesession.jsonl.muse/worktreespublicmissingunusableavailablef9fb6cc3010b20954b48f7f97ee6d0aa6fdbbc71TBH_SESSION_MESSAGE_SOCKETv8tuiworkflow_runmcp_loginmcp_logo
+The build hash is extracted from the binary; --version does not label it.

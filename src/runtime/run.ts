@@ -40,6 +40,7 @@ export interface RunOverrides {
   /** Binary overrides for subprocess workers (programmatic equivalent of their *_BIN env vars). */
   opencodeBin?: string
   piBin?: string
+  museBin?: string
   grokBin?: string
   /** Use `codex app-server proxy --sock <path>` for Codex workers. */
   codexAppServerSocket?: string
@@ -142,6 +143,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     codexBin: process.env.CODEX_BIN,
     opencodeBin: opts.overrides?.opencodeBin ?? process.env.OPENCODE_BIN,
     piBin: opts.overrides?.piBin ?? process.env.PI_BIN,
+    museBin: opts.overrides?.museBin ?? process.env.MUSE_BIN,
     grokBin: opts.overrides?.grokBin ?? process.env.GROK_BIN,
     codexAppServerSocket: resolveCodexAppServerSocket(opts.overrides),
     codexDisableLocalMcps: opts.overrides?.codexDisableLocalMcps ?? envFlag("OMEGACODE_CODEX_DISABLE_LOCAL_MCPS") ?? true,

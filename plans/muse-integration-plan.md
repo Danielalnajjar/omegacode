@@ -17,14 +17,10 @@
 
 ## Artifact Status
 
-**Needs user decision** — the spike ran on 2026-09-15 (results in Spike
-Results below) and every gate is resolved except one ratification: the only
-working way to keep the user's MCP servers out of a worker run is a per-run
-private config directory selected with `XDG_CONFIG_HOME`, which the original
-constraints forbade. Recommended: adopt it (it copies no credential; the
-user's auth file is symlinked, and the community ACP adapter ships the same
-pattern). On ratification the status becomes Ready for implementation with
-no other open decision.
+**Ready for implementation** — the spike ran on 2026-09-15 (Spike Results
+below) and the owner ratified the per-run private config directory the same
+day. No open decision remains. Implementation of slices 3 and 4 was authorized
+on 2026-09-15; slice 5 follows slice 4; slice 6 stays deferred.
 
 ## Intent Contract
 
@@ -40,7 +36,7 @@ no other open decision.
   framework; redesigning the provider architecture.
 - **Constraints:** no credential copying; no HOME override; a per-run private
   config directory that symlinks the user's auth file is the one permitted
-  config-home override (pending ratification); no silent model, effort,
+  config-home override (ratified 2026-09-15); no silent model, effort,
   sandbox, or transport fallback; no weakened read-only guarantee; no second
   retry or schema-correction layer; no compatibility shims or dual paths;
   saved policies and bindings keep their bytes and digests.
@@ -531,9 +527,6 @@ rows. No OmegaCode file changes for this slice.
 
 ## Assumptions And Blockers
 
-- **Decision pending ratification:** the private config directory described
-  in Chosen Approach. Without it, every worker run loads the user's MCP
-  servers, which the owner ruled out on 2026-09-15.
 - **Unverified:** the terminal produced when `--user-input-auto-resolve`
   cancels a model question. The worker treats every non-`completed` terminal
   as a non-retryable failure, so the classification is safe either way.
@@ -555,8 +548,8 @@ rows. No OmegaCode file changes for this slice.
 - [x] Owner authorized the value check and spike; both ran 2026-09-15.
 - [x] Spike matrix recorded; R1 PASS, C1 PASS via private config directory,
       W1 FAIL (workspace-write refused).
-- [ ] Owner ratifies the private config directory.
+- [x] Owner ratified the private config directory (2026-09-15).
 - [ ] ADR-0002 written as the first file of slice 4.
-- [ ] Owner authorizes slices 3 through 5 separately.
+- [x] Owner authorized slices 3 and 4 (2026-09-15); slice 5 after slice 4.
 - [ ] Installed command and one real run per product verified.
 - [ ] BB slice authorized separately, if ever.

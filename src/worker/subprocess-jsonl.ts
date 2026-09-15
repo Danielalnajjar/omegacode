@@ -25,6 +25,7 @@ export const DEFAULT_STALL_TIMEOUT_MS = 30 * 60_000
 export const DEFAULT_KILL_GRACE_MS = 5_000
 
 const DEFAULT_STDERR_LIMIT = 16 * 1024
+const DEFAULT_STDOUT_FRAME_LIMIT = 1024 * 1024
 
 export interface JsonlRunOpts {
   provider: ProviderId
@@ -39,10 +40,11 @@ export interface JsonlRunOpts {
   onValue: (value: unknown) => void
   /** Non-JSON, non-empty stdout lines — diagnostics only, never fatal. */
   onTextLine?: (line: string) => void
-  /** Fail after this much TOTAL stdout silence (ms). 0 disables. */
+  /** Fail after this much stdout framed-line silence (ms). 0 disables. */
   stallTimeoutMs?: number
   killGraceMs?: number
   stderrLimit?: number
+  stdoutFrameLimit?: number
   spawnProcess?: SpawnProcess
 }
 
@@ -58,10 +60,14 @@ export interface JsonlExit {
  * the WORKER decides whether a nonzero exit is fatal, because an in-stream terminal event may
  * already explain it better). Rejects with AgentInterrupted on abort, a retryable `turn_stalled`
  * AgentError on watchdog fire, and `binary_not_found` / `spawn_failed` on spawn errors.
+ * The separate `closed` fence waits for drained child stdio even after prompt rejection.
  */
-export function runJsonlSubprocess(o: JsonlRunOpts): Promise<JsonlExit> {
-  return new Promise<JsonlExit>((resolve, reject) => {
+export function runJsonlSubprocess(o: JsonlRunOpts): Promise<JsonlExit> & { closed: Promise<void> } {
+  let markClosed!: () => void
+  const closed = new Promise<void>((resolve) => { markClosed = resolve })
+  const run = new Promise<JsonlExit>((resolve, reject) => {
     if (o.signal.aborted) {
+      markClosed()
       reject(new AgentInterrupted())
       return
     }
@@ -71,6 +77,7 @@ export function runJsonlSubprocess(o: JsonlRunOpts): Promise<JsonlExit> {
     try {
       child = spawnProcess(o.bin, o.args, { cwd: o.cwd, env: o.env })
     } catch (err) {
+      markClosed()
       reject(spawnFailure(o.provider, o.bin, err))
       return
     }
@@ -78,6 +85,7 @@ export function runJsonlSubprocess(o: JsonlRunOpts): Promise<JsonlExit> {
     const stallMs = o.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS
     const graceMs = o.killGraceMs ?? DEFAULT_KILL_GRACE_MS
     const stderrLimit = o.stderrLimit ?? DEFAULT_STDERR_LIMIT
+    const stdoutFrameLimit = o.stdoutFrameLimit ?? DEFAULT_STDOUT_FRAME_LIMIT
     let settled = false
     let stdoutBuf = ""
     let stderrBuf = ""
@@ -116,7 +124,7 @@ export function runJsonlSubprocess(o: JsonlRunOpts): Promise<JsonlExit> {
       settle(() => reject(new AgentInterrupted()))
     }
 
-    // Total-silence watchdog over stdout: any stdout data re-arms it. (stderr chatter is NOT
+    // Framed-line watchdog over stdout: only a completed line re-arms it. (stderr chatter is NOT
     // progress — a wedged CLI can spin on stderr forever.)
     const touch = (): void => {
       if (stallMs <= 0 || settled) return
@@ -157,19 +165,32 @@ export function runJsonlSubprocess(o: JsonlRunOpts): Promise<JsonlExit> {
       }
     }
 
+    const frameTooLarge = (length: number): boolean => {
+      if (length <= stdoutFrameLimit) return false
+      stdoutBuf = ""
+      killWithGrace()
+      settle(() => reject(new AgentError({
+        provider: o.provider, code: "turn_failed",
+        message: `${o.bin} stdout frame exceeded ${stdoutFrameLimit} characters`,
+      })))
+      return true
+    }
+
     child.stdout.setEncoding("utf8")
     child.stdout.on("data", (chunk: string) => {
       if (settled) return
-      touch()
       stdoutBuf += chunk
       // Strict LF framing (pi's JSONL framing is LF-only; a trailing \r is JSON whitespace anyway).
       let nl = stdoutBuf.indexOf("\n")
       while (nl !== -1 && !settled) {
+        if (frameTooLarge(nl)) return
+        touch()
         const line = stdoutBuf.slice(0, nl)
         stdoutBuf = stdoutBuf.slice(nl + 1)
         deliver(line)
         nl = stdoutBuf.indexOf("\n")
       }
+      if (!settled) frameTooLarge(stdoutBuf.length)
     })
 
     child.stderr.setEncoding("utf8")
@@ -179,6 +200,7 @@ export function runJsonlSubprocess(o: JsonlRunOpts): Promise<JsonlExit> {
     })
 
     child.on("error", (err) => {
+      markClosed()
       settle(() => reject(spawnFailure(o.provider, o.bin, err)))
     })
 
@@ -188,6 +210,7 @@ export function runJsonlSubprocess(o: JsonlRunOpts): Promise<JsonlExit> {
       if (killTimer) clearTimeout(killTimer)
     })
     child.on("close", (code, signal) => {
+      markClosed()
       if (killTimer) clearTimeout(killTimer)
       if (!settled && stdoutBuf.length > 0) {
         const rest = stdoutBuf
@@ -206,6 +229,7 @@ export function runJsonlSubprocess(o: JsonlRunOpts): Promise<JsonlExit> {
     if (o.stdin !== undefined) child.stdin.write(o.stdin, () => {})
     child.stdin.end?.()
   })
+  return Object.assign(run, { closed })
 }
 
 /** The standard "process exited nonzero with no recognized terminal event" failure. A nonzero
@@ -248,9 +272,13 @@ export function captureStdout(o: {
   cwd?: string
   env?: NodeJS.ProcessEnv
   timeoutMs?: number
+  signal?: AbortSignal
   spawnProcess?: SpawnProcess
 }): Promise<string> {
   const ac = new AbortController()
+  const onAbort = (): void => ac.abort()
+  if (o.signal?.aborted) ac.abort()
+  else o.signal?.addEventListener("abort", onAbort, { once: true })
   let out = ""
   const run = runJsonlSubprocess({
     provider: o.provider,
@@ -273,7 +301,7 @@ export function captureStdout(o: {
   return run.then((exit) => {
     if (exit.code !== 0) throw exitError(o.provider, o.bin, exit)
     return out.trim()
-  })
+  }).finally(() => o.signal?.removeEventListener("abort", onAbort))
 }
 
 /**

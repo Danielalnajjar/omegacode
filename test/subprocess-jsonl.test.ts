@@ -72,7 +72,7 @@ function harness(over: Partial<JsonlRunOpts> = {}): {
   proc: FakeProc
   values: unknown[]
   textLines: string[]
-  run: Promise<{ code: number | null; signal: string | null; stderrTail: string }>
+  run: ReturnType<typeof runJsonlSubprocess>
   spawned: Array<{ bin: string; args: string[]; cwd?: string; env?: NodeJS.ProcessEnv }>
 } {
   const proc = new FakeProc()
@@ -338,4 +338,64 @@ test("parseVersion / versionAtLeast handle real version strings", () => {
   assert.equal(versionAtLeast("0.54.0", "0.79.1"), false)
   assert.equal(versionAtLeast("0.79.0", "0.79.1"), false)
   assert.equal(versionAtLeast("garbage", "0.79.1"), false)
+})
+
+// Regression: a malformed producer cannot allocate an unbounded stdout frame.
+test("rejects an oversized unterminated stdout frame", async () => {
+  const h = harness()
+  h.proc.pushRaw("x".repeat(1024 * 1024 + 1))
+  h.proc.end(0)
+  await assert.rejects(h.run, (err: unknown) => {
+    assert.ok(err instanceof AgentError)
+    assert.equal(err.code, "turn_failed")
+    return true
+  })
+})
+
+// Regression: raw byte chatter is not framed progress and cannot postpone a stall.
+test("unterminated stdout chatter does not reset the watchdog", { timeout: 1000 }, async () => {
+  const h = harness({ stallTimeoutMs: 30, killGraceMs: 10 })
+  const chatter = setInterval(() => h.proc.pushRaw("x"), 5)
+  try {
+    await assert.rejects(h.run, (err: unknown) => {
+      assert.ok(err instanceof AgentError)
+      assert.equal(err.code, "turn_stalled")
+      return true
+    })
+  } finally {
+    clearInterval(chatter)
+    h.proc.end(null, "SIGTERM")
+  }
+})
+
+// Regression: cancellation rejects promptly while resource owners can separately await close.
+test("termination fence stays pending until close after cancellation", async () => {
+  const ac = new AbortController()
+  const h = harness({ signal: ac.signal, killGraceMs: 10 })
+  let closed = false
+  void h.run.closed.then(() => { closed = true })
+  ac.abort()
+  await assert.rejects(h.run, AgentInterrupted)
+  assert.equal(closed, false)
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.deepEqual(h.proc.kills, ["SIGTERM", "SIGKILL"])
+  assert.equal(closed, false)
+  h.proc.end(null, "SIGKILL")
+  await h.run.closed
+  assert.equal(closed, true)
+})
+
+// Regression: spawn error without close must release the resource-owner fence.
+test("termination fence resolves on spawn error without close", async () => {
+  const h = harness()
+  let closed = false
+  void h.run.closed.then(() => { closed = true })
+  h.proc.emit("error", new Error("ENOENT"))
+  await assert.rejects(h.run, (err: unknown) => {
+    assert.ok(err instanceof AgentError)
+    assert.equal(err.code, "binary_not_found")
+    return true
+  })
+  assert.equal(closed, true)
+  await h.run.closed
 })

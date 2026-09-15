@@ -61,11 +61,11 @@ describe("StatusGlyph (L26: unknown / future statuses must not look done)", () =
 })
 
 describe("ProviderIcon", () => {
+  const expectedMarks = { codex: "OpenAI", "claude-code": "Claude", opencode: "OC", pi: "π", grok: "G", muse: "M" }
   // Regression: every registered provider gets its own mark, never the unknown fallback.
   it.each(PROVIDER_IDS)("renders %s with a known provider mark", (provider) => {
     const { container } = render(<ProviderIcon provider={provider} />)
-    expect(container.textContent).not.toBe("·")
-    if (provider === "muse") expect(container.textContent).toBe("M")
+    expect(container.textContent).toBe(expectedMarks[provider])
     expect(container.firstElementChild).not.toBeNull()
   })
 

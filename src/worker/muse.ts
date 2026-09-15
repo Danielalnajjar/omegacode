@@ -1,5 +1,6 @@
 // One fresh Muse exec process per attempt; the shared transport owns cancellation and stalls.
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { isDeepStrictEqual } from "node:util"
 import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { emptyUsage, type AgentResult, type AgentSpec } from "../dsl/types.js"
@@ -43,8 +44,13 @@ export class MuseWorker implements Worker {
         throw new AgentError({ provider: PROVIDER, code: "invalid_schema", message: `output schema does not compile: ${(err as Error).message}` })
       }
     }
-    await this.ensureVersion()
+    try { await this.ensureVersion(ctx.signal) } catch (err) {
+      if (!(err instanceof AgentInterrupted) || ctx.signal.aborted) throw err
+      await this.ensureVersion(ctx.signal)
+    }
     const scratch = mkdtempSync(join(tmpdir(), "omegacode-muse-"))
+    let run: ReturnType<typeof runJsonlSubprocess> | undefined
+    let failed = false
     try {
       const env = privateConfigEnv(scratch)
       const promptPath = join(scratch, "prompt.txt")
@@ -63,15 +69,20 @@ export class MuseWorker implements Worker {
       if (spec.effort) args.push("--reasoning-effort", spec.effort)
       if (spec.maxTurns !== undefined) args.push("--max-model-steps", String(spec.maxTurns))
       let terminal: { type: string; payload: Record<string, unknown> } | undefined
-      const exit = await runJsonlSubprocess({
+      run = runJsonlSubprocess({
         provider: PROVIDER, bin: this.bin, args, cwd: spec.cwd, env,
         signal: ctx.signal, spawnProcess: this.spawnProcess, stallTimeoutMs: this.stallTimeoutMs,
         onValue: (value) => {
-          if (!isObject(value) || !isObject(value.payload) || terminal) return
+          if (!isObject(value) || !isObject(value.payload)) return
           const payload = value.payload
           const type = value.payload_type
           if (typeof type === "string" && type.startsWith("run.terminal.")) {
+            if (terminal && (terminal.type !== type || !isDeepStrictEqual(terminal.payload, payload))) {
+              throw new AgentError({ provider: PROVIDER, code: "turn_failed", message: "Muse emitted conflicting terminal records" })
+            }
             terminal = { type, payload }
+          } else if (terminal) {
+            return
           } else if (type === "run.output.delta" && typeof payload.text === "string") {
             ctx.onProgress({ kind: "text", text: payload.text })
           } else if (type === "tool.result") {
@@ -84,6 +95,7 @@ export class MuseWorker implements Worker {
           }
         },
       })
+      const exit = await run
       if (ctx.signal.aborted) throw new AgentInterrupted()
       if (terminal && (terminal.type !== "run.terminal.completed" || terminal.payload.terminal !== "completed")) {
         throw new AgentError({ provider: PROVIDER, code: "turn_failed", message: str(terminal.payload.reason) || `Muse terminal: ${String(terminal.payload.terminal)}` })
@@ -101,16 +113,22 @@ export class MuseWorker implements Worker {
         }
       }
       return { text, structured, status: "completed", usage: emptyUsage() }
+    } catch (err) {
+      failed = true
+      throw err
     } finally {
-      rmSync(scratch, { recursive: true, force: true })
+      await run?.closed
+      try { rmSync(scratch, { recursive: true, force: true }) } catch (err) {
+        if (!failed) throw err
+      }
     }
   }
 
   async shutdown(): Promise<void> {}
 
-  private ensureVersion(): Promise<void> {
+  private ensureVersion(signal: AbortSignal): Promise<void> {
     if (!this.versionCheck) {
-      this.versionCheck = captureStdout({ provider: PROVIDER, bin: this.bin, args: ["--version"], spawnProcess: this.spawnProcess })
+      this.versionCheck = captureStdout({ provider: PROVIDER, bin: this.bin, args: ["--version"], signal, spawnProcess: this.spawnProcess })
         .then((version) => {
           if (!versionAtLeast(version, MUSE_MIN_VERSION)) {
             throw new AgentError({ provider: PROVIDER, code: "provider_outdated", message: `Muse ${version || "(unknown version)"} is below minimum ${MUSE_MIN_VERSION}; upgrade the Muse CLI` })
@@ -132,8 +150,8 @@ function privateConfigEnv(scratch: string): NodeJS.ProcessEnv {
     throw new AgentError({ provider: PROVIDER, code: "invalid_config", message: `Muse settings.json could not be read: ${cause.code}: ${cause.message}` })
   }
   let settings: unknown
-  try { settings = JSON.parse(settingsText) } catch (err) {
-    throw new AgentError({ provider: PROVIDER, code: "invalid_config", message: `Muse settings.json is not valid JSON: ${(err as Error).message}` })
+  try { settings = JSON.parse(settingsText) } catch {
+    throw new AgentError({ provider: PROVIDER, code: "invalid_config", message: `Muse settings file is not valid JSON: ${join(source, "settings.json")}` })
   }
   if (!isObject(settings)) throw new AgentError({ provider: PROVIDER, code: "invalid_config", message: "Muse settings.json must contain an object" })
   delete settings.mcpServers

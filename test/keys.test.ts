@@ -1,6 +1,6 @@
-import { PROVIDER_IDS } from "../src/dsl/types.js"
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { PROVIDER_IDS } from "../src/dsl/types.js"
 import {
   branchKey,
   canonical,

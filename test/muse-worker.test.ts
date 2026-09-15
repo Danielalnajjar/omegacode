@@ -321,3 +321,21 @@ test("Muse missing source settings preserves XDG_CONFIG_HOME", async () => {
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+// Regression: malformed source settings fail as the worker's own error, before any executable is invoked.
+test("Muse malformed source settings is invalid_config", async () => {
+  const root = mkdtempSync(join(tmpdir(), "muse-bad-config-"))
+  const previous = process.env.XDG_CONFIG_HOME
+  try {
+    process.env.XDG_CONFIG_HOME = root
+    mkdirSync(join(root, "muse"))
+    writeFileSync(join(root, "muse", "settings.json"), "{ not json")
+    const { worker, spawned } = harness([versionOk])
+    await assert.rejects(worker.runAgent(spec(), ctx()), rejects("invalid_config"))
+    assert.equal(spawned.length, 1)
+  } finally {
+    if (previous === undefined) delete process.env.XDG_CONFIG_HOME
+    else process.env.XDG_CONFIG_HOME = previous
+    rmSync(root, { recursive: true, force: true })
+  }
+})

@@ -1,4 +1,3 @@
-import { PROVIDER_IDS } from "../../../src/dsl/types"
 // @vitest-environment jsdom
 //
 // StatusGlyph regressions (L26): "unknown" is a reachable run status (a run dir whose events file
@@ -9,6 +8,7 @@ import { cleanup, render } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest"
 
 import { ProviderIcon, StatusGlyph } from "./glyphs"
+import { PROVIDER_IDS } from "../../../src/dsl/types"
 import type { RunStatus } from "@/lib/types"
 
 ;(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true

@@ -1,4 +1,3 @@
-import { PROVIDER_IDS } from "../src/dsl/types.js"
 // Unit + smoke tests for the CLI: argument parsing, per-flag validation, error classification,
 // the entrypoint symlink guard, and an end-to-end --fake spawn. Filesystem-touching parts are
 // scoped to a temp OMEGACODE_HOME (plus a temp bundle under node_modules/.cache for the
@@ -10,6 +9,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, uti
 import { get as httpGet } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { PROVIDER_IDS } from "../src/dsl/types.js"
 import { fileURLToPath } from "node:url"
 import { after, before, describe, test } from "node:test"
 

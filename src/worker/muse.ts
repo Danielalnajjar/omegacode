@@ -133,7 +133,10 @@ function privateConfigEnv(scratch: string): NodeJS.ProcessEnv {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return env
     throw err
   }
-  const settings: unknown = JSON.parse(settingsText)
+  let settings: unknown
+  try { settings = JSON.parse(settingsText) } catch (err) {
+    throw new AgentError({ provider: PROVIDER, code: "invalid_config", message: `Muse settings.json is not valid JSON: ${(err as Error).message}` })
+  }
   if (!isObject(settings)) throw new AgentError({ provider: PROVIDER, code: "invalid_config", message: "Muse settings.json must contain an object" })
   delete settings.mcpServers
   const xdg = join(scratch, "xdg")

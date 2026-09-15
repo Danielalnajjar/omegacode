@@ -60,6 +60,7 @@ export function ProviderIcon({ provider, className }: { provider: ProviderId; cl
   if (provider === "codex") return <OpenAiIcon className={cn("size-3.5 shrink-0 text-muted-foreground", className)} />
   if (provider === "opencode") return <MonogramBadge label="OC" className={className} />
   if (provider === "pi") return <MonogramBadge label="π" className={className} />
+  if (provider === "muse") return <MonogramBadge label="M" className={className} />
   if (provider === "grok") return <MonogramBadge label="G" className={className} />
   return <MonogramBadge label="·" className={className} />
 }

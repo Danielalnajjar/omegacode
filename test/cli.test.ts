@@ -9,6 +9,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, uti
 import { get as httpGet } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { PROVIDER_IDS } from "../src/dsl/types.js"
 import { fileURLToPath } from "node:url"
 import { after, before, describe, test } from "node:test"
 
@@ -434,8 +435,9 @@ describe("CLI end-to-end (--fake)", () => {
     assert.doesNotMatch(r.stderr, /at \w+ \(/) // no stack frames
   })
 
+  // Regression: new provider ids must round-trip through CLI admission.
   test("subprocess providers are accepted by --provider (fake round-trip)", async () => {
-    for (const provider of ["opencode", "pi", "grok"]) {
+    for (const provider of PROVIDER_IDS) {
       const r = await runCli(["run", wf, "--provider", provider, "--model", "openrouter/foo/bar", "--fake", "--no-serve", "--json"], { OMEGACODE_HOME: home })
       assert.equal(r.code, 0, `stderr=${r.stderr}`)
       assert.equal(JSON.parse(r.stdout).status, "completed")
@@ -453,9 +455,13 @@ describe("CLI end-to-end (--fake)", () => {
   })
 
   test("doctor resolves bins via env overrides and flags below-minimum versions as OUTDATED", { skip: process.platform === "win32" }, async () => {
+    // Regression: Muse doctor uses MUSE_BIN and exposes outdated versions without a real CLI.
     // Stub binaries: opencode and grok report outdated versions, pi a current one.
     const ocStub = join(home, "fake-opencode")
     const piStub = join(home, "fake-pi")
+    const museStub = join(home, "fake-muse")
+    writeFileSync(museStub, "#!/bin/sh\necho 1.2.0\n")
+    chmodSync(museStub, 0o755)
     const grokStub = join(home, "fake-grok")
     writeFileSync(ocStub, "#!/bin/sh\necho 1.15.0\n")
     writeFileSync(piStub, "#!/bin/sh\necho 0.79.1\n")
@@ -463,8 +469,9 @@ describe("CLI end-to-end (--fake)", () => {
     chmodSync(ocStub, 0o755)
     chmodSync(piStub, 0o755)
     chmodSync(grokStub, 0o755)
-    const r = await runCli(["doctor"], { OMEGACODE_HOME: home, OPENCODE_BIN: ocStub, PI_BIN: piStub, GROK_BIN: grokStub })
+    const r = await runCli(["doctor"], { OMEGACODE_HOME: home, OPENCODE_BIN: ocStub, PI_BIN: piStub, GROK_BIN: grokStub, MUSE_BIN: museStub })
     assert.equal(r.code, 0, `stderr=${r.stderr}`)
+    assert.match(r.stdout, /muse\s+: 1\.2\.0 — OUTDATED \(< 1\.2\.1\)/)
     assert.match(r.stdout, /opencode\s+: 1\.15\.0 — OUTDATED \(< 1\.16\.2\)/)
     assert.match(r.stdout, /pi\s+: 0\.79\.1\n/)
     assert.doesNotMatch(r.stdout, /pi\s+: 0\.79\.1 — OUTDATED/)
@@ -899,6 +906,7 @@ function ensureDir(dir: string, leaf: string): string {
 }
 
 
+// Regression: static capabilities include every provider without spawning it.
 test("capabilities reports named-permission support without provider or auth probes", () => {
   const home = mkdtempSync(join(tmpdir(), "omega-capabilities-"))
   try {
@@ -906,7 +914,7 @@ test("capabilities reports named-permission support without provider or auth pro
       encoding: "utf8",
       env: { ...process.env, OMEGACODE_HOME: join(home, "untouched"), CODEX_HOME: join(home, "no-codex-home"), OMEGACODE_CODEX_BIN: join(home, "no-codex-bin") },
     })
-    assert.deepEqual(JSON.parse(output), { schemaVersion: 1, codexPermissions: true })
+    assert.deepEqual(JSON.parse(output), { schemaVersion: 1, codexPermissions: true, providers: [...PROVIDER_IDS] })
     assert.equal(existsSync(join(home, "untouched")), false)
     assert.equal(existsSync(join(home, "no-codex-home")), false)
   } finally { rmSync(home, { recursive: true, force: true }) }

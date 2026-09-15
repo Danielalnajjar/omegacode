@@ -5,6 +5,7 @@ import { CodexWorker } from "./codex.js"
 import { ClaudeWorker } from "./claude.js"
 import { OpencodeWorker } from "./opencode.js"
 import { PiWorker } from "./pi.js"
+import { MuseWorker } from "./muse.js"
 import { GrokWorker } from "./grok.js"
 import type { CodexExecutionProfileName } from "./codex-profile.js"
 
@@ -20,6 +21,7 @@ export interface FactoryOpts {
   pathToClaudeCodeExecutable?: string
   opencodeBin?: string
   piBin?: string
+  museBin?: string
   grokBin?: string
 }
 
@@ -58,6 +60,8 @@ export class DefaultWorkerFactory implements WorkerFactory {
         return new OpencodeWorker({ bin: this.opts.opencodeBin })
       case "pi":
         return new PiWorker({ bin: this.opts.piBin })
+      case "muse":
+        return new MuseWorker({ bin: this.opts.museBin })
       case "grok":
         return new GrokWorker({ bin: this.opts.grokBin })
       default: {

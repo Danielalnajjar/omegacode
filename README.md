@@ -7,7 +7,7 @@
 An **agent-agnostic implementation of Claude Code's Workflows**. omegacode runs JavaScript workflow
 files that orchestrate fleets of coding agents with a small deterministic DSL — `agent()` /
 `parallel()` / `pipeline()` / `phase()` — and the workers are pluggable: the same workflow can
-drive **Claude Code**, **Codex**, **OpenCode**, **pi**, and **Grok** in a single run.
+drive **Claude Code**, **Codex**, **OpenCode**, **pi**, **Grok**, and **Muse** in a single run.
 
 ## Install
 
@@ -22,7 +22,7 @@ omegacode install-skill
 
 You'll need Node 20+ and at least one worker installed: `codex` (the default provider), `claude`,
 `opencode` (≥ 1.16.2), `pi` (≥ 0.79.1, `bun add -g @earendil-works/pi-coding-agent`),
-and/or `grok` (≥ 0.2.112). Run
+`grok` (≥ 0.2.112), and/or `muse` (≥ 1.2.1). Run
 `omegacode doctor` to check — it flags binaries below the minimum versions, which the workers
 refuse at runtime.
 
@@ -69,7 +69,7 @@ return await pipeline(
 ```
 
 Plain JavaScript, no imports — the DSL is injected. Each `agent()` spawns a real Codex, Claude
-Code, OpenCode, pi, or Grok agent; omit `provider`/`model` to inherit whatever the run was started with
+Code, OpenCode, pi, Grok, or Muse agent; omit `provider`/`model` to inherit whatever the run was started with
 (`--provider --model`, default `codex`), or pin them per call when you want cross-provider
 diversity. Provider and model are **both-or-neither** at every site (per-call, meta defaults,
 CLI flags): a lone `provider:` or `model:` is rejected, so a model meant for one provider can
@@ -124,3 +124,7 @@ same task in isolated worktrees, blind cross-provider judges pick a winner),
 to deep effort and adjudicates). Try `omegacode run deep-research --args '"your
 question"'`, or `omegacode workflows` to list them. See `omegacode guide` for the
 complete authoring reference.
+
+### Muse workers
+
+Muse uses the existing CLI login and one `muse exec --json` process per attempt. Select `provider: "muse"` together with a model (for example `muse-spark-1.3-contributor`). Effort values pass through unchanged; `maxTurns` sets the model-step limit. Read-only disables write and shell tools; full access is explicit; workspace-write is rejected because confinement failed the spike. Per-run private settings remove MCP servers and symlink authentication without copying credentials. Usage/cost is unreported. `MUSE_BIN` overrides the executable. Run `pnpm verify:muse-smoke -- --bin /path/to/muse` for the opt-in real-binary smoke; ordinary tests use fakes.

@@ -8,6 +8,7 @@ import { cleanup, render } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest"
 
 import { ProviderIcon, StatusGlyph } from "./glyphs"
+import { PROVIDER_IDS } from "../../../src/dsl/types"
 import type { RunStatus } from "@/lib/types"
 
 ;(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true
@@ -60,9 +61,12 @@ describe("StatusGlyph (L26: unknown / future statuses must not look done)", () =
 })
 
 describe("ProviderIcon", () => {
-  it("renders Grok with its own monogram instead of the unknown-provider mark", () => {
-    const { container } = render(<ProviderIcon provider="grok" />)
-    expect(container.textContent).toBe("G")
+  // Regression: every registered provider gets its own mark, never the unknown fallback.
+  it.each(PROVIDER_IDS)("renders %s with a known provider mark", (provider) => {
+    const { container } = render(<ProviderIcon provider={provider} />)
+    expect(container.textContent).not.toBe("·")
+    if (provider === "muse") expect(container.textContent).toBe("M")
+    expect(container.firstElementChild).not.toBeNull()
   })
 
   it("keeps unknown providers visually neutral", () => {

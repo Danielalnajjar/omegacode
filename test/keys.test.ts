@@ -1,5 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { PROVIDER_IDS } from "../src/dsl/types.js"
 import {
   branchKey,
   canonical,
@@ -127,9 +128,10 @@ test("keyedSpec captures RESOLVED provider/model so default/CLI overrides invali
   assert.notEqual(k1, k3)
 })
 
+// Regression: every registered provider must have distinct resume identity.
 test("keyedSpec distinguishes every provider id", () => {
   const b = branchKey(ROOT_KEY, "root", 0)
-  const keys = (["codex", "claude-code", "opencode", "pi", "grok"] as const).map((provider) =>
+  const keys = PROVIDER_IDS.map((provider) =>
     chainKey(b, 0, "p", keyedSpec({ provider, model: "m1" }, undefined)),
   )
   assert.equal(new Set(keys).size, keys.length)

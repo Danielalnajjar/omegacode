@@ -3,7 +3,7 @@
 import type { CodexExecutionProfileName } from "../worker/codex-profile.js"
 
 /** The closed set of backend providers. Model strings stay open — each backend is authoritative. */
-export const PROVIDER_IDS = ["codex", "claude-code", "opencode", "pi", "grok"] as const
+export const PROVIDER_IDS = ["codex", "claude-code", "opencode", "pi", "grok", "muse"] as const
 export type ProviderId = (typeof PROVIDER_IDS)[number]
 
 /** read-only: no writes; workspace-write: write within cwd; danger-full-access: unrestricted. */

@@ -1,8 +1,12 @@
 # Muse compatibility-spike resume prompt
 
-**Rewritten 2026-09-15.** This is a saved prompt, not an instruction to execute
-when reading the repository. Use it only after the owner explicitly authorizes
-slices 1 and 2 of the [plan](muse-integration-plan.md).
+**Executed 2026-09-15** against Muse 1.2.1-R2847.1; results are recorded in the
+[plan's Spike Results](muse-integration-plan.md#spike-results-2026-09-15).
+Keep this prompt for re-running the gates after a Muse version change. It is a
+saved prompt, not an instruction to execute when reading the repository. Known
+adjustments from the run: drop `--session-id` (it conflicts with
+`--no-session-log`), and expect `--provider echo` to be unusable while user
+settings enable parallel tool calls.
 
 ```text
 Run the Muse compatibility spike. Produce executable evidence for the gates in plans/muse-integration-plan.md, section "1. Compatibility spike". Do not research; do not implement the production worker.

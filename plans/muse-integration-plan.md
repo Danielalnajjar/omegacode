@@ -10,16 +10,21 @@
   built. No SDK dependency, no long-lived host, no shared session.
 - Sequence: value check, read-only gate, skills-checkout admission cleanup,
   OmegaCode worker, four routes, then BB only if still wanted.
-- The plan was parked on 2026-09-13 and rewritten on 2026-09-15 after a
-  plan-hardening review. Nothing here authorizes execution; each slice needs
-  its own implementation request.
+- The plan was parked on 2026-09-13, rewritten on 2026-09-15 after a
+  plan-hardening review, and updated the same day with the compatibility
+  spike's measured results. Nothing here authorizes execution; each slice
+  needs its own implementation request.
 
 ## Artifact Status
 
-**Ready for implementation** — decision-complete through the OmegaCode worker
-and the four routes. Two gates (read-only evidence access, MCP suppression) have
-stated pass and fail branches; a fail is a stop condition that returns to the
-owner, not an open design choice.
+**Needs user decision** — the spike ran on 2026-09-15 (results in Spike
+Results below) and every gate is resolved except one ratification: the only
+working way to keep the user's MCP servers out of a worker run is a per-run
+private config directory selected with `XDG_CONFIG_HOME`, which the original
+constraints forbade. Recommended: adopt it (it copies no credential; the
+user's auth file is symlinked, and the community ACP adapter ships the same
+pattern). On ratification the status becomes Ready for implementation with
+no other open decision.
 
 ## Intent Contract
 
@@ -33,10 +38,12 @@ owner, not an open design choice.
   parent orchestrator; native Muse subagents; a shared Muse abstraction between
   OmegaCode and BB; migrating old Muse terminal sessions; a generic provider
   framework; redesigning the provider architecture.
-- **Constraints:** no credential copying; no HOME or config-home override; no
-  silent model, effort, sandbox, or transport fallback; no weakened read-only
-  guarantee; no second retry or schema-correction layer; no compatibility
-  shims or dual paths; saved policies and bindings keep their bytes and digests.
+- **Constraints:** no credential copying; no HOME override; a per-run private
+  config directory that symlinks the user's auth file is the one permitted
+  config-home override (pending ratification); no silent model, effort,
+  sandbox, or transport fallback; no weakened read-only guarantee; no second
+  retry or schema-correction layer; no compatibility shims or dual paths;
+  saved policies and bindings keep their bytes and digests.
 - **Destination and format:** this repository-local Compact plan and its
   companion [spike prompt](muse-compatibility-spike-prompt.md). Both are
   self-contained; no chat or thread-storage artifact is a prerequisite.
@@ -147,6 +154,42 @@ Skills checkout facts (`~/Code/skills`, moves independently; re-verify lines):
   under workflow-review and workflow-simplify. Both runners are invoked file by
   file; no aggregate runner exists.
 
+## Spike Results (2026-09-15)
+
+Run on the Pro against Muse 1.2.1-R2847.1 with the subscription login. Receipt
+and 137 fixture files (JSONL transcripts, stderr, prompts, broker-log
+snapshots, versions) are in this thread's storage at
+`~/.bb/thread-storage/thr_6pypjafdth/muse-prespike/`; copy the gate fixtures
+into `test/fixtures/muse/` when the worker is implemented.
+
+| Gate | Verdict | Measured fact |
+|---|---|---|
+| R1 read-only | PASS | `--disable-write --disable-shell` leaves `read_file` and `search`; a review of PR #10 used 10 reads and 3 searches, left the tree untouched, and produced an accurate, specific report. |
+| C1 MCP | PASS (lever 6 only) | Workspace settings, `--permission-profile`, `--agents` overlay, env vars, and defaults/policy documents all failed or could not be applied per run. A private config dir selected by `XDG_CONFIG_HOME`, holding a copy of `settings.json` with the top-level `mcpServers` member removed and every other entry (auth, rules, locks) symlinked, ran with zero broker-log clients and the subscription model configured. The absence of an `mcp.startup.task_handle` event is not evidence; the broker log is. |
+| W1 workspace-write | FAIL | Under the default sandbox with `--approval-mode never`, `write_file` succeeded outside the workspace. `workspace-write` is refused pre-spawn. |
+| P2 terminals | recorded | `completed` (exit 0); `failed` with reason text (exit 1, bad model); SIGTERM: no terminal, exit 143; missing binary: spawn error. A clarifying-question prompt answered normally, so auto-cancel of `request_user_input` remains unexercised. |
+| P3 concurrency | PASS | Two simultaneous runs returned their own texts, both exit 0. |
+| P4 cleanup | PASS | No process-group member survived three seconds after SIGTERM to the `muse` process. |
+| E1 effort/model | PASS | `--reasoning-effort max --max-model-steps 1` exit 0; `run.model.configured.model_id` = `muse-spark-1.3-contributor`. |
+
+Other measured facts:
+
+- `--session-id` conflicts with `--no-session-log`; let Muse generate the id.
+- `--provider echo` cannot run while user settings set `run.parallel_tool_calls`
+  (both the setting and its override flag are rejected for echo). Fixtures are
+  recorded real transcripts, not echo output.
+- `--approval-mode never` auto-approves policy-gated calls (reads and writes
+  both succeeded without prompts).
+- No usage event exists in the exec stream by design; token accounting lives
+  only on the `muse serve` plane. Usage is unreported.
+- `--permission-profile :read-only` is an accepted id but conflicts with the
+  disable flags (usage error); the worker does not use profiles.
+- Public docs stop at release 0.2.1; the subscriptions page restricts only the
+  credential (must be signed in through the CLI), not the mode. The linked
+  terms of service were not read.
+- Delegation to native subagents is unavailable while the workspace is
+  untrusted; the worker never passes `--trust-workspace`.
+
 ## Existing Reuse
 
 - `runJsonlSubprocess`, `captureStdout`, `exitError`, `versionAtLeast`,
@@ -222,17 +265,14 @@ single caller that never needs a second turn. Record this in
 | OmegaCode sandbox | Muse flags | Gate |
 |---|---|---|
 | `read-only` | `--disable-write --disable-shell` (sandbox and approval-never as above) | R1: review evidence reachable without shell |
-| `workspace-write` | default sandbox on, no disable flags | W1: shell write outside `--workspace` denied |
+| `workspace-write` | refused pre-spawn with non-retryable `unsupported_sandbox` (W1 FAIL) | measured |
 | `danger-full-access` | `--disable-sandbox --disable-approval` | none |
 
-If R1 fails, the worker refuses `read-only` before spawn with a non-retryable
-`unsupported_sandbox` error naming the alternative (the opencode and pi
-precedent at `src/worker/opencode.ts:82-86`), and the four standalone products
-are out of scope. That outcome returns to the owner as a go/no-go on the whole
-project; it is not worked around. If W1 fails, `workspace-write` is refused the
-same way and only the other two modes map; the four products are unaffected.
-Gate R1 must also confirm that `--approval-mode never` auto-resolves policy
-calls rather than denying them.
+R1 passed, so `read-only` maps. W1 failed, so `workspace-write` is refused
+before spawn with a non-retryable `unsupported_sandbox` error naming the two
+supported modes (the opencode and pi precedent at
+`src/worker/opencode.ts:82-86`). The four standalone products need only
+`read-only` and are unaffected.
 
 **Effort:** identity map, no downgrade table. `EFFORT_TO_MUSE` is still a
 `Record<Effort, string>` so a future menu change is a compile error.
@@ -251,11 +291,17 @@ unrepresentable in the result contract; DESIGN.md records that Muse cost is
 unreported when the CLI does not report it.
 
 **Authentication and configuration:** the worker runs as the logged-in OS
-user with the existing `muse login`; nothing is copied or overridden. Isolation
-is per-run flags only (`--no-foreign-personal-context`, `--no-session-log`,
-`--disable-web-tools`). MCP is gated by spike gate C1; if no per-run control
-exists, the gate is FAIL and the owner decides whether workers may see
-user-level MCP servers. Do not invent a config-home override.
+user with the existing `muse login`. Because Muse has no per-run MCP control,
+each `runAgent` call builds a private config directory in its temp dir: resolve
+the source config dir (`$XDG_CONFIG_HOME/muse` if set, else
+`~/.config/muse`); if it has no `settings.json`, run without an override;
+otherwise create `<tmp>/xdg/muse` (mode 0700), write `settings.json` (mode
+0600) as the source JSON with the top-level `mcpServers` member removed and
+nothing else changed, symlink every other entry of the source dir into it, and
+spawn with `XDG_CONFIG_HOME=<tmp>/xdg`. Remove the directory in the same
+`finally` that removes the prompt file. Never copy `auth.json`; never override
+HOME. Per-run flags stay: `--no-foreign-personal-context`, `--no-session-log`,
+`--disable-web-tools`, `--user-input-auto-resolve`.
 
 **Provider-wide options only:** `museBin` joins `FactoryOpts` and `MUSE_BIN`
 joins the env wiring in `src/runtime/run.ts`. No Muse-specific spec option
@@ -389,12 +435,15 @@ re-scored with a relaxed predicate.
   identified, usage per the decided convention, structured output per the
   decided path.
 - Terminal and error classification, each a required test with expected
-  `code` and `retryable`: success terminal → result; explicit error terminal →
-  non-retryable provider error; unknown or absent terminal with exit 0 →
-  non-retryable `turn_incomplete`; nonzero exit → `exitError`; stall →
-  retryable `turn_stalled` (helper-owned); abort → `AgentInterrupted`; missing
-  binary → `binary_not_found`; unsupported sandbox or version → non-retryable
-  pre-spawn rejection. Usage reported before a failure is preserved on the
+  `code` and `retryable`: `run.terminal.completed` with `terminal:
+  "completed"` → result with `payload.text` as the authoritative text;
+  `terminal: "failed"` (or any other value) → non-retryable `turn_failed`
+  carrying `payload.reason`; process exit without a terminal event → on our
+  own abort `AgentInterrupted`, otherwise non-retryable `turn_incomplete`
+  (exit 0) or `exitError` (nonzero); stall → retryable `turn_stalled`
+  (helper-owned); missing binary → `binary_not_found`; unsupported sandbox or
+  version → non-retryable pre-spawn rejection. No terminal value is retryable
+  until a measured transient failure shows one. Usage reported before a failure is preserved on the
   error where the helper already does so for other providers.
 - Provider id in `PROVIDER_IDS`, `ambient.d.ts`, factory, `run.ts`, CLI
   strings, `doctor`, `capabilities`, viewer glyph, README, DESIGN.md
@@ -412,9 +461,9 @@ re-scored with a relaxed predicate.
 
 - Add `muse` to the four products' request allowlists only; `omega-plan`,
   `claude-workflow-plan`, and Cycle keep their sets.
-- Add a `muse` branch to the explicit dispatch: `_route("muse", <default
-  model from E1>, <identity effort map>)`. `unitModel` and `unitEffort` stay
-  codex-only in v1.
+- Add a `muse` branch to the explicit dispatch: `_route("muse",
+  "muse-spark-1.3-contributor", <identity effort map>)`. `unitModel` and
+  `unitEffort` stay codex-only in v1.
 - Update the four products' request examples, shell provider labels, and
   workflow-local guards; regenerate catalog provenance without a Muse cycle
   column; the routing studio is deliberately unchanged, with a test asserting
@@ -482,16 +531,14 @@ rows. No OmegaCode file changes for this slice.
 
 ## Assumptions And Blockers
 
-- **Assumption:** `--approval-mode never` auto-resolves policy-gated calls
-  rather than denying them. Gate R1 confirms; if false, `--permission-profile`
-  is the next lever and the spike records which profile id works.
-- **Assumption:** the `--json` stream has a distinguishable terminal event.
-  Gate P1 confirms; if the only terminal is process exit, the worker treats
-  exit 0 after at least one message item as success and records that in
-  ADR-0002.
-- **Blocker until the spike runs:** R1 (read-only evidence access) and C1
-  (MCP suppression). Each fail has a named owner decision above.
-- **Blocker for slice 5:** the default Muse model id from gate E1.
+- **Decision pending ratification:** the private config directory described
+  in Chosen Approach. Without it, every worker run loads the user's MCP
+  servers, which the owner ruled out on 2026-09-15.
+- **Unverified:** the terminal produced when `--user-input-auto-resolve`
+  cancels a model question. The worker treats every non-`completed` terminal
+  as a non-retryable failure, so the classification is safe either way.
+- **Unverified:** the Meta subscription terms of service for automated use;
+  the subscriptions page itself imposes no mode restriction.
 - **Scrap trigger:** redesign before continuing if any two of these appear
   independently: a second Muse-specific field is needed in `AgentSpec` or
   `KeyedFields`; a Muse-specific positional argument is needed on
@@ -505,8 +552,11 @@ rows. No OmegaCode file changes for this slice.
 - [x] Research conclusions, hardening-review amendments, and installed CLI
       facts preserved in the repository.
 - [x] Spike prompt is repository-local and does not require old chat artifacts.
-- [ ] Owner authorizes the value check and spike (slices 1 and 2).
-- [ ] Spike matrix recorded; ADR-0002 drafted; R1 and C1 resolved.
+- [x] Owner authorized the value check and spike; both ran 2026-09-15.
+- [x] Spike matrix recorded; R1 PASS, C1 PASS via private config directory,
+      W1 FAIL (workspace-write refused).
+- [ ] Owner ratifies the private config directory.
+- [ ] ADR-0002 written as the first file of slice 4.
 - [ ] Owner authorizes slices 3 through 5 separately.
 - [ ] Installed command and one real run per product verified.
 - [ ] BB slice authorized separately, if ever.

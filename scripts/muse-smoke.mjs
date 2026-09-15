@@ -45,8 +45,16 @@ function runEndToEnd(bin) {
     if (child.error) throw child.error
     if (child.status !== 0) throw new Error(`Muse end-to-end exited ${child.status}`)
     // pnpm prints a script banner before the CLI JSON.
-    const start = child.stdout.indexOf('{\n')
-    const outcome = JSON.parse(child.stdout.slice(start))
+    const lines = child.stdout.split(/\r?\n/)
+    let outcome
+    for (let start = lines.length - 1; start >= 0 && !outcome; start--) {
+      if (lines[start] !== "{") continue
+      for (let end = lines.length - 1; end > start; end--) {
+        if (lines[end] !== "}") continue
+        try { outcome = JSON.parse(lines.slice(start, end + 1).join("\n")); break } catch {}
+      }
+    }
+    if (!outcome) throw new Error("Muse end-to-end stdout has no complete JSON object")
     const heading = readFileSync("README.md", "utf8").split("\n").find(line => line.startsWith("# "))
     if (outcome.status !== "completed" || typeof outcome.result !== "string" || !outcome.result.includes(heading)) throw new Error("Muse end-to-end did not complete with README text")
     const events = readFileSync(join(scratch, "omega-home", "runs", outcome.runId, "events.jsonl"), "utf8")

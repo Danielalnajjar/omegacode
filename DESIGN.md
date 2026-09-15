@@ -32,7 +32,7 @@ interface.
 > while pi maps it onto `--thinking`, and Grok maps it onto `--reasoning-effort`. `instructions`
 > maps to pi's `--append-system-prompt` and to a delimited prompt preamble on opencode. Structured
 > output uses a silent extraction turn plus the central validation
-> path. Bin overrides: `OPENCODE_BIN` / `PI_BIN` / `GROK_BIN`. Outdated binaries are refused (`provider_outdated`).
+> path. Bin overrides: `OPENCODE_BIN` / `PI_BIN` / `GROK_BIN` / `MUSE_BIN`. Outdated binaries are refused (`provider_outdated`).
 > The "two providers" framing below is historical.
 
 ---
@@ -257,7 +257,7 @@ and typechecking. Schemas are **JSON Schema** (the portable default that maps st
 | `random` | `() => number` | Journal-seeded RNG (deterministic across resume, unlike `Math.random()`). |
 | `budget` | `{ total, spent(), remaining() }` | The run's output-token ceiling (`--budget`, §8); `total` is `null` when no ceiling is set. |
 
-**`AgentOpts`:** `{ provider?: "codex" | "claude-code" | "opencode" | "pi" | "grok", label?, phase?, model?, effort?:
+**`AgentOpts`:** `{ provider?: "codex" | "claude-code" | "opencode" | "pi" | "grok" | "muse", label?, phase?, model?, effort?:
 "none"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max" (the shared provider union; each worker maps
 only the levels its backend does not support), cwd?, sandbox?:
 "read-only"|"workspace-write"|"danger-full-access", approval?: "never"|"on-request", instructions?,
@@ -644,7 +644,7 @@ already reads files). Noted as a future direction.
   (`defaultProvider`/`defaultModel`/`defaultSandbox`), then the built-in `DEFAULTS`
   (`provider: codex`, `sandbox: read-only`, `approval: never`, `concurrency: 100`,
   `maxAgents: 1000`, `maxFanout: 4096`). The codex app-server binary can be overridden via the `CODEX_BIN`
-  environment variable; subprocess-worker binaries use `OPENCODE_BIN`, `PI_BIN`, and `GROK_BIN`.
+  environment variable; subprocess-worker binaries use `OPENCODE_BIN`, `PI_BIN`, `GROK_BIN`, and `MUSE_BIN`.
   The data dir (default `~/.omegacode`) uses `OMEGACODE_HOME`.
 
 ---
@@ -659,7 +659,7 @@ estimate — were **not shipped**. `validate` only parses the file and prints it
 
 ```
 omegacode run <file.workflow.js | name> [--args <json> | --args-file f.json]
-                                 [--provider codex|claude-code|opencode|pi|grok] [--model m] [--effort e]
+                                 [--provider codex|claude-code|opencode|pi|grok|muse] [--model m] [--effort e]
                                  [--sandbox read-only|workspace-write|danger-full-access] [--cwd <dir>]
                                  [--concurrency N] [--budget N] [--resume <runId>]
                                  [--fake] [--json] [--start-json] [--open] [--no-serve] [--port N]
@@ -755,6 +755,7 @@ omegacode/
       opencode.ts         # OpenCode CLI subprocess worker
       pi.ts               # pi CLI subprocess worker
       grok.ts             # Grok CLI subprocess worker
+      muse.ts             # Muse CLI subprocess worker
       subprocess-jsonl.ts # shared subprocess JSONL transport and version checks
       fake.ts             # in-process FakeWorker (--fake): synthesizes deterministic text/structured output
       errors.ts           # normalize codexErrorInfo / SDKResultError → AgentError; retry classification

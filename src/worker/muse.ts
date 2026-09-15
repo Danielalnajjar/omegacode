@@ -2,17 +2,13 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { emptyUsage, type AgentResult, type AgentSpec, type Effort } from "../dsl/types.js"
+import { emptyUsage, type AgentResult, type AgentSpec } from "../dsl/types.js"
 import { AgentError, AgentInterrupted, type Worker, type WorkerContext } from "./index.js"
 import { assertValidSchema, parseJsonLoose } from "./schema.js"
 import { captureStdout, DEFAULT_STALL_TIMEOUT_MS, exitError, runJsonlSubprocess, versionAtLeast, type SpawnProcess } from "./subprocess-jsonl.js"
 
 const PROVIDER = "muse" as const
 export const MUSE_MIN_VERSION = "1.2.1"
-const EFFORT_TO_MUSE: Record<Effort, string> = {
-  none: "none", minimal: "minimal", low: "low", medium: "medium",
-  high: "high", xhigh: "xhigh", max: "max", ultra: "ultra",
-}
 
 export interface MuseWorkerOpts {
   bin?: string
@@ -63,7 +59,8 @@ export class MuseWorker implements Worker {
       ]
       // Muse generates the fresh id: --session-id conflicts with --no-session-log in 1.2.1.
       if (spec.model) args.push("--model", spec.model)
-      if (spec.effort) args.push("--reasoning-effort", EFFORT_TO_MUSE[spec.effort])
+      // The Muse effort menu equals OmegaCode's.
+      if (spec.effort) args.push("--reasoning-effort", spec.effort)
       if (spec.maxTurns !== undefined) args.push("--max-model-steps", String(spec.maxTurns))
       let terminal: { type: string; payload: Record<string, unknown> } | undefined
       const exit = await runJsonlSubprocess({
@@ -89,7 +86,7 @@ export class MuseWorker implements Worker {
       })
       if (ctx.signal.aborted) throw new AgentInterrupted()
       if (terminal && (terminal.type !== "run.terminal.completed" || terminal.payload.terminal !== "completed")) {
-        throw new AgentError({ provider: PROVIDER, code: "turn_failed", message: str(terminal.payload.reason) ?? `Muse terminal: ${String(terminal.payload.terminal)}` })
+        throw new AgentError({ provider: PROVIDER, code: "turn_failed", message: str(terminal.payload.reason) || `Muse terminal: ${String(terminal.payload.terminal)}` })
       }
       if (exit.code !== 0) throw exitError(PROVIDER, this.bin, exit)
       if (!terminal) throw new AgentError({ provider: PROVIDER, code: "turn_incomplete", message: "Muse exited 0 without a terminal event" })
@@ -127,11 +124,12 @@ export class MuseWorker implements Worker {
 /** Only settings are copied; all other entries, including auth, remain source-owned symlinks. */
 function privateConfigEnv(scratch: string): NodeJS.ProcessEnv {
   const env = { ...process.env }
-  const source = resolve(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "muse")
+  const source = resolve(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "muse")
   let settingsText: string
   try { settingsText = readFileSync(join(source, "settings.json"), "utf8") } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return env
-    throw err
+    const cause = err as NodeJS.ErrnoException
+    throw new AgentError({ provider: PROVIDER, code: "invalid_config", message: `Muse settings.json could not be read: ${cause.code}: ${cause.message}` })
   }
   let settings: unknown
   try { settings = JSON.parse(settingsText) } catch (err) {

@@ -1,7 +1,7 @@
 import { after, before, test } from "node:test"
 import assert from "node:assert/strict"
 import { EventEmitter } from "node:events"
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
@@ -334,6 +334,72 @@ test("Muse malformed source settings is invalid_config", async () => {
     await assert.rejects(worker.runAgent(spec(), ctx()), rejects("invalid_config"))
     assert.equal(spawned.length, 1)
   } finally {
+    if (previous === undefined) delete process.env.XDG_CONFIG_HOME
+    else process.env.XDG_CONFIG_HOME = previous
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// Regression: an empty XDG value uses the home config without exposing MCP servers.
+test("Muse empty XDG_CONFIG_HOME uses private home settings", { skip: process.platform === "win32" }, async () => {
+  const home = mkdtempSync(join(tmpdir(), "muse-fake-home-"))
+  const previousXdg = process.env.XDG_CONFIG_HOME
+  const previousHome = process.env.HOME
+  try {
+    process.env.HOME = home
+    process.env.XDG_CONFIG_HOME = ""
+    const source = join(home, ".config", "muse")
+    mkdirSync(source, { recursive: true })
+    writeFileSync(join(source, "settings.json"), JSON.stringify({ mcpServers: { forbidden: {} }, other: 42 }))
+    let settings: unknown
+    const { worker, spawned } = harness([versionOk, (p, call) => {
+      if (call.env?.XDG_CONFIG_HOME) settings = JSON.parse(readFileSync(join(call.env.XDG_CONFIG_HOME, "muse", "settings.json"), "utf8"))
+      assert.equal(call.env!.HOME, home)
+      p.pushLine(terminal()); p.end(0)
+    }])
+    await worker.runAgent(spec(), ctx())
+    assert.ok(spawned[1]!.env!.XDG_CONFIG_HOME, "child must receive a private XDG_CONFIG_HOME")
+    assert.notEqual(spawned[1]!.env!.XDG_CONFIG_HOME, join(home, ".config"))
+    assert.deepEqual(settings, { other: 42 })
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME
+    else process.env.HOME = previousHome
+    if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME
+    else process.env.XDG_CONFIG_HOME = previousXdg
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("Muse empty terminal reason names the failed terminal", async () => {
+  const { worker } = harness([versionOk, p => {
+    p.pushLine({ payload_type: "run.terminal.failed", payload: { terminal: "failed", reason: "" } }); p.end(0)
+  }])
+  await assert.rejects(worker.runAgent(spec(), ctx()), err => {
+    rejects("turn_failed")(err)
+    assert.match((err as Error).message, /failed/)
+    return true
+  })
+})
+
+test("Muse unreadable settings is invalid_config before agent spawn", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
+  const root = mkdtempSync(join(tmpdir(), "muse-unreadable-config-"))
+  const previous = process.env.XDG_CONFIG_HOME
+  const settingsPath = join(root, "muse", "settings.json")
+  try {
+    process.env.XDG_CONFIG_HOME = root
+    mkdirSync(join(root, "muse"))
+    writeFileSync(settingsPath, "{}")
+    chmodSync(settingsPath, 0o000)
+    const { worker, spawned } = harness([versionOk])
+    await assert.rejects(worker.runAgent(spec(), ctx()), err => {
+      rejects("invalid_config")(err)
+      assert.match((err as Error).message, /EACCES/)
+      assert.match((err as Error).message, /permission denied/i)
+      return true
+    })
+    assert.equal(spawned.length, 1)
+  } finally {
+    chmodSync(settingsPath, 0o600)
     if (previous === undefined) delete process.env.XDG_CONFIG_HOME
     else process.env.XDG_CONFIG_HOME = previous
     rmSync(root, { recursive: true, force: true })

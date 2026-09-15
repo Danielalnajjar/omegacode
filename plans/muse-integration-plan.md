@@ -243,7 +243,7 @@ to `--max-model-steps`; `sandbox` maps per the table in Chosen Approach.
 **Transport: `muse exec --json`, one child process per `runAgent` call.**
 Each call writes the prompt to a temp file and spawns
 `muse exec --json --prompt-file <f> --model <m> --reasoning-effort <e>
---workspace <cwd> --max-model-steps <n> --session-id <fresh uuid>
+--workspace <cwd> --max-model-steps <n>
 --no-session-log --no-foreign-personal-context --disable-web-tools
 --user-input-auto-resolve --approval-mode never --approval-judge off`
 plus the sandbox flags below. `runJsonlSubprocess` owns the process lifetime.

@@ -10,7 +10,7 @@ import { get as httpGet } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { PROVIDER_IDS } from "../src/dsl/types.js"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { after, before, describe, test } from "node:test"
 
 import { parseArgs, UsageError, isUserFacingError, browserOpenCommand, openBrowser } from "../src/cli.ts"
@@ -935,7 +935,7 @@ globalThis.fetch = async (url) => {
     writeFileSync(file, `export const meta = {name:'evaluate',description:'test'};
 try { return await evaluate({state:'synthetic',questions:{q:{type:'noul',instructions:'test'}}}) }
 catch (error) { return error.message }`)
-    const env = { HOME: home, OMEGACODE_HOME: home, TYPESAFE_API_KEY: "synthetic", NODE_OPTIONS: `--import=${mock}` }
+    const env = { HOME: home, OMEGACODE_HOME: home, TYPESAFE_API_KEY: "synthetic", NODE_OPTIONS: `--import=${pathToFileURL(mock).href}` }
     assert.equal(parseArgs(["run", "--typesafe", file]).typesafe, true)
     assert.equal(parseArgs(["run", "--typesafe=false", file]).typesafe, false)
     for (const flags of [["--typesafe=false"], ["--typesafe=true", "--fake"], ["--typesafe=true"]]) {

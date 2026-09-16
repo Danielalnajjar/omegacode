@@ -247,21 +247,24 @@ test("JSON-RPC default spawn strips TypeSafe credentials and preserves unrelated
   const record = join(dir, "record.json")
   const bin = join(dir, "jsonrpc-env.cjs")
   const previousRecord = process.env.RECORD
+  const client = new JsonRpcStdioClient({ bin, args: [], requestTimeoutMs: 5000 })
   try {
     writeFileSync(bin, `#!/usr/bin/env node
 const fs = require('node:fs');
 fs.writeFileSync(process.env.RECORD, JSON.stringify({ typesafe: process.env.TYPESAFE_API_KEY, record: process.env.RECORD }));
-process.stdin.resume();
+require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+  const request = JSON.parse(line);
+  console.log(JSON.stringify({ id: request.id, result: { ready: true } }));
+});
 `)
     chmodSync(bin, 0o755)
     process.env.RECORD = record
-    const client = new JsonRpcStdioClient({ bin, args: [] })
     client.start()
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    await client.shutdown()
+    assert.deepEqual(await client.request("ready"), { ready: true })
     assert.deepEqual(JSON.parse(readFileSync(record, "utf8")), { record })
     assert.equal(providerEnv({ TYPESAFE_API_KEY: "secret", KEEP_ME: "yes" }).KEEP_ME, "yes")
   } finally {
+    await client.shutdown()
     restoreEnv("RECORD", previousRecord)
     rmSync(dir, { recursive: true, force: true })
   }

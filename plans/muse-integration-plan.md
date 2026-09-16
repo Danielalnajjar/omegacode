@@ -17,10 +17,9 @@
 
 ## Artifact Status
 
-**Ready for implementation** — the spike ran on 2026-09-15 (Spike Results
+**OmegaCode worker implemented and merged (PR #11); follow-up corrections recorded here** — the spike ran on 2026-09-15 (Spike Results
 below) and the owner ratified the per-run private config directory the same
-day. No open decision remains. Implementation of slices 3 and 4 was authorized
-on 2026-09-15; slice 5 follows slice 4; slice 6 stays deferred.
+day. Slices 3 and 4 were authorized on 2026-09-15; this document records the as-built OmegaCode slice, not proof of skills-checkout installation or per-product verification. Slice 6 stays deferred.
 
 ## Intent Contract
 
@@ -155,17 +154,18 @@ Skills checkout facts (`~/Code/skills`, moves independently; re-verify lines):
 Run on the Pro against Muse 1.2.1-R2847.1 with the subscription login. Receipt
 and 137 fixture files (JSONL transcripts, stderr, prompts, broker-log
 snapshots, versions) are in this thread's storage at
-`~/.bb/thread-storage/thr_6pypjafdth/muse-prespike/`; copy the gate fixtures
-into `test/fixtures/muse/` when the worker is implemented.
+`~/.bb/thread-storage/thr_6pypjafdth/muse-prespike/`; selected gate fixtures
+are committed in `test/fixtures/muse/`. The historical PASS labels below do not
+prove broader predicates that the recorded probes did not exercise.
 
 | Gate | Verdict | Measured fact |
 |---|---|---|
-| R1 read-only | PASS | `--disable-write --disable-shell` leaves `read_file` and `search`; a review of PR #10 used 10 reads and 3 searches, left the tree untouched, and produced an accurate, specific report. |
+| R1 read-only | PASS | `--disable-write --disable-shell` leaves `read_file` and `search`; a review of PR #10 used 10 reads and 3 searches, left the tree untouched, and produced an accurate, specific report. The full R1 predicate also requires an attempted write to be denied; reads plus an unchanged tree alone do not establish that predicate. |
 | C1 MCP | PASS (lever 6 only) | Workspace settings, `--permission-profile`, `--agents` overlay, env vars, and defaults/policy documents all failed or could not be applied per run. A private config dir selected by `XDG_CONFIG_HOME`, holding a copy of `settings.json` with the top-level `mcpServers` member removed and every other entry (auth, rules, locks) symlinked, ran with zero broker-log clients and the subscription model configured. The absence of an `mcp.startup.task_handle` event is not evidence; the broker log is. |
 | W1 workspace-write | FAIL | Under the default sandbox with `--approval-mode never`, `write_file` succeeded outside the workspace. `workspace-write` is refused pre-spawn. |
 | P2 terminals | recorded | `completed` (exit 0); `failed` with reason text (exit 1, bad model); SIGTERM: no terminal, exit 143; missing binary: spawn error. A clarifying-question prompt answered normally, so auto-cancel of `request_user_input` remains unexercised. |
-| P3 concurrency | PASS | Two simultaneous runs returned their own texts, both exit 0. |
-| P4 cleanup | PASS | No process-group member survived three seconds after SIGTERM to the `muse` process. |
+| P3 concurrency | PASS | Two simultaneous runs returned their own texts, both exit 0. This measured independent completion, not the full P3 cancellation-isolation predicate (cancel one while the other finishes). |
+| P4 cleanup | PASS | No process-group member survived three seconds after SIGTERM to the `muse` process. The full P4 predicate also covers a stall deadline and descendant cleanup; this observation proves only the SIGTERM case. |
 | E1 effort/model | PASS | `--reasoning-effort max --max-model-steps 1` exit 0; `run.model.configured.model_id` = `muse-spark-1.3-contributor`. |
 
 Other measured facts:
@@ -178,8 +178,16 @@ Other measured facts:
   both succeeded without prompts).
 - No usage event exists in the exec stream by design; token accounting lives
   only on the `muse serve` plane. Usage is unreported.
-- `--permission-profile :read-only` is an accepted id but conflicts with the
-  disable flags (usage error); the worker does not use profiles.
+- The earlier "permission profile conflicts with per-run isolation" reading was
+  a CLI flag clash with `--approval-mode` / `--sandbox-network` only, not private
+  XDG configuration. The follow-up profile spike `~/.bb/thread-storage/thr_crc3gy2ppu/muse-profile-spike/receipt.md` (A/D/E)
+  proved shell reads (git diff, rg, git log), direct-write and in/out-of-workspace
+  shell-write denials, and a curl failure with a successful unsandboxed control.
+  D completed at exit 0 with zero new broker rows. The derived profile extends
+  `:read-only` with `approval: "allow_all"` and `reviewer: "none"`.
+- The recorded W1 out-of-workspace write landed in the temp area the default
+  sandbox documents as writable. `workspace-write` support is a follow-up
+  candidate for a later spike; it remains unsupported here.
 - Public docs stop at release 0.2.1; the subscriptions page restricts only the
   credential (must be signed in through the CLI), not the mode. The linked
   terms of service were not read.
@@ -245,7 +253,7 @@ Each call writes the prompt to a temp file and spawns
 `muse exec --json --prompt-file <f> --model <m> --reasoning-effort <e>
 --workspace <cwd> --max-model-steps <n>
 --no-session-log --no-foreign-personal-context --disable-web-tools
---user-input-auto-resolve --approval-mode never --approval-judge off`
+--user-input-auto-resolve`
 plus the sandbox flags below. `runJsonlSubprocess` owns the process lifetime.
 There is no shared host, so host scope, session leases, start throttling, and
 the `prepareAgentCall` seam do not apply; every whole-worker retry and the one
@@ -253,16 +261,16 @@ corrective schema attempt spawn a fresh process with a fresh session id, and
 no prior-turn context carries across attempts. The SDK and `muse serve` are
 rejected for OmegaCode: they would move stall detection, kill escalation, and
 spawn-failure classification to a third party the repo does not own, for a
-single caller that never needs a second turn. Record this in
-`docs/adr/0002-muse-exec-transport.md` before the worker lands.
+single caller that never needs a second turn. This decision is recorded in
+`docs/adr/0002-muse-exec-transport.md`.
 
-**Sandbox mapping, decided by two spike gates:**
+**Sandbox mapping, including the follow-up profile spike:**
 
 | OmegaCode sandbox | Muse flags | Gate |
 |---|---|---|
-| `read-only` | `--disable-write --disable-shell` (sandbox and approval-never as above) | R1: review evidence reachable without shell |
+| `read-only` | `--permission-profile omegacode-read-only`; shell enabled, OS filesystem read-only and network restricted | Follow-up profile spike A/D/E above |
 | `workspace-write` | refused pre-spawn with non-retryable `unsupported_sandbox` (W1 FAIL) | measured |
-| `danger-full-access` | `--disable-sandbox --disable-approval` | none |
+| `danger-full-access` | `--approval-mode never --approval-judge off --disable-sandbox --disable-approval` | unchanged |
 
 R1 passed, so `read-only` maps. W1 failed, so `workspace-write` is refused
 before spawn with a non-retryable `unsupported_sandbox` error naming the two
@@ -270,8 +278,7 @@ supported modes (the opencode and pi precedent at
 `src/worker/opencode.ts:82-86`). The four standalone products need only
 `read-only` and are unaffected.
 
-**Effort:** identity map, no downgrade table. `EFFORT_TO_MUSE` is still a
-`Record<Effort, string>` so a future menu change is a compile error.
+**Effort:** direct pass-through of `spec.effort` to `--reasoning-effort`; no mapping or downgrade table is implemented.
 
 **Structured output:** single turn, schema instructions appended to the prompt
 as grok does, parsed with `parseJsonLoose` and `assertValidSchema`. A parse or
@@ -279,10 +286,9 @@ validation failure throws the existing schema `AgentError`; the corrective
 attempt in `src/runtime/primitives.ts` is the only retry. No resume-based
 extraction turn in v1.
 
-**Usage:** if the `--json` stream carries a usage event, map it to
-`AgentUsage`; otherwise return `emptyUsage()` and emit no usage progress event,
-which is the existing convention (`src/worker/grok.ts` gates the progress event
-on `usageReported`). The earlier "unavailable, not zero" claim is withdrawn as
+**Usage:** the exec stream emits no usage event. Return the zero-valued
+`emptyUsage()` shape and emit no usage progress event; downstream totals cannot
+distinguish unknown usage from zero. The earlier "unavailable, not zero" claim is withdrawn as
 unrepresentable in the result contract; DESIGN.md records that Muse cost is
 unreported when the CLI does not report it.
 
@@ -290,12 +296,17 @@ unreported when the CLI does not report it.
 user with the existing `muse login`. Because Muse has no per-run MCP control,
 each `runAgent` call builds a private config directory in its temp dir: resolve
 the source config dir (`$XDG_CONFIG_HOME/muse` if set, else
-`~/.config/muse`); if it has no `settings.json`, run without an override;
-otherwise create `<tmp>/xdg/muse` (mode 0700), write `settings.json` (mode
+`~/.config/muse`); full-access runs without source `settings.json` retain no
+override. Read-only always writes private settings. Create `<tmp>/xdg/muse` (mode 0700), write `settings.json` (mode
 0600) as the source JSON with the top-level `mcpServers` member removed and
-nothing else changed, symlink every other entry of the source dir into it, and
-spawn with `XDG_CONFIG_HOME=<tmp>/xdg`. Remove the directory in the same
-`finally` that removes the prompt file. Never copy `auth.json`; never override
+for read-only merge the authoritative `omegacode-read-only` profile under
+`permissions.profiles`, preserving other profiles and permissions fields, with
+`schema_version: 1` at the top level and inside `permissions`. Without source
+settings, write only the schema and permissions fields. Symlink every other
+entry when the source dir exists, and
+spawn with `XDG_CONFIG_HOME=<tmp>/xdg`. In `finally`, await the subprocess
+`closed` fence (including kill escalation) before removing the directory and
+prompt file; preserve the original classified run error if removal fails. Never copy `auth.json`; never override
 HOME. Per-run flags stay: `--no-foreign-personal-context`, `--no-session-log`,
 `--disable-web-tools`, `--user-input-auto-resolve`.
 
@@ -319,7 +330,7 @@ repo and any repair to it is an upstream or fork decision.
 OmegaCode:
 
 - `src/worker/muse.ts` (new) — `MuseWorker`, `MUSE_MIN_VERSION = "1.2.1"`,
-  `EFFORT_TO_MUSE`, sandbox flag table, event mapping, terminal detection.
+  direct effort pass-through, sandbox flags, event mapping, terminal detection.
 - `src/worker/factory.ts`, `src/worker/index.ts` — `museBin` option and the
   `case "muse"` branch; the `never` check forces it.
 - `src/dsl/types.ts`, `src/dsl/ambient.d.ts` — add `"muse"` to `PROVIDER_IDS`
@@ -427,20 +438,19 @@ re-scored with a relaxed predicate.
 - `src/worker/muse.ts` following `grok.ts`: version probe with
   `MUSE_MIN_VERSION`, temp prompt file, flag assembly from the tables above,
   event mapping to `WorkerProgress`, success only on the matching terminal
-  event, message items collected in order, final text from the source P1
-  identified, usage per the decided convention, structured output per the
+  event plus exit 0 and string payload.text; pre-terminal progress only,
+  authoritative final text from the terminal, zero-valued usage, structured output per the
   decided path.
 - Terminal and error classification, each a required test with expected
   `code` and `retryable`: `run.terminal.completed` with `terminal:
-  "completed"` → result with `payload.text` as the authoritative text;
+  "completed"`, exit 0, and string `payload.text` → result with that text as authoritative; conflicting later terminals → `turn_failed`;
   `terminal: "failed"` (or any other value) → non-retryable `turn_failed`
   carrying `payload.reason`; process exit without a terminal event → on our
   own abort `AgentInterrupted`, otherwise non-retryable `turn_incomplete`
   (exit 0) or `exitError` (nonzero); stall → retryable `turn_stalled`
   (helper-owned); missing binary → `binary_not_found`; unsupported sandbox or
   version → non-retryable pre-spawn rejection. No terminal value is retryable
-  until a measured transient failure shows one. Usage reported before a failure is preserved on the
-  error where the helper already does so for other providers.
+  until a measured transient failure shows one. Muse emits no usage event, so no usage-preservation path is implemented.
 - Provider id in `PROVIDER_IDS`, `ambient.d.ts`, factory, `run.ts`, CLI
   strings, `doctor`, `capabilities`, viewer glyph, README, DESIGN.md
   provider-set note (six providers), `skill/SKILL.md`, ADR-0002.
@@ -549,7 +559,8 @@ rows. No OmegaCode file changes for this slice.
 - [x] Spike matrix recorded; R1 PASS, C1 PASS via private config directory,
       W1 FAIL (workspace-write refused).
 - [x] Owner ratified the private config directory (2026-09-15).
-- [ ] ADR-0002 written as the first file of slice 4.
+- [x] ADR-0002 written for slice 4 and reconciled with the as-built worker.
+- [x] OmegaCode provider wiring, worker, recorded-fixture tests, and opt-in smoke implemented (PR #11).
 - [x] Owner authorized slices 3 and 4 (2026-09-15); slice 5 after slice 4.
 - [ ] Installed command and one real run per product verified.
 - [ ] BB slice authorized separately, if ever.

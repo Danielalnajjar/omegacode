@@ -1,5 +1,6 @@
 import { after, before, test } from "node:test"
 import assert from "node:assert/strict"
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
@@ -129,8 +130,9 @@ test("Muse replays recorded read-only success without inventing usage", async ()
   assert.ok(context.events.some(e => e.kind === "phase" && e.phase.includes("muse-spark")))
   assert.ok(context.events.some(e => e.kind === "text"))
   const args = spawned[1]!.args
-  for (const flag of ["exec", "--json", "--disable-write", "--disable-shell", "--no-session-log", "--no-foreign-personal-context", "--disable-web-tools", "--user-input-auto-resolve"]) assert.ok(args.includes(flag))
-  for (const [flag, value] of [["--model", "muse-spark-1.3-contributor"], ["--reasoning-effort", "max"], ["--max-model-steps", "12"], ["--approval-mode", "never"], ["--approval-judge", "off"]]) assert.equal(args[args.indexOf(flag!) + 1], value)
+  for (const flag of ["exec", "--json", "--no-session-log", "--no-foreign-personal-context", "--disable-web-tools", "--user-input-auto-resolve"]) assert.ok(args.includes(flag))
+  for (const [flag, value] of [["--model", "muse-spark-1.3-contributor"], ["--reasoning-effort", "max"], ["--max-model-steps", "12"], ["--permission-profile", "omegacode-read-only"]]) assert.equal(args[args.indexOf(flag!) + 1], value)
+  for (const flag of ["--disable-write", "--disable-shell", "--approval-mode", "--approval-judge", "--sandbox-network"]) assert.equal(args.includes(flag), false)
   assert.equal(args.includes("--session-id"), false)
   assert.equal(existsSync(args[args.indexOf("--prompt-file") + 1]!), false)
 })
@@ -193,14 +195,15 @@ test("Muse abort before and during spawn", async () => {
 
 // Regression: the shared watchdog remains retryable and removes per-attempt files.
 test("Muse stall", async () => {
-  const { worker, spawned } = harness([versionOk, () => {}], { stallTimeoutMs: 10 })
+  const { worker, spawned } = harness([versionOk, p => {
+    p.kill = signal => { p.kills.push(signal ?? "SIGTERM"); queueMicrotask(() => p.end(null, signal)); return true }
+  }], { stallTimeoutMs: 10 })
   const keepAlive = setTimeout(() => {}, 1000)
   try {
     await assert.rejects(worker.runAgent(spec(), ctx()), rejects("turn_stalled", true))
     const call = spawned[1]!
     assert.ok(call.proc.kills.includes("SIGTERM"))
     assert.equal(existsSync(call.args[call.args.indexOf("--prompt-file") + 1]!), false)
-    call.proc.end(null, "SIGTERM")
   } finally { clearTimeout(keepAlive) }
 })
 
@@ -229,6 +232,9 @@ for (const effort of ["none", "minimal", "low", "medium", "high", "xhigh", "max"
     assert.equal(args[args.indexOf("--reasoning-effort") + 1], effort)
     assert.ok(args.includes("--disable-sandbox") && args.includes("--disable-approval"))
     assert.equal(args.includes("--disable-write"), false)
+    assert.equal(args.includes("--permission-profile"), false)
+    assert.equal(args[args.indexOf("--approval-mode") + 1], "never")
+    assert.equal(args[args.indexOf("--approval-judge") + 1], "off")
   })
 }
 
@@ -262,7 +268,7 @@ test("Muse per-call private configuration and concurrent cleanup", { skip: proce
     process.env.XDG_CONFIG_HOME = root
     const source = join(root, "muse")
     mkdirSync(source)
-    const settings = { mcpServers: { forbidden: { command: "never" } }, run: { nested: { mcpServers: "preserve" } }, other: 42 }
+    const settings = { mcpServers: { forbidden: { command: "never" } }, run: { nested: { mcpServers: "preserve" } }, other: 42, permissions: { schema_version: 1, profiles: { personal: { extends: ":read-only" }, "omegacode-read-only": { extends: ":full-access" } } } }
     writeFileSync(join(source, "settings.json"), JSON.stringify(settings))
     writeFileSync(join(source, "auth.json"), "fake-auth-never-copy")
     mkdirSync(join(source, "rules"))
@@ -272,7 +278,7 @@ test("Muse per-call private configuration and concurrent cleanup", { skip: proce
     const inspect: Script = (p, call) => {
       const target = join(call.env!.XDG_CONFIG_HOME!, "muse")
       paths.push(target)
-      assert.deepEqual(JSON.parse(readFileSync(join(target, "settings.json"), "utf8")), { run: settings.run, other: 42 })
+      assert.deepEqual(JSON.parse(readFileSync(join(target, "settings.json"), "utf8")), { schema_version: 1, run: settings.run, other: 42, permissions: { ...settings.permissions, profiles: { ...settings.permissions.profiles, "omegacode-read-only": { extends: ":read-only", approval: "allow_all", reviewer: "none" } } } })
       assert.equal(statSync(target).mode & 0o777, 0o700)
       assert.equal(statSync(join(target, "settings.json")).mode & 0o777, 0o600)
       for (const entry of ["auth.json", "rules", "lock"]) {
@@ -303,24 +309,38 @@ test("Muse per-call private configuration and concurrent cleanup", { skip: proce
   }
 })
 
-// Regression: missing source settings means no private override or inherited-home rewrite.
-test("Muse missing source settings preserves XDG_CONFIG_HOME", async () => {
-  const root = mkdtempSync(join(tmpdir(), "muse-empty-config-"))
-  const previous = process.env.XDG_CONFIG_HOME
-  try {
-    process.env.XDG_CONFIG_HOME = root
-    const { worker } = harness([versionOk, (p, call) => {
-      assert.equal(call.env!.XDG_CONFIG_HOME, root)
-      assert.equal(call.env!.HOME, process.env.HOME)
-      p.pushLine(terminal()); p.end(0)
-    }])
-    await worker.runAgent(spec(), ctx())
-  } finally {
-    if (previous === undefined) delete process.env.XDG_CONFIG_HOME
-    else process.env.XDG_CONFIG_HOME = previous
-    rmSync(root, { recursive: true, force: true })
+// Regression: missing settings still install read-only policy, preserving full-access behavior.
+for (const sourceExists of [false, true]) {
+  for (const sandbox of ["read-only", "danger-full-access"] as const) {
+    test(`Muse missing settings with source=${sourceExists} sandbox=${sandbox}`, async () => {
+      const root = mkdtempSync(join(tmpdir(), "muse-empty-config-"))
+      const previous = process.env.XDG_CONFIG_HOME
+      try {
+        process.env.XDG_CONFIG_HOME = root
+        if (sourceExists) {
+          mkdirSync(join(root, "muse"))
+          writeFileSync(join(root, "muse", "auth.json"), "fake-auth")
+        }
+        const { worker } = harness([versionOk, (p, call) => {
+          if (sandbox === "read-only") {
+            const target = join(call.env!.XDG_CONFIG_HOME!, "muse")
+            assert.notEqual(call.env!.XDG_CONFIG_HOME, root)
+            assert.deepEqual(JSON.parse(readFileSync(join(target, "settings.json"), "utf8")), { schema_version: 1, permissions: { schema_version: 1, profiles: { "omegacode-read-only": { extends: ":read-only", approval: "allow_all", reviewer: "none" } } } })
+            if (sourceExists) assert.equal(readlinkSync(join(target, "auth.json")), join(root, "muse", "auth.json"))
+          } else assert.equal(call.env!.XDG_CONFIG_HOME, root)
+          assert.equal(call.env!.HOME, process.env.HOME)
+          p.pushLine(terminal()); p.end(0)
+        }])
+        await worker.runAgent(spec({ sandbox }), ctx())
+      } finally {
+        if (previous === undefined) delete process.env.XDG_CONFIG_HOME
+        else process.env.XDG_CONFIG_HOME = previous
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
   }
-})
+}
 
 // Regression: malformed source settings fail as the worker's own error, before any executable is invoked.
 test("Muse malformed source settings is invalid_config", async () => {
@@ -360,7 +380,7 @@ test("Muse empty XDG_CONFIG_HOME uses private home settings", { skip: process.pl
     await worker.runAgent(spec(), ctx())
     assert.ok(spawned[1]!.env!.XDG_CONFIG_HOME, "child must receive a private XDG_CONFIG_HOME")
     assert.notEqual(spawned[1]!.env!.XDG_CONFIG_HOME, join(home, ".config"))
-    assert.deepEqual(settings, { other: 42 })
+    assert.deepEqual(settings, { other: 42, schema_version: 1, permissions: { schema_version: 1, profiles: { "omegacode-read-only": { extends: ":read-only", approval: "allow_all", reviewer: "none" } } } })
   } finally {
     if (previousHome === undefined) delete process.env.HOME
     else process.env.HOME = previousHome
@@ -404,4 +424,108 @@ test("Muse unreadable settings is invalid_config before agent spawn", { skip: pr
     else process.env.XDG_CONFIG_HOME = previous
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+// Regression: a later contradictory terminal cannot hide behind the first success.
+test("Muse rejects conflicting terminals through EOF", async () => {
+  const { worker } = harness([versionOk, p => {
+    p.pushLine(terminal())
+    p.pushLine(terminal("failed", "failed", "run.terminal.failed"))
+    p.end(0)
+  }])
+  await assert.rejects(worker.runAgent(spec(), ctx()), rejects("turn_failed"))
+})
+
+// Regression: malformed settings never quote credential-adjacent input into errors or events.
+test("Muse malformed settings diagnostic is content-free", async () => {
+  const source = join(configRoot, "muse")
+  mkdirSync(source, { recursive: true })
+  const settings = join(source, "settings.json")
+  const sentinel = "SECRET_SENTINEL_TOKEN"
+  writeFileSync(settings, sentinel)
+  const context = ctx()
+  try {
+    const { worker } = harness([versionOk])
+    await assert.rejects(worker.runAgent(spec(), context), (err: unknown) => {
+      assert.ok(err instanceof AgentError)
+      assert.equal(err.code, "invalid_config")
+      assert.equal(err.message.includes(sentinel), false)
+      assert.ok(err.message.includes(settings))
+      return true
+    })
+    assert.equal(JSON.stringify(context.events).includes(sentinel), false)
+  } finally { rmSync(settings, { force: true }) }
+})
+
+// Regression: cancelling --version interrupts preflight and does not poison the cached check.
+test("Muse cancels preflight and retries version on the next attempt", async () => {
+  const ac = new AbortController()
+  const { worker, spawned } = harness([
+    p => { ac.abort(); p.stdout.emit("data", "1.2.1\n"); p.end(0) },
+    versionOk,
+    p => { p.pushLine(terminal()); p.end(0) },
+  ])
+  await assert.rejects(worker.runAgent(spec(), ctx(ac.signal)), AgentInterrupted)
+  assert.deepEqual(spawned[0]!.proc.kills, ["SIGTERM"])
+  assert.equal((await worker.runAgent(spec(), ctx())).text, "final")
+  assert.deepEqual(spawned.map(call => call.args[0]), ["--version", "--version", "exec"])
+})
+
+// Regression: a SIGTERM-resistant child can recreate XDG until SIGKILL; cleanup must follow close.
+test("Muse scratch remains absent after a SIGTERM-resistant child closes", { skip: process.platform === "win32", timeout: 15_000 }, async () => {
+  const settings = join(configRoot, "muse", "settings.json")
+  mkdirSync(dirname(settings), { recursive: true })
+  writeFileSync(settings, "{}")
+  const ac = new AbortController()
+  let child: ChildProcessWithoutNullStreams | undefined
+  let scratch = ""
+  let closed = false
+  const worker = new MuseWorker({ spawnProcess: (_bin, args, opts) => {
+    if (args.includes("--version")) return spawn(process.execPath, ["-e", 'console.log("1.2.1")'])
+    scratch = dirname(opts.env!.XDG_CONFIG_HOME!)
+    child = spawn(process.execPath, ["-e", `
+      const fs = require('node:fs');
+      process.on('SIGTERM', () => {});
+      setInterval(() => {
+        fs.mkdirSync(process.env.XDG_CONFIG_HOME, { recursive: true });
+        fs.writeFileSync(process.env.XDG_CONFIG_HOME + '/still-alive', 'yes');
+      }, 10);
+      console.log(JSON.stringify({payload_type:'run.output.delta',payload:{text:'ready'}}));
+    `], { env: opts.env })
+    child.on("close", () => { closed = true })
+    return child
+  } })
+  try {
+    await assert.rejects(worker.runAgent(spec(), { signal: ac.signal, onProgress: () => ac.abort() }), AgentInterrupted)
+    assert.equal(closed, true)
+    assert.equal(child!.signalCode, "SIGKILL")
+    assert.equal(existsSync(scratch), false)
+    await new Promise(resolve => setTimeout(resolve, 50))
+    assert.equal(existsSync(scratch), false)
+  } finally {
+    child?.kill("SIGKILL")
+    rmSync(settings, { force: true })
+    if (scratch) rmSync(scratch, { recursive: true, force: true })
+  }
+})
+
+// Regression: cancellation of the shared preflight owner must not cancel another live attempt.
+test("Muse retries shared preflight for the uncancelled concurrent attempt", async () => {
+  const first = new AbortController()
+  const second = new AbortController()
+  const { worker, spawned } = harness([
+    p => { first.abort(); p.end(null, "SIGTERM") },
+    versionOk,
+    p => { p.pushLine(terminal()); p.end(0) },
+  ])
+  const results = await Promise.allSettled([
+    worker.runAgent(spec(), ctx(first.signal)),
+    worker.runAgent(spec(), ctx(second.signal)),
+  ])
+  assert.equal(results[0]!.status, "rejected")
+  if (results[0]!.status === "rejected") assert.ok(results[0]!.reason instanceof AgentInterrupted)
+  assert.equal(second.signal.aborted, false)
+  assert.equal(results[1]!.status, "fulfilled")
+  if (results[1]!.status === "fulfilled") assert.equal(results[1]!.value.text, "final")
+  assert.deepEqual(spawned.map(call => call.args[0]), ["--version", "--version", "exec"])
 })

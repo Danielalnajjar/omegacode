@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Opt-in credential lane. Tests inject a fake executable; pnpm test never launches Muse.
 import { spawnSync } from "node:child_process"
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
@@ -21,7 +21,7 @@ export async function runMuseSmoke({ bin, cwd = process.cwd(), timeoutMs = 120_0
     }, { signal: controller.signal, onProgress: event => events.push(event) })
     const heading = readFileSync(join(cwd, "README.md"), "utf8").split("\n").find(line => line.startsWith("# "))
     if (!heading || !result.text.includes(heading)) throw new Error(`Muse smoke did not return README heading: ${result.text}`)
-    if (!events.some(event => event.kind === "tool-result" && event.name === "read_file")) throw new Error("Muse smoke did not read the file")
+    if (!events.some(event => event.kind === "tool-result" && event.name === "read_file" && event.isError === false)) throw new Error("Muse smoke did not read the file")
     return { status: result.status, text: result.text, usage: result.usage, readFileObserved: true }
   } finally {
     clearTimeout(timer)
@@ -29,14 +29,14 @@ export async function runMuseSmoke({ bin, cwd = process.cwd(), timeoutMs = 120_0
   }
 }
 
-function runEndToEnd(bin) {
+export function runEndToEnd(bin, spawnProcess = spawnSync) {
   const scratch = mkdtempSync(join(tmpdir(), "omega-muse-e2e-"))
   try {
     const file = join(scratch, "muse.workflow.js")
     writeFileSync(file, `export const meta = { name: "muse-e2e", description: "Read README through Muse" }\nreturn await agent("Read README.md with read_file and return its first heading exactly, without other text.", { provider: "muse", model: "muse-spark-1.3-contributor", sandbox: "read-only", effort: "low", maxTurns: 4, cwd: ${JSON.stringify(process.cwd())} })\n`)
     const args = ["dev", "run", file, "--no-serve", "--json"]
     process.stderr.write(`End-to-end command: pnpm ${args.join(" ")}\n`)
-    const child = spawnSync("pnpm", args, {
+    const child = spawnProcess("pnpm", args, {
       env: { ...process.env, MUSE_BIN: bin, OMEGACODE_HOME: join(scratch, "omega-home") },
       encoding: "utf8", timeout: 180_000, maxBuffer: 2 * 1024 * 1024,
     })
@@ -57,8 +57,10 @@ function runEndToEnd(bin) {
     if (!outcome) throw new Error("Muse end-to-end stdout has no complete JSON object")
     const heading = readFileSync("README.md", "utf8").split("\n").find(line => line.startsWith("# "))
     if (outcome.status !== "completed" || typeof outcome.result !== "string" || !outcome.result.includes(heading)) throw new Error("Muse end-to-end did not complete with README text")
-    const events = readFileSync(join(scratch, "omega-home", "runs", outcome.runId, "events.jsonl"), "utf8")
-    if (!events.includes("read_file")) throw new Error("Muse end-to-end has no read_file evidence")
+    const agents = join(scratch, "omega-home", "runs", outcome.runId, "agents")
+    const events = readdirSync(agents).filter(name => name.endsWith(".jsonl")).flatMap(name =>
+      readFileSync(join(agents, name), "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line)))
+    if (!events.some(event => event.kind === "tool-result" && event.name === "read_file" && event.isError === false)) throw new Error("Muse end-to-end has no read_file evidence")
   } finally {
     rmSync(scratch, { recursive: true, force: true })
   }

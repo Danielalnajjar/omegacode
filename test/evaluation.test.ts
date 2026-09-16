@@ -3,7 +3,8 @@ import assert from "node:assert/strict"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Evaluator, validateResult, type EvaluationRequest, type EvaluationResult } from "../src/evaluation.ts"
+import { Evaluator, validateResult } from "../src/evaluation.ts"
+import type { EvaluationRequest, EvaluationResult } from "../src/evaluation-types.ts"
 import { runWorkflow } from "../src/runtime/run.ts"
 import { Journal, journalPath } from "../src/runtime/journal.ts"
 import { AgentInterrupted } from "../src/worker/index.ts"
@@ -20,7 +21,7 @@ test("HTTP retry, full-input/model explicit-key identity, replay and no input jo
     assert.equal(opts.headers.Authorization, "Bearer test-only")
     assert.equal(JSON.parse(opts.body).state.startsWith("private-source"), true)
     calls++
-    return calls <= 2 ? new Response("not logged", { status: calls === 1 ? 429 : 529 }) : Response.json(result)
+    return calls <= 2 ? new Response("not logged", { status: calls === 1 ? 429 : 529 }) : Response.json({ ...result, model: JSON.parse(opts.body).model })
   })
   const cached = new Map()
   const saved: unknown[] = []
@@ -39,7 +40,7 @@ test("disabled, oversized input, invalid answer and HTTP error do not disclose s
   t.mock.property(process, "env", { ...process.env, TYPESAFE_API_KEY: "test-only" })
   let calls = 0
   t.mock.method(globalThis, "fetch", async () => { calls++; return new Response("private-source test-only", { status: 401 }) })
-  const evaluator = new Evaluator({ enabled: true, signal: new AbortController().signal, cached: new Map(), save: () => assert.fail() })
+  const evaluator = new Evaluator({ enabled: true, signal: new AbortController().signal, cached: new Map(), save: (_key, receipt) => assert.deepEqual(receipt, { status: "failed", code: "http_401" }) })
   await assert.rejects(new Evaluator({ enabled: false, signal: new AbortController().signal, cached: new Map(), save: () => assert.fail() }).evaluate(request), /disabled/)
   await assert.rejects(evaluator.evaluate({ ...request, state: "x".repeat(1_048_577) }), /invalid_data/)
   assert.equal(calls, 0)
@@ -119,8 +120,28 @@ test("Choice and Score validate distributions; score rubric is omitted from repl
   assert.throws(() => validateResult({ ...response, answers: { ...response.answers, route: { ...response.answers.route, choice: "yes" } } }, questions))
 })
 
-test("oversized HTTP response is rejected before journaling", async t => {
+test("oversized HTTP response journals only a sanitized failure", async t => {
   t.mock.property(process, "env", { ...process.env, TYPESAFE_API_KEY: "test-only" })
   t.mock.method(globalThis, "fetch", async () => new Response("x".repeat(1_048_577)))
-  await assert.rejects(new Evaluator({ enabled: true, signal: new AbortController().signal, cached: new Map(), save: () => assert.fail() }).evaluate(request), /invalid_data/)
+  await assert.rejects(new Evaluator({ enabled: true, signal: new AbortController().signal, cached: new Map(), save: (_key, receipt) => assert.deepEqual(receipt, { status: "failed", code: "invalid_data" }) }).evaluate(request), /invalid_data/)
+})
+
+test("failed evaluation keeps the same fallback branch on public resume", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "omega-eval-fallback-"))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  t.mock.property(process, "env", { OMEGACODE_HOME: dir, TYPESAFE_API_KEY: "synthetic" })
+  let calls = 0
+  t.mock.method(globalThis, "fetch", async () => { calls++; return new Response("private-error", { status: 401 }) })
+  const file = join(dir, "fallback.workflow.js")
+  writeFileSync(file, `export const meta = { name: "fallback", description: "test" }; try { await evaluate(${JSON.stringify(request)}); return "jev" } catch { return "frontier" }`)
+  const first = await runWorkflow({ file, typesafe: true, quiet: true })
+  assert.equal(first.result, "frontier")
+  const loaded = Journal.load(first.runId)
+  assert.equal(loaded.evaluationAttempts?.requests, 1)
+  assert.deepEqual([...loaded.evaluations!.values()], [{ status: "failed", code: "http_401" }])
+  assert.doesNotMatch(readFileSync(journalPath(first.runId), "utf8"), /private-source|private-instruction|private-error|synthetic/)
+  t.mock.method(globalThis, "fetch", async () => { calls++; return Response.json(result) })
+  const resumed = await runWorkflow({ file, typesafe: true, quiet: true, resumeRunId: first.runId })
+  assert.equal(resumed.result, "frontier")
+  assert.equal(calls, 1)
 })

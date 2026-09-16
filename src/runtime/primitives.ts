@@ -171,6 +171,8 @@ export class Runtime {
     const evaluator = new Evaluator({ enabled: this.o.typesafe === true, signal: this.o.signal,
       cached: this.o.loaded.evaluations ?? new Map(),
       save: (key, result) => this.o.journal.append({ type: "evaluation", key, result }),
+      attempts: this.o.loaded.evaluationAttempts,
+      saveAttempt: bytes => this.o.journal.append({ type: "evaluation-attempt", bytes }),
     })
     const total = this.o.defaults.budget
     const budget = Object.freeze({
@@ -183,7 +185,11 @@ export class Runtime {
         const p = evaluator.evaluate(request, opts)
         this.inFlight.add(p)
         const done = () => this.inFlight.delete(p)
-        p.then(done, done)
+        p.then(done, () => {
+          done()
+          // Keep even unawaited failures visible without logging request or remote error text.
+          this.log("evaluation failed; no answer is available")
+        })
         return p
       },
       agent: this.agent.bind(this) as WorkflowGlobals["agent"],

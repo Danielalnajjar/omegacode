@@ -8,12 +8,26 @@ export class Semaphore {
     }
   }
 
-  async acquire(): Promise<() => void> {
+  async acquire(signal?: AbortSignal): Promise<() => void> {
+    signal?.throwIfAborted()
     if (this.active < this.limit) {
       this.active++
       return this.makeRelease()
     }
-    await new Promise<void>((resolve) => this.queue.push(resolve))
+    await new Promise<void>((resolve, reject) => {
+      const wake = () => {
+        signal?.removeEventListener("abort", abort)
+        resolve()
+      }
+      const abort = () => {
+        const index = this.queue.indexOf(wake)
+        if (index >= 0) this.queue.splice(index, 1)
+        signal?.removeEventListener("abort", abort)
+        reject(signal?.reason)
+      }
+      this.queue.push(wake)
+      signal?.addEventListener("abort", abort, { once: true })
+    })
     // The waker hands off our slot without decrementing `active`, so we hold a reserved slot here.
     return this.makeRelease()
   }
@@ -34,9 +48,10 @@ export class Semaphore {
     }
   }
 
-  async run<T>(fn: () => Promise<T>): Promise<T> {
-    const release = await this.acquire()
+  async run<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const release = await this.acquire(signal)
     try {
+      signal?.throwIfAborted()
       return await fn()
     } finally {
       release()

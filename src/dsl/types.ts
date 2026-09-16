@@ -154,7 +154,7 @@ export interface WorkflowBudget {
 
 /** The injected globals available inside a workflow file. */
 export interface WorkflowGlobals {
-  evaluate: (request: import("../evaluation.js").EvaluationRequest, opts?: import("../evaluation.js").EvaluationOptions) => Promise<import("../evaluation.js").EvaluationResult>
+  evaluate: (request: import("../evaluation-types.js").EvaluationRequest, opts?: import("../evaluation-types.js").EvaluationOptions) => Promise<import("../evaluation-types.js").EvaluationResult>
   agent: <T = string>(prompt: string, opts?: AgentOpts) => Promise<T>
   parallel: <T>(thunks: Array<() => Promise<T>>) => Promise<T[]>
   pipeline: (items: unknown[], ...stages: PipelineStage[]) => Promise<unknown[]>

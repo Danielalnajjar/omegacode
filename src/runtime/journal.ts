@@ -5,7 +5,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, write
 import { dirname, join } from "node:path"
 import { homedir } from "node:os"
 import type { AgentStatus, AgentUsage, ProviderId } from "../dsl/types.js"
-import type { EvaluationResult } from "../evaluation.js"
+import type { EvaluationReceipt } from "../evaluation-types.js"
 
 export interface JournalMeta {
   type: "meta"
@@ -47,11 +47,14 @@ export interface JournalResult {
   claudeProfileLabel?: string
 }
 
-export type JournalEntry = JournalMeta | JournalStarted | JournalResult | { type: "evaluation"; key: string; result: EvaluationResult }
+export type JournalEntry = JournalMeta | JournalStarted | JournalResult
+  | { type: "evaluation"; key: string; result: EvaluationReceipt }
+  | { type: "evaluation-attempt"; bytes: number }
 
 export interface LoadedJournal {
   meta?: JournalMeta
-  evaluations?: Map<string, EvaluationResult>
+  evaluations?: Map<string, EvaluationReceipt>
+  evaluationAttempts?: { requests: number; bytes: number }
   /** key -> result (last one wins on duplicates). Only `completed` results are replayable. */
   results: Map<string, JournalResult>
   /**
@@ -147,6 +150,12 @@ export class Journal {
       }
       if (entry.type === "meta") out.meta = entry
       else if (entry.type === "evaluation") (out.evaluations ??= new Map()).set(entry.key, entry.result)
+      else if (entry.type === "evaluation-attempt") {
+        if (!Number.isSafeInteger(entry.bytes) || entry.bytes < 0) throw new ResumePreconditionError("invalid evaluation admission journal")
+        const attempts = out.evaluationAttempts ??= { requests: 0, bytes: 0 }
+        attempts.requests++
+        attempts.bytes += entry.bytes
+      }
       else if (entry.type === "result") out.results.set(entry.key, entry)
       if ((entry.type === "started" || entry.type === "result") && typeof entry.index === "number") {
         out.indexByKey.set(entry.key, entry.index)

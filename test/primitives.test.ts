@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Runtime } from "../src/runtime/primitives.ts"
-import { ensureRunDir, Journal, type LoadedJournal } from "../src/runtime/journal.ts"
+import { ensureRunDir, Journal, type JournalEntry, type JournalStarted, type LoadedJournal } from "../src/runtime/journal.ts"
 import { FileEventSink } from "../src/runtime/event-sink.ts"
 import { agentTranscriptPath } from "../src/runtime/transcript.ts"
 import { runInSandbox } from "../src/runtime/sandbox.ts"
@@ -822,6 +822,31 @@ test("a resolved Claude profile name is shown on agent events without leaking th
     assert.equal(journal.includes("PROFILE-MUST-STAY-PRIVATE"), false)
     assert.equal(readFileSync(agentTranscriptPath("run_test", 1), "utf8").includes("PROFILE-MUST-STAY-PRIVATE"), false)
     assert.equal(readFileSync(agentTranscriptPath("run_test", 1), "utf8").includes("Work Max"), false)
+  } finally {
+    b.cleanup()
+  }
+})
+
+test("the journaled started entry records the resolved model, effort, and service tier", async () => {
+  const b = build({ defaults: { effort: "low" } })
+  try {
+    await runBody(b, `return await agent("x", { provider: "codex", model: "gpt-6-astra", effort: "high", serviceTier: "default" })`)
+    await runBody(b, `return await agent("y", { provider: "codex", model: "gpt-6-astra" })`)
+    const started = readFileSync(join(b.home, "runs", "run_test", "journal.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as JournalEntry)
+      .filter((entry): entry is JournalStarted => entry.type === "started")
+    assert.equal(started.length, 2)
+    assert.deepEqual(
+      started.map(({ model, effort, serviceTier }) => ({ model, effort, serviceTier })),
+      [
+        { model: "gpt-6-astra", effort: "high", serviceTier: "default" },
+        // Defaults resolve into the record; an unset service tier is absent, not null.
+        { model: "gpt-6-astra", effort: "low", serviceTier: undefined },
+      ],
+    )
+    assert.equal("serviceTier" in started[1]!, false)
   } finally {
     b.cleanup()
   }

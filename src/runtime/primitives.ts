@@ -415,7 +415,16 @@ export class Runtime {
       }
       const startedAt = Date.now()
       this.o.events.emit({ type: "agent", index, phaseIndex, phaseTitle, label, provider: spec.provider, model: spec.model, state: "running", startedAt })
-      this.o.journal.append({ type: "started", key, index, label, provider: spec.provider })
+      this.o.journal.append({
+        type: "started",
+        key,
+        index,
+        label,
+        provider: spec.provider,
+        ...(spec.model ? { model: spec.model } : {}),
+        ...(spec.effort ? { effort: spec.effort } : {}),
+        ...(spec.serviceTier ? { serviceTier: spec.serviceTier } : {}),
+      })
 
       let worktree: (Worktree & { gitRoot: string }) | undefined
       let claudeProfileLabel: string | undefined

@@ -30,6 +30,11 @@ jobs:
           base64 -d /tmp/patch.b64 | gzip -d > /tmp/jev.patch
           git apply --check /tmp/jev.patch
           git apply /tmp/jev.patch
+          cat .jev-build/newfiles.part0 .jev-build/newfiles.part1 .jev-build/newfiles.part2 > /tmp/newfiles.b64
+          test "$(sha256sum /tmp/newfiles.b64 | cut -d' ' -f1)" = 10164fdfe036cad99ed9cc9e70d2666b663fa5be3bb7956c754d2fe10672456f
+          base64 -d /tmp/newfiles.b64 > /tmp/newfiles.tgz
+          tar -xzf /tmp/newfiles.tgz
+          sed -i 's/out\.evaluations\.set(entry\.key, entry)/out.evaluations!.set(entry.key, entry)/' src/runtime/journal.ts
           rm -rf .jev-build .github/workflows/jev-construction.yml
           corepack enable
           pnpm install --frozen-lockfile --prefer-offline

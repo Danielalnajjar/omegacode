@@ -240,6 +240,7 @@ function sessionUsage(sessionId: string, ctx: WorkerContext): AgentUsage {
     }
     collect(join(session, "subagent"))
     const usage = emptyUsage()
+    let completions = 0
     const number = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined
     for (const log of logs) {
       path = log
@@ -254,6 +255,7 @@ function sessionUsage(sessionId: string, ctx: WorkerContext): AgentUsage {
         const event = isObject(value.payload) ? value.payload.event : undefined
         if (!isObject(event) || event.kind !== "model_completed" || !isObject(event.usage)) continue
         const raw = event.usage
+        completions++
         usage.inputTokens += number(raw.input_tokens) ?? 0
         // Match Grok: reasoning is not added to the reported output total.
         usage.outputTokens += number(raw.output_tokens) ?? 0
@@ -264,10 +266,12 @@ function sessionUsage(sessionId: string, ctx: WorkerContext): AgentUsage {
       }
       if (malformed && !validLines) throw new Error("malformed session log")
     }
+    // A completed turn always made at least one model call; a log without one is truncated or reshaped, not free.
+    if (!completions) throw new Error("no completion records")
     return usage
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code
-    const reason = code || (error instanceof Error && ["session log missing", "malformed session log"].includes(error.message) ? error.message : "session log unavailable")
+    const reason = code || (error instanceof Error && ["session log missing", "malformed session log", "no completion records"].includes(error.message) ? error.message : "session log unavailable")
     ctx.onProgress({ kind: "phase", phase: `Muse usage unavailable: ${path} (${reason})` })
     return emptyUsage()
   }

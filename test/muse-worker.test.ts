@@ -559,10 +559,11 @@ for (const sandbox of ["read-only", "danger-full-access"] as const) {
     assert.match(spawned[1]!.args[spawned[1]!.args.indexOf("--session-id") + 1]!, /^[0-9a-f-]{36}$/)
   })
 }
-for (const problem of ["missing", "malformed", "unreadable"] as const) {
+for (const problem of ["missing", "malformed", "unreadable", "no-completions"] as const) {
   test(`Muse tolerates ${problem} usage log without exposing content`, async () => {
     const { worker } = harness([versionOk, (p, call) => {
       if (problem === "malformed") writeUsageLog(call, ["SECRET malformed bytes"])
+      if (problem === "no-completions") writeUsageLog(call, [{ payload: { event: { kind: "model_started", model: "SECRET" } } }])
       if (problem === "unreadable") { const path = writeUsageLog(call, []); rmSync(path); mkdirSync(path) }
       p.pushLine(terminal()); p.end(0)
     }])

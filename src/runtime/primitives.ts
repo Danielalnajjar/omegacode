@@ -511,10 +511,12 @@ export class Runtime {
         // instead of killing the agent and usually the whole run.
         let result = await withRetry(() => runAttempt(runSpec, workerCtx), this.o.signal, {
           onRetry: ({ attempt, maxAttempts, delayMs, error }) => {
+            // A retried attempt still billed; keep its usage so the journal and budget see every attempt.
+            if (error.usage) attemptUsage = addUsage(attemptUsage, error.usage)
             this.o.events.emit({ type: "log", message: `[${label}] retrying after ${error.code} (attempt ${attempt}/${maxAttempts}, backoff ${delayMs}ms): ${error.message}` })
           },
         })
-        attemptUsage = result.usage
+        attemptUsage = addUsage(attemptUsage, result.usage)
         let value: unknown
         try {
           value = this.finalizeResult(spec, result)
@@ -528,6 +530,7 @@ export class Runtime {
             }
             result = await withRetry(() => runAttempt(corrective, workerCtx), this.o.signal, {
               onRetry: ({ attempt, maxAttempts, delayMs, error }) => {
+                if (error.usage) attemptUsage = addUsage(attemptUsage, error.usage)
                 this.o.events.emit({ type: "log", message: `[${label}] corrective retry after ${error.code} (attempt ${attempt}/${maxAttempts}, backoff ${delayMs}ms): ${error.message}` })
               },
             })

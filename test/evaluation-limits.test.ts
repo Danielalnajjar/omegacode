@@ -5,6 +5,7 @@ import { Evaluator, MAX_NETWORK_BYTES } from "../src/evaluation.ts"
 import { AgentInterrupted } from "../src/worker/index.ts"
 import { providerEnv } from "../src/worker/provider-env.ts"
 import { Semaphore } from "../src/runtime/semaphore.ts"
+import { setTestEnv } from "./test-env.ts"
 
 const request = { state: "private-state", questions: { privateQuestion: { type: "noul" as const, instructions: "private-instruction" } } }
 const result = { model: "jev-latest", answers: { privateQuestion: { type: "noul", noul: 0.7 } }, usage: { input_tokens: 1, output_tokens: 2 } }
@@ -27,7 +28,7 @@ test("queued cancellation removes waiter without stealing or leaking an active s
 })
 
 test("total deadline includes queue time, active HTTP and body consumption", async t => {
-  t.mock.property(process, "env", { TYPESAFE_API_KEY: "synthetic" })
+  setTestEnv(t, { TYPESAFE_API_KEY: "synthetic" })
   let calls = 0
   t.mock.method(globalThis, "fetch", async (_url, opts) => {
     calls++
@@ -53,7 +54,7 @@ test("total deadline includes queue time, active HTTP and body consumption", asy
 })
 
 test("parent cancellation drains active and queued evaluations, never becomes a fallback error", async t => {
-  t.mock.property(process, "env", { TYPESAFE_API_KEY: "synthetic" })
+  setTestEnv(t, { TYPESAFE_API_KEY: "synthetic" })
   const ac = new AbortController()
   let calls = 0
   t.mock.method(globalThis, "fetch", async (_url, opts) => {
@@ -71,7 +72,7 @@ test("parent cancellation drains active and queued evaluations, never becomes a 
 })
 
 test("concurrency cap and in-flight dedup preserve independent copies and full explicit-key inputs", async t => {
-  t.mock.property(process, "env", { TYPESAFE_API_KEY: "synthetic" })
+  setTestEnv(t, { TYPESAFE_API_KEY: "synthetic" })
   let active = 0, peak = 0, calls = 0
   t.mock.method(globalThis, "fetch", async () => {
     calls++; peak = Math.max(peak, ++active)
@@ -92,7 +93,7 @@ test("concurrency cap and in-flight dedup preserve independent copies and full e
 })
 
 test("Retry-After seconds/date cannot overrun total budget or trigger an early retry", async t => {
-  t.mock.property(process, "env", { TYPESAFE_API_KEY: "synthetic" })
+  setTestEnv(t, { TYPESAFE_API_KEY: "synthetic" })
   for (const header of ["120", "9".repeat(400), new Date(Date.now() + 120_000).toUTCString()]) {
     let calls = 0
     t.mock.method(globalThis, "fetch", async () => { calls++; return new Response(null, { status: 429, headers: { "retry-after": header } }) })
@@ -111,7 +112,7 @@ test("Retry-After seconds/date cannot overrun total budget or trigger an early r
 })
 
 test("independent call, HTTP request and outgoing-byte budgets bound runaway evaluation", async t => {
-  t.mock.property(process, "env", { TYPESAFE_API_KEY: "synthetic" })
+  setTestEnv(t, { TYPESAFE_API_KEY: "synthetic" })
   let calls = 0
   t.mock.method(globalThis, "fetch", async () => { calls++; return Response.json(result) })
   const limited = new Evaluator({ enabled: true, signal: new AbortController().signal, cached: new Map(), save: () => {}, limits: { maxCalls: 2 } })
@@ -128,7 +129,7 @@ test("independent call, HTTP request and outgoing-byte budgets bound runaway eva
 })
 
 test("identifiers including __proto__ round-trip without persisting source names", async t => {
-  t.mock.property(process, "env", { TYPESAFE_API_KEY: "synthetic" })
+  setTestEnv(t, { TYPESAFE_API_KEY: "synthetic" })
   const questions = JSON.parse('{"__proto__":{"type":"noul","instructions":"private"},"privateQuestion":{"type":"choice","instructions":"private","criteria":{"privateYes":null,"privateNo":null}}}')
   const response = JSON.parse('{"model":"jev-latest","answers":{"__proto__":{"type":"noul","noul":0.6},"privateQuestion":{"type":"choice","choice":"privateYes","probabilities":{"privateYes":0.8,"privateNo":0.2},"confidence":0.6}},"usage":{"input_tokens":1,"output_tokens":2}}')
   let calls = 0
@@ -142,7 +143,7 @@ test("identifiers including __proto__ round-trip without persisting source names
 })
 
 test("invalid JSON states and network failures never disclose request/credential/error text", async t => {
-  t.mock.property(process, "env", { TYPESAFE_API_KEY: "synthetic" })
+  setTestEnv(t, { TYPESAFE_API_KEY: "synthetic" })
   let calls = 0
   t.mock.method(globalThis, "fetch", async () => { calls++; throw new Error("synthetic private-network-detail") })
   const evaluator = new Evaluator({ enabled: true, signal: new AbortController().signal, cached: new Map(), save: (_key, receipt) => assert.deepEqual(receipt, { status: "failed", code: "request_failed" }) })
@@ -159,7 +160,7 @@ test("invalid JSON states and network failures never disclose request/credential
 })
 
 test("network packing respects whole-state byte budget; pinned models and options are checked", async t => {
-  t.mock.property(process, "env", { TYPESAFE_API_KEY: "synthetic" })
+  setTestEnv(t, { TYPESAFE_API_KEY: "synthetic" })
   const sizes: number[] = []
   const state = "s".repeat(16_000)
   t.mock.method(globalThis, "fetch", async (_url, opts) => {
@@ -183,7 +184,7 @@ test("network packing respects whole-state byte budget; pinned models and option
 })
 
 test("interrupted HTTP admissions survive resume without recording a fallback failure", async t => {
-  t.mock.property(process, "env", { TYPESAFE_API_KEY: "synthetic" })
+  setTestEnv(t, { TYPESAFE_API_KEY: "synthetic" })
   const ac = new AbortController()
   const admissions = { requests: 0, bytes: 0 }
   const cached = new Map()
@@ -201,7 +202,7 @@ test("interrupted HTTP admissions survive resume without recording a fallback fa
 })
 
 test("aggregated usage must remain a safe integer across question batches", async t => {
-  t.mock.property(process, "env", { TYPESAFE_API_KEY: "synthetic" })
+  setTestEnv(t, { TYPESAFE_API_KEY: "synthetic" })
   t.mock.method(globalThis, "fetch", async (_url, opts) => {
     const { questions } = JSON.parse(opts.body)
     return Response.json({ ...result, usage: { input_tokens: Number.MAX_SAFE_INTEGER, output_tokens: 1 },

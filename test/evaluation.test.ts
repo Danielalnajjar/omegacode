@@ -8,12 +8,13 @@ import type { EvaluationRequest, EvaluationResult } from "../src/evaluation-type
 import { runWorkflow } from "../src/runtime/run.ts"
 import { Journal, journalPath } from "../src/runtime/journal.ts"
 import { AgentInterrupted } from "../src/worker/index.ts"
+import { setTestEnv } from "./test-env.ts"
 
 const request: EvaluationRequest = { state: "private-source", questions: { urgent: { type: "noul", instructions: "private-instruction" } } }
 const result: EvaluationResult = { model: "jev-latest", answers: { urgent: { type: "noul", noul: 0.83 } }, usage: { input_tokens: 11, output_tokens: 3 } }
 
 test("HTTP retry, full-input/model explicit-key identity, replay and no input journal disclosure", async t => {
-  t.mock.property(process, "env", { ...process.env, TYPESAFE_API_KEY: "test-only" })
+  setTestEnv(t, { TYPESAFE_API_KEY: "test-only" })
   let calls = 0
   t.mock.method(globalThis, "fetch", async (url, opts) => {
     assert.equal(url, "https://api.typesafe.ai/v1/systemone")
@@ -37,7 +38,7 @@ test("HTTP retry, full-input/model explicit-key identity, replay and no input jo
 })
 
 test("disabled, oversized input, invalid answer and HTTP error do not disclose source", async t => {
-  t.mock.property(process, "env", { ...process.env, TYPESAFE_API_KEY: "test-only" })
+  setTestEnv(t, { TYPESAFE_API_KEY: "test-only" })
   let calls = 0
   t.mock.method(globalThis, "fetch", async () => { calls++; return new Response("private-source test-only", { status: 401 }) })
   const evaluator = new Evaluator({ enabled: true, signal: new AbortController().signal, cached: new Map(), save: (_key, receipt) => assert.deepEqual(receipt, { status: "failed", code: "http_401" }) })
@@ -49,7 +50,7 @@ test("disabled, oversized input, invalid answer and HTTP error do not disclose s
 })
 
 test("parent cancellation propagates through active HTTP rather than becoming consumer fallback", async t => {
-  t.mock.property(process, "env", { ...process.env, TYPESAFE_API_KEY: "test-only" })
+  setTestEnv(t, { TYPESAFE_API_KEY: "test-only" })
   const ac = new AbortController()
   t.mock.method(globalThis, "fetch", async (_url, opts) => {
     ac.abort()
@@ -60,7 +61,7 @@ test("parent cancellation propagates through active HTTP rather than becoming co
 })
 
 test("independent questions batch without truncating state and aggregate usage", async t => {
-  t.mock.property(process, "env", { ...process.env, TYPESAFE_API_KEY: "test-only" })
+  setTestEnv(t, { TYPESAFE_API_KEY: "test-only" })
   const sizes: number[] = []
   t.mock.method(globalThis, "fetch", async (_url, opts) => {
     const body = JSON.parse(opts.body)
@@ -78,7 +79,7 @@ test("independent questions batch without truncating state and aggregate usage",
 test("real sandbox global, persisted replay, permission pinning and fake/off no network", async t => {
   const dir = mkdtempSync(join(tmpdir(), "omega-evaluation-"))
   t.after(() => rmSync(dir, { recursive: true, force: true }))
-  t.mock.property(process, "env", { ...process.env, OMEGACODE_HOME: dir, TYPESAFE_API_KEY: "test-only" })
+  setTestEnv(t, { OMEGACODE_HOME: dir, TYPESAFE_API_KEY: "test-only" })
   let calls = 0
   t.mock.method(globalThis, "fetch", async () => { calls++; return Response.json(result) })
   const file = join(dir, "evaluation.workflow.js")
@@ -101,7 +102,7 @@ test("real sandbox global, persisted replay, permission pinning and fake/off no 
 })
 
 test("Choice and Score validate distributions; score rubric is omitted from replay receipt", async t => {
-  t.mock.property(process, "env", { ...process.env, TYPESAFE_API_KEY: "test-only" })
+  setTestEnv(t, { TYPESAFE_API_KEY: "test-only" })
   const questions = {
     route: { type: "choice", instructions: "route", criteria: { yes: null, no: "no" } },
     rank: { type: "score", instructions: "rank", criteria: ["private-low", "private-high"] },
@@ -121,7 +122,7 @@ test("Choice and Score validate distributions; score rubric is omitted from repl
 })
 
 test("oversized HTTP response journals only a sanitized failure", async t => {
-  t.mock.property(process, "env", { ...process.env, TYPESAFE_API_KEY: "test-only" })
+  setTestEnv(t, { TYPESAFE_API_KEY: "test-only" })
   t.mock.method(globalThis, "fetch", async () => new Response("x".repeat(1_048_577)))
   await assert.rejects(new Evaluator({ enabled: true, signal: new AbortController().signal, cached: new Map(), save: (_key, receipt) => assert.deepEqual(receipt, { status: "failed", code: "invalid_data" }) }).evaluate(request), /invalid_data/)
 })
@@ -129,7 +130,7 @@ test("oversized HTTP response journals only a sanitized failure", async t => {
 test("failed evaluation keeps the same fallback branch on public resume", async t => {
   const dir = mkdtempSync(join(tmpdir(), "omega-eval-fallback-"))
   t.after(() => rmSync(dir, { recursive: true, force: true }))
-  t.mock.property(process, "env", { OMEGACODE_HOME: dir, TYPESAFE_API_KEY: "synthetic" })
+  setTestEnv(t, { OMEGACODE_HOME: dir, TYPESAFE_API_KEY: "synthetic" })
   let calls = 0
   t.mock.method(globalThis, "fetch", async () => { calls++; return new Response("private-error", { status: 401 }) })
   const file = join(dir, "fallback.workflow.js")
@@ -149,7 +150,7 @@ test("failed evaluation keeps the same fallback branch on public resume", async 
 test("public interrupted run retries evaluation but retains durable HTTP admission count", async t => {
   const dir = mkdtempSync(join(tmpdir(), "omega-eval-interrupted-"))
   t.after(() => rmSync(dir, { recursive: true, force: true }))
-  t.mock.property(process, "env", { OMEGACODE_HOME: dir, TYPESAFE_API_KEY: "synthetic" })
+  setTestEnv(t, { OMEGACODE_HOME: dir, TYPESAFE_API_KEY: "synthetic" })
   const ac = new AbortController()
   t.mock.method(globalThis, "fetch", async () => { ac.abort(); throw new Error("private-cancellation") })
   const file = join(dir, "interrupted.workflow.js")
@@ -168,7 +169,7 @@ test("public interrupted run retries evaluation but retains durable HTTP admissi
 test("unawaited failure emits a bounded diagnostic and stable failure receipt", async t => {
   const dir = mkdtempSync(join(tmpdir(), "omega-eval-unawaited-"))
   t.after(() => rmSync(dir, { recursive: true, force: true }))
-  t.mock.property(process, "env", { OMEGACODE_HOME: dir, TYPESAFE_API_KEY: "synthetic" })
+  setTestEnv(t, { OMEGACODE_HOME: dir, TYPESAFE_API_KEY: "synthetic" })
   t.mock.method(globalThis, "fetch", async () => { throw new Error("private-network-detail") })
   const file = join(dir, "unawaited.workflow.js")
   writeFileSync(file, `export const meta = {name:'unawaited',description:'test'}; evaluate(${JSON.stringify(request)}); return "body-result"`)

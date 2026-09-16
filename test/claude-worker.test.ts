@@ -9,6 +9,7 @@ import { ClaudeWorker, type QueryFn } from "../src/worker/claude.ts"
 import { AgentError, AgentInterrupted, type WorkerContext, type WorkerProgress } from "../src/worker/index.ts"
 import type { AgentSpec } from "../src/dsl/types.ts"
 import type { Options, PermissionResult, SDKMessage } from "@anthropic-ai/claude-agent-sdk"
+import { setTestEnv } from "./test-env.ts"
 
 interface QueryCall {
   prompt: string
@@ -226,7 +227,7 @@ test("claudeAgent selects a user-level SDK agent without loading project or loca
 })
 
 test("profile and ordinary SDK calls isolate host TypeSafe credentials", async t => {
-  t.mock.property(process, "env", { ORDINARY: "kept", TYPESAFE_API_KEY: "test-only" })
+  setTestEnv(t, { ORDINARY: "kept", TYPESAFE_API_KEY: "test-only" })
   const calls: QueryCall[] = []
   let resolutions = 0
   const worker = new ClaudeWorker({

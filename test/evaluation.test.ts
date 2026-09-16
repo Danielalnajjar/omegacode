@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { TypeSafeEvaluationClient, EvaluationError, validateEvaluationInput, validateEvaluationResponse } from "../src/evaluation/typesafe.ts"
@@ -12,6 +12,7 @@ import type { EventSink, WorkflowEventInput } from "../src/runtime/events.ts"
 import type { Worker, WorkerContext, WorkerFactory } from "../src/worker/index.ts"
 import { runInSandbox } from "../src/runtime/sandbox.ts"
 import { runWorkflow } from "../src/runtime/run.ts"
+import { AgentInterrupted } from "../src/worker/index.ts"
 
 const QUESTIONS: Record<string, EvaluationQuestion> = {
   supported: { type: "noul", instructions: "Does `claim` follow from `evidence`?" },
@@ -169,6 +170,59 @@ async function runtimeWith(client: EvaluationClient, home: string, loaded = Jour
   })
 }
 
+test("failed coalesced followers journal deterministically and retain failure across resume", async () => {
+  const home = mkdtempSync(join(tmpdir(), "omega-followers-"))
+  const previous = process.env.OMEGACODE_HOME
+  let calls = 0
+  const client: EvaluationClient = { evaluate: async () => { calls++; throw new EvaluationError("unavailable", "http_529", true, 529) } }
+  try {
+    process.env.OMEGACODE_HOME = home
+    const runtime = await runtimeWith(client, home)
+    const request = { state: "shared", questions: { q: { type: "noul" as const, instructions: "ok?" } } }
+    const results = await Promise.allSettled(["a", "b"].map(key => runtime.globals().evaluate(request, { key })))
+    assert.deepEqual(results.map(r => r.status), ["rejected", "rejected"])
+    await assert.rejects(runtime.globals().evaluate(request, { key: "c" }), { code: "http_529" })
+    assert.equal(calls, 1)
+    const loaded = Journal.load("jev_runtime")
+    assert.equal(loaded.evaluations?.size, 3)
+    for (const e of loaded.evaluations!.values()) { assert.equal(e.status, "failed"); assert.equal(e.usage, undefined) }
+    const resumed = await runtimeWith(client, home, loaded)
+    await assert.rejects(resumed.globals().evaluate(request, { key: "new-key" }), { code: "http_529" })
+    assert.equal(calls, 1)
+  } finally { if (previous === undefined) delete process.env.OMEGACODE_HOME; else process.env.OMEGACODE_HOME = previous; rmSync(home, { recursive: true, force: true }) }
+})
+
+test("evaluation abort after provider resolution remains control flow through parallel", async () => {
+  const home = mkdtempSync(join(tmpdir(), "omega-abort-eval-"))
+  const previous = process.env.OMEGACODE_HOME
+  try {
+    process.env.OMEGACODE_HOME = home
+    const ac = new AbortController()
+    const runtime = new Runtime({ runId: "jev_runtime", defaults: { ...defaults(), maxAgents: 1 }, factory: new OneFactory(), journal: new Journal("jev_runtime"), loaded: Journal.load("jev_runtime"), events: new Sink(), args: null, seed: 7, baseTimeMs: 1000, signal: ac.signal, evaluationClient: { evaluate: async () => { ac.abort(); return responseBody() as EvaluationResult } } })
+    await assert.rejects(runtime.globals().parallel([() => runtime.globals().evaluate({ state: "x", questions: QUESTIONS })]), AgentInterrupted)
+    assert.equal([...Journal.load("jev_runtime").evaluations!.values()][0]?.status, "interrupted")
+  } finally { if (previous === undefined) delete process.env.OMEGACODE_HOME; else process.env.OMEGACODE_HOME = previous; rmSync(home, { recursive: true, force: true }) }
+})
+
+test("HTTP attempts persist known and unknown usage separately and evaluation calls are not agent capped", async () => {
+  const home = mkdtempSync(join(tmpdir(), "omega-attempts-"))
+  const previous = process.env.OMEGACODE_HOME
+  let calls = 0
+  const client = new TypeSafeEvaluationClient({ apiKey: "test", sleep: async () => {}, fetchFn: async () => ++calls === 1 ? new Response("private", { status: 529 }) : new Response(JSON.stringify(responseBody())) })
+  try {
+    process.env.OMEGACODE_HOME = home
+    const runtime = new Runtime({ runId: "jev_runtime", defaults: { ...defaults(), maxAgents: 1 }, factory: new OneFactory(), journal: new Journal("jev_runtime"), loaded: Journal.load("jev_runtime"), events: new Sink(), args: null, seed: 7, baseTimeMs: 1000, signal: new AbortController().signal, evaluationClient: client })
+    await runtime.globals().evaluate({ state: "first", questions: QUESTIONS })
+    await runtime.globals().evaluate({ state: "second", questions: QUESTIONS })
+    assert.deepEqual(runtime.evaluationUsage.actual, { input_tokens: 2000, output_tokens: 24 })
+    assert.equal(runtime.evaluationUsage.unknownAttempts, 1)
+    const entries = readFileSync(join(home, "runs", "jev_runtime", "journal.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line))
+    assert.equal(entries.filter(e => e.type === "evaluation_attempt" && e.phase === "started").length, 3)
+    assert.equal(entries.filter(e => e.type === "evaluation_attempt" && e.phase === "finished").length, 3)
+    assert.ok(!JSON.stringify(entries).includes("private"))
+  } finally { if (previous === undefined) delete process.env.OMEGACODE_HOME; else process.env.OMEGACODE_HOME = previous; rmSync(home, { recursive: true, force: true }) }
+})
+
 test("evaluate() journals success and replays exact input without another network decision", async () => {
   const home = mkdtempSync(join(tmpdir(), "omega-eval-"))
   const previous = process.env.OMEGACODE_HOME
@@ -237,7 +291,7 @@ test("changed input under a resumed explicit key cannot replay; identical conten
     const reused = await resumed.globals().evaluate({ state: "new", questions }, { key: "other" })
     assert.deepEqual(reused.answers.q, { type: "noul", noul: 0.8 })
     assert.equal(calls, 2)
-    assert.deepEqual(resumed.evaluationUsage, { actual: { input_tokens: 37, output_tokens: 3 }, replayed: { input_tokens: 37, output_tokens: 3 } })
+    assert.deepEqual(resumed.evaluationUsage, { actual: { input_tokens: 37, output_tokens: 3 }, replayed: { input_tokens: 37, output_tokens: 3 }, unknownAttempts: 0 })
   } finally {
     if (previous === undefined) delete process.env.OMEGACODE_HOME; else process.env.OMEGACODE_HOME = previous
     rmSync(home, { recursive: true, force: true })

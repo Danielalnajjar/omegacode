@@ -168,8 +168,15 @@ export function evaluationKey(branchKeyValue: string, index: number, state: unkn
     .update("\0evaluation\0")
     .update(String(index))
     .update("\0")
-    .update(canonical({ state, questions, model }))
+    .update(JSON.stringify(sortEvaluationJson({ state, questions, model })))
     .digest("hex")
+}
+
+/** Evaluation evidence must retain every JSON key; do not change historical agent hashing. */
+function sortEvaluationJson(value: unknown): unknown {
+  if (value === null || typeof value !== "object") return value
+  if (Array.isArray(value)) return value.map(sortEvaluationJson)
+  return Object.fromEntries(Object.keys(value).sort().map(key => [key, sortEvaluationJson((value as Record<string, unknown>)[key])]))
 }
 
 /** Explicit evaluation keys use a distinct namespace from agent keys. */

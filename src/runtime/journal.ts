@@ -40,6 +40,19 @@ export interface JournalEvaluationStarted {
   model: string
 }
 
+/** One provider HTTP attempt. Contains accounting metadata only; never request or error bodies. */
+export interface JournalEvaluationAttempt {
+  type: "evaluation_attempt"
+  requestHash: string
+  key: string
+  batch: number
+  attempt: number
+  phase: "started" | "finished"
+  requestBytes: number
+  usage?: EvaluationUsage
+  errorCode?: string
+}
+
 export interface JournalEvaluationResult {
   type: "evaluation_result"
   requestHash: string
@@ -51,7 +64,9 @@ export interface JournalEvaluationResult {
   status: "completed" | "failed" | "interrupted"
   result?: EvaluationResult
   error?: { code: string; message: string; retryable: boolean; status?: number }
-  usage: EvaluationUsage
+  /** Known provider usage. Absent means the provider did not report it (not verified zero). */
+  usage?: EvaluationUsage
+  usageKnown?: boolean
   durationMs: number
 }
 
@@ -70,7 +85,7 @@ export interface JournalResult {
   claudeProfileLabel?: string
 }
 
-export type JournalEntry = JournalMeta | JournalStarted | JournalResult | JournalEvaluationStarted | JournalEvaluationResult
+export type JournalEntry = JournalMeta | JournalStarted | JournalResult | JournalEvaluationStarted | JournalEvaluationAttempt | JournalEvaluationResult
 
 export interface LoadedJournal {
   meta?: JournalMeta

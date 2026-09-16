@@ -80,7 +80,7 @@ export interface RunOutcome {
   result: unknown
   status: "completed" | "failed" | "interrupted"
   error?: string
-  evaluationUsage?: { actual: { input_tokens: number; output_tokens: number }; replayed: { input_tokens: number; output_tokens: number } }
+  evaluationUsage?: { actual: { input_tokens: number; output_tokens: number }; replayed: { input_tokens: number; output_tokens: number }; unknownAttempts: number }
 }
 
 /** How often a live run refreshes its heartbeat file (see the deadman switch below). */

@@ -504,7 +504,7 @@ async function cmdRun(flags: Flags): Promise<void> {
     runId: forcedRunId,
     resumeRunId,
     fake: flags.fake === true,
-    typesafe: flags.typesafe === true ? true : undefined,
+    typesafe: typeof flags.typesafe === "boolean" ? flags.typesafe : undefined,
     quiet: flags.json === true,
     onStart,
   })
@@ -600,6 +600,7 @@ function buildDetachedChildArgs(
   else out.push("--run-id", runId)
   if (opts.flags.fake === true) out.push("--fake")
   if (opts.flags.typesafe === true) out.push("--typesafe")
+  if (opts.flags.typesafe === false) out.push("--typesafe=false")
   if (opts.argsStr !== undefined) out.push("--args", opts.argsStr)
   if (opts.argsFile) out.push("--args-file", resolve(opts.argsFile))
   appendValue(out, "provider", opts.overrides.provider)

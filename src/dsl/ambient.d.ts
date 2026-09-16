@@ -21,7 +21,8 @@ declare global {
 
   type OmegacodeJSONSchema = Record<string, unknown>
 
-  type OmegacodeEvaluationState = string | number | boolean | null | OmegacodeEvaluationState[] | { [key: string]: OmegacodeEvaluationState }
+  type OmegacodeEvaluationJson = string | number | boolean | null | OmegacodeEvaluationJson[] | { [key: string]: OmegacodeEvaluationJson }
+  type OmegacodeEvaluationState = string | OmegacodeEvaluationJson[] | { [key: string]: OmegacodeEvaluationJson }
   type OmegacodeEvaluationQuestion =
     | { type: "noul"; instructions: OmegacodeEvaluationState; criteria?: { true?: string; false?: string } }
     | { type: "choice"; instructions: OmegacodeEvaluationState; criteria: Record<string, string | null> }
@@ -31,7 +32,7 @@ declare global {
     | { type: "choice"; choice: string; probabilities: Record<string, number>; confidence: number }
     | { type: "score"; score: number; legend: Record<string, string>; probabilities: Record<string, number>; confidence: number }
   interface OmegacodeEvaluationOptions { key?: string; label?: string }
-  interface OmegacodeEvaluationRequest { state: OmegacodeEvaluationState; questions: Record<string, OmegacodeEvaluationQuestion>; model?: "jev-latest" }
+  interface OmegacodeEvaluationRequest { state: OmegacodeEvaluationState; questions: Record<string, OmegacodeEvaluationQuestion>; model?: string }
   interface OmegacodeEvaluationResult {
     model: string
     answers: Record<string, OmegacodeEvaluationAnswer>

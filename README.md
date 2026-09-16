@@ -68,16 +68,27 @@ return await pipeline(
 )
 ```
 
-Plain JavaScript, no imports — the DSL is injected. `evaluate({state, questions, model?: "jev-latest"}, {label?, key?})` is a separate
+Plain JavaScript, no imports — the DSL is injected. `evaluate({state, questions, model?}, {label?, key?})` is a separate
 System One primitive for fast typed judgments through TypeSafe Jev; it is **not** an agent provider and never
 inherits coding-agent model/effort settings. It batches Choice/Score/Noul questions against one state, reads
 `TYPESAFE_API_KEY` only in the host process, journals both successes and failures for deterministic resume,
 and retries only transient 429/529/transport failures. Enable it explicitly with `--typesafe`; permission
 is pinned on resume, and legacy runs remain disabled. `--fake --typesafe` never calls the API.
 The result is `{model, answers, usage: {input_tokens, output_tokens}}` with raw token counts, not estimated
-currency. `runWorkflow().evaluationUsage` separates actual from replayed usage. Each call batches its
-questions under a conservative 128,000 JSON-character budget; requests have a 10-second attempt timeout,
-two retries and eight concurrent request slots. There is no endpoint override; redirects are refused. Workflows
+currency. `model` defaults to `jev-latest`; explicit identifiers up to 256 UTF-8 bytes permit pinned revisions.
+`runWorkflow().evaluationUsage` separates reported actual from replayed usage; `unknownAttempts` counts
+current-process attempts without reported token usage. Zero reported tokens do not prove zero billing.
+Each call partitions independent questions into at most 32 requests of 32,000 UTF-8 JSON bytes each
+(a local byte limit, not a tokenizer measurement). State or individual questions that cannot fit fail
+without truncation. Admission allows 2 MiB and 4,096 questions per call; a run allows 4,096 evaluation
+calls independently of agent limits. One 10-second total deadline covers queueing, all partitions,
+body reads, and up to three attempts per partition, with eight concurrent evaluation slots and a 1 MiB
+response limit. Retry-After is never shortened; a delay outside the deadline fails to caller fallback.
+Attempt admissions and receipts are journaled before/after HTTP, including unknown usage. Ambiguous
+attempts may be repeated on resume; this is not exactly-once execution. There is no endpoint override;
+redirects are refused. Worker environments strip the host key, but an already-running shared Codex socket
+server has its own environment: this process cannot sanitize it. Start that external server without the key.
+Workflows
 should catch evaluation failure and preserve their existing reasoning path when Jev is optional.
 
 Each `agent()` spawns a real Codex, Claude

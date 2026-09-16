@@ -17,7 +17,8 @@ export type Approval = "never" | "on-request"
 
 export type CodexWebSearch = "disabled" | "cached" | "live"
 
-export type EvaluationState = string | number | boolean | null | EvaluationState[] | { [key: string]: EvaluationState }
+export type EvaluationJson = string | number | boolean | null | EvaluationJson[] | { [key: string]: EvaluationJson }
+export type EvaluationState = string | EvaluationJson[] | { [key: string]: EvaluationJson }
 
 export interface NoulEvaluationQuestion {
   type: "noul"
@@ -65,7 +66,7 @@ export interface EvaluationOptions {
 export interface EvaluationRequest {
   state: EvaluationState
   questions: Record<string, EvaluationQuestion>
-  model?: "jev-latest"
+  model?: string
 }
 
 /** A plain JSON Schema object (draft-07-ish). We do not constrain it further at the type level. */

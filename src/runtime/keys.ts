@@ -160,6 +160,30 @@ export function explicitKey(key: string): string {
   return createHash("sha256").update(KEY_VERSION).update("\0explicit\0").update(key).digest("hex")
 }
 
+/** Compute a deterministic key for a TypeSafe evaluation within a branch. */
+export function evaluationKey(branchKeyValue: string, index: number, state: unknown, questions: unknown, model: string): string {
+  return createHash("sha256")
+    .update(KEY_VERSION)
+    .update(branchKeyValue)
+    .update("\0evaluation\0")
+    .update(String(index))
+    .update("\0")
+    .update(JSON.stringify(sortEvaluationJson({ state, questions, model })))
+    .digest("hex")
+}
+
+/** Evaluation evidence must retain every JSON key; do not change historical agent hashing. */
+function sortEvaluationJson(value: unknown): unknown {
+  if (value === null || typeof value !== "object") return value
+  if (Array.isArray(value)) return value.map(sortEvaluationJson)
+  return Object.fromEntries(Object.keys(value).sort().map(key => [key, sortEvaluationJson((value as Record<string, unknown>)[key])]))
+}
+
+/** Explicit evaluation keys use a distinct namespace from agent keys. */
+export function explicitEvaluationKey(key: string): string {
+  return createHash("sha256").update(KEY_VERSION).update("\0evaluation-explicit\0").update(key).digest("hex")
+}
+
 // --- Determinism lint (static) ----------------------------------------------------------------
 // Replay correctness needs the workflow body to be deterministic between agent calls. We forbid
 // raw Date.now()/Math.random()/new Date() at submit time (the sandbox also makes them throw). We

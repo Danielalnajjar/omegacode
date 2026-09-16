@@ -14,6 +14,12 @@ import type {
   AgentOpts,
   AgentResult,
   AgentSpec,
+  EvaluationOptions,
+  EvaluationQuestion,
+  EvaluationRequest,
+  EvaluationResult,
+  EvaluationState,
+  EvaluationUsage,
   PipelineStage,
   RunDefaults,
   WorkflowGlobals,
@@ -26,8 +32,10 @@ import { CODEX_EXECUTION_PROFILE_NAMES } from "../worker/codex-profile.js"
 import { withRetry } from "../worker/errors.js"
 import { stripNullOptionals, validate } from "../worker/schema.js"
 import { Journal, type LoadedJournal } from "./journal.js"
-import { branchKey, chainKey, explicitKey, keyedSpec, ROOT_KEY } from "./keys.js"
+import { branchKey, chainKey, evaluationKey, explicitEvaluationKey, explicitKey, keyedSpec, ROOT_KEY } from "./keys.js"
 import type { EventSink } from "./events.js"
+import type { EvaluationClient } from "../evaluation/typesafe.js"
+import { admitEvaluation, freezeEvaluation, EvaluationError } from "../evaluation/typesafe.js"
 import { AgentTranscript } from "./transcript.js"
 import { Semaphore } from "./semaphore.js"
 import { createWorktree, findGitRoot, teardownWorktree, type Worktree } from "./worktree.js"
@@ -91,6 +99,7 @@ export interface RuntimeOpts {
   seed: number
   baseTimeMs: number
   signal: AbortSignal
+  evaluationClient?: EvaluationClient
   /** meta.phases, announced as pending phase events up front so the viewer shows the full plan. */
   declaredPhases?: Array<{ title: string; detail?: string }>
 }
@@ -104,6 +113,7 @@ export interface RuntimeOpts {
 interface KeyContext {
   branchKey: string
   agentIndex: number
+  evaluationIndex: number
   /** Position of the next parallel()/pipeline() CALL within this branch (see parallel/pipeline). */
   fanoutIndex: number
   nowCounter: number
@@ -115,7 +125,7 @@ interface KeyContext {
  * journaled), distinct per branch (concurrency-invariant), different across fresh runs.
  */
 function newKeyContext(key: string, runSeed: number): KeyContext {
-  return { branchKey: key, agentIndex: 0, fanoutIndex: 0, nowCounter: 0, rngState: seedFromKey(key, runSeed) }
+  return { branchKey: key, agentIndex: 0, evaluationIndex: 0, fanoutIndex: 0, nowCounter: 0, rngState: seedFromKey(key, runSeed) }
 }
 
 /** Derive a non-zero 32-bit rng seed from a branch key hash mixed with the run seed. */
@@ -130,6 +140,10 @@ function seedFromKey(key: string, runSeed: number): number {
 export class Runtime {
   private displayIndex = 0
   private agentCalls = 0
+  private evaluationCalls = 0
+  private readonly evaluationContent = new Map<string, Promise<EvaluationMemo>>()
+  private readonly evaluationKeys = new Map<string, string>()
+  readonly evaluationUsage = { actual: { input_tokens: 0, output_tokens: 0 }, replayed: { input_tokens: 0, output_tokens: 0 }, unknownAttempts: 0 }
   private phaseIndex = 0
   private currentPhase: { index: number; title: string } | undefined
   private readonly phaseByTitle = new Map<string, number>()
@@ -163,6 +177,15 @@ export class Runtime {
       this.phaseByTitle.set(p.title, index)
       this.o.events.emit({ type: "phase", index, title: p.title, pending: true })
     }
+    // Seed by CONTENT, not journal key. Thus an exact request resumed under a different explicit
+    // key remains deterministic without pretending that changed requests are cache hits.
+    for (const entry of o.loaded.evaluations?.values() ?? []) {
+      if (entry.status === "interrupted") continue
+      const memo: EvaluationMemo = entry.status === "completed" && entry.result
+        ? { ok: true, result: freezeEvaluation(structuredClone(entry.result)), usage: entry.usage }
+        : { ok: false, error: evaluationFailure(entry), usage: entry.usage }
+      this.evaluationContent.set(entry.requestHash, Promise.resolve(memo))
+    }
   }
 
   globals(): WorkflowGlobals {
@@ -174,6 +197,7 @@ export class Runtime {
     })
     return {
       agent: this.agent.bind(this) as WorkflowGlobals["agent"],
+      evaluate: this.evaluate.bind(this),
       parallel: this.parallel.bind(this),
       pipeline: this.pipeline.bind(this),
       phase: this.phase.bind(this),
@@ -317,6 +341,145 @@ export class Runtime {
       })
     }
     return spec
+  }
+
+  private evaluate(request: EvaluationRequest, opts: EvaluationOptions = {}): Promise<EvaluationResult> {
+    const p = this.evaluateImpl(request, opts)
+    this.inFlight.add(p)
+    const done = () => this.inFlight.delete(p)
+    p.then(done, done)
+    return p
+  }
+
+  private async evaluateImpl(input: EvaluationRequest, opts: EvaluationOptions): Promise<EvaluationResult> {
+    if (this.o.signal.aborted) throw new AgentInterrupted("evaluate interrupted")
+    const client = this.o.evaluationClient
+    if (!client) throw new EvaluationError("evaluate() disabled; enable --typesafe explicitly", "disabled")
+    if (!opts || typeof opts !== "object" || Array.isArray(opts)) throw new EvaluationError("evaluate options must be an object", "invalid_input")
+    const request = admitEvaluation(input, opts)
+    const { state, questions } = request
+    const ctx = this.ctx()
+    const localIndex = ctx.evaluationIndex++
+    const model = request.model ?? "jev-latest"
+    const requestHash = evaluationKey(ROOT_KEY, 0, state, questions, model)
+    const explicit = opts.key
+    const key = explicit
+      ? explicitEvaluationKey(explicit)
+      : requestHash
+    if (explicit) {
+      const prior = this.evaluationKeys.get(key)
+      if (prior && prior !== requestHash) throw new EvaluationError("evaluation key already used with different input", "duplicate_key")
+      this.evaluationKeys.set(key, requestHash)
+    }
+    if (++this.evaluationCalls > 4096) {
+      throw new WorkflowError("evaluate() call cap reached (4096 evaluation calls per run) — likely a runaway loop")
+    }
+    const label = opts.label?.trim() || `evaluation-${localIndex + 1}`
+    const index = localIndex + 1
+    const replay = this.o.loaded.evaluations?.get(key)
+    if (replay?.requestHash === requestHash && replay.status !== "interrupted") {
+      this.o.journal.append({ type: "evaluation_started", key, requestHash, index, label, model })
+      if (replay.usage) {
+        this.evaluationUsage.replayed.input_tokens += replay.usage.input_tokens
+        this.evaluationUsage.replayed.output_tokens += replay.usage.output_tokens
+      }
+      if (replay.status === "completed" && replay.result) {
+        if (this.o.signal.aborted) {
+          const failure = new AgentInterrupted("evaluate interrupted")
+          this.o.journal.append({ type: "evaluation_result", key, requestHash, index, label, model, status: "interrupted", error: journalError(failure), usageKnown: false, reused: true, durationMs: 0 })
+          throw failure
+        }
+        this.o.journal.append({ ...replay, key, index, label, reused: true, durationMs: 0 })
+        return freezeEvaluation(structuredClone(replay.result))
+      }
+      const failure = this.o.signal.aborted ? new AgentInterrupted("evaluate interrupted") : evaluationFailure(replay)
+      this.o.journal.append({ type: "evaluation_result", key, requestHash, index, label, model, status: failure instanceof AgentInterrupted ? "interrupted" : "failed", error: journalError(failure), usage: replay.usage, usageKnown: replay.usage !== undefined, reused: true, durationMs: 0 })
+      throw failure
+    }
+
+    const existing = this.evaluationContent.get(requestHash)
+    if (existing) {
+      this.o.journal.append({ type: "evaluation_started", key, requestHash, index, label, model })
+      const started = Date.now()
+      let memoUsage: EvaluationUsage | undefined
+      try {
+        const memo = await existing
+        memoUsage = memo.usage
+        if (this.o.signal.aborted) throw new AgentInterrupted("evaluate interrupted")
+        if (!memo.ok) throw memo.error
+        if (memo.usage) {
+          this.evaluationUsage.replayed.input_tokens += memo.usage.input_tokens
+          this.evaluationUsage.replayed.output_tokens += memo.usage.output_tokens
+        }
+        this.o.journal.append({ type: "evaluation_result", key, requestHash, index, label, model: memo.result.model, status: "completed", result: memo.result, usage: memo.usage, usageKnown: memo.usage !== undefined, reused: true, durationMs: Date.now() - started })
+        return freezeEvaluation(structuredClone(memo.result))
+      } catch (error) {
+        const interrupted = error instanceof AgentInterrupted || this.o.signal.aborted
+        const failure = interrupted ? new AgentInterrupted("evaluate interrupted") : normalizeEvaluationError(error)
+        if (!interrupted && memoUsage) {
+          this.evaluationUsage.replayed.input_tokens += memoUsage.input_tokens
+          this.evaluationUsage.replayed.output_tokens += memoUsage.output_tokens
+        }
+        this.o.journal.append({ type: "evaluation_result", key, requestHash, index, label, model, status: interrupted ? "interrupted" : "failed", error: journalError(failure), usage: interrupted ? undefined : memoUsage, usageKnown: !interrupted && memoUsage !== undefined, reused: true, durationMs: Date.now() - started })
+        throw failure
+      }
+    }
+    this.o.journal.append({ type: "evaluation_started", key, requestHash, index, label, model })
+    const started = Date.now()
+    let sawAttempt = false
+    let knownUsage: EvaluationUsage | undefined
+    const onAttempt = (event: { phase: "started" | "finished"; batch: number; attempt: number; requestBytes: number; usage?: EvaluationUsage; errorCode?: string }): void => {
+      sawAttempt = true
+      this.o.journal.append({ type: "evaluation_attempt", key, requestHash, ...event })
+      if (event.phase === "started") this.evaluationUsage.unknownAttempts++
+      else if (event.usage) {
+        this.evaluationUsage.unknownAttempts = Math.max(0, this.evaluationUsage.unknownAttempts - 1)
+        this.evaluationUsage.actual.input_tokens += event.usage.input_tokens
+        this.evaluationUsage.actual.output_tokens += event.usage.output_tokens
+        knownUsage = knownUsage
+          ? { input_tokens: knownUsage.input_tokens + event.usage.input_tokens, output_tokens: knownUsage.output_tokens + event.usage.output_tokens }
+          : { ...event.usage }
+      }
+    }
+    let pendingResult: Promise<EvaluationResult>
+    try {
+      pendingResult = client.evaluate(request, this.o.signal, onAttempt)
+    } catch (error) {
+      pendingResult = Promise.reject(error)
+    }
+    const pending: Promise<EvaluationMemo> = pendingResult.then(
+      result => ({ ok: true, result: freezeEvaluation(structuredClone(result)), usage: knownUsage ?? (!sawAttempt ? result.usage : undefined) }),
+      error => ({ ok: false, error: error instanceof AgentInterrupted ? error : normalizeEvaluationError(error), usage: knownUsage }),
+    )
+    this.evaluationContent.set(requestHash, pending)
+    try {
+      const memo = await pending
+      if (!sawAttempt) {
+        if (memo.ok && memo.usage) {
+          this.evaluationUsage.actual.input_tokens += memo.usage.input_tokens
+          this.evaluationUsage.actual.output_tokens += memo.usage.output_tokens
+        } else if (!memo.ok && !(memo.error instanceof EvaluationError && ["missing_api_key", "invalid_input", "request_too_large"].includes(memo.error.code))) this.evaluationUsage.unknownAttempts++
+      }
+      if (this.o.signal.aborted) throw new AgentInterrupted("evaluate interrupted")
+      if (!memo.ok) throw memo.error
+      const result = memo.result
+      this.o.journal.append({
+        type: "evaluation_result", key, requestHash, index, label, model: result.model, status: "completed",
+        result, usage: memo.usage, usageKnown: memo.usage !== undefined, durationMs: Date.now() - started,
+      })
+      return result
+    } catch (error) {
+      const interrupted = error instanceof AgentInterrupted || this.o.signal.aborted
+      const failure = interrupted ? new AgentInterrupted("evaluate interrupted") : normalizeEvaluationError(error)
+      // Deterministic non-interrupted failures stay memoized for same-run retries. An interruption
+      // is local control flow and must never poison a later call's content memo.
+      if (interrupted) this.evaluationContent.delete(requestHash)
+      this.o.journal.append({
+        type: "evaluation_result", key, requestHash, index, label, model, status: interrupted ? "interrupted" : "failed",
+        error: journalError(failure), usage: knownUsage, usageKnown: knownUsage !== undefined, durationMs: Date.now() - started,
+      })
+      throw failure
+    }
   }
 
   private agent<T = string>(prompt: string, opts?: AgentOpts): Promise<T> {
@@ -745,6 +908,28 @@ export class Runtime {
  */
 function isControlFlow(err: unknown): boolean {
   return err instanceof AgentInterrupted || (err instanceof WorkflowError && !(err instanceof AgentFailedError))
+}
+
+type EvaluationMemo =
+  | { ok: true; result: EvaluationResult; usage?: EvaluationUsage }
+  | { ok: false; error: EvaluationError | AgentInterrupted; usage?: EvaluationUsage }
+
+function normalizeEvaluationError(error: unknown): EvaluationError {
+  return error instanceof EvaluationError
+    ? error
+    : new EvaluationError("TypeSafe evaluation failed", "evaluation_failed")
+}
+
+function evaluationFailure(entry: { error?: { code: string; message: string; retryable: boolean; status?: number } }): EvaluationError {
+  const stored = entry.error
+  return new EvaluationError(stored?.message || "journaled TypeSafe evaluation failed", stored?.code || "journaled_failure", stored?.retryable ?? false, stored?.status)
+}
+
+function journalError(error: EvaluationError | AgentInterrupted): { code: string; message: string; retryable: boolean; status?: number } {
+  if (error instanceof EvaluationError) {
+    return { code: error.code, message: error.message, retryable: error.retryable, ...(error.status === undefined ? {} : { status: error.status }) }
+  }
+  return { code: "interrupted", message: error.message, retryable: false }
 }
 
 function isStructuredOutputFailure(err: WorkflowError): boolean {

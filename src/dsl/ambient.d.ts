@@ -21,6 +21,24 @@ declare global {
 
   type OmegacodeJSONSchema = Record<string, unknown>
 
+  type OmegacodeEvaluationJson = string | number | boolean | null | OmegacodeEvaluationJson[] | { [key: string]: OmegacodeEvaluationJson }
+  type OmegacodeEvaluationState = string | OmegacodeEvaluationJson[] | { [key: string]: OmegacodeEvaluationJson }
+  type OmegacodeEvaluationQuestion =
+    | { type: "noul"; instructions: OmegacodeEvaluationState; criteria?: { true?: string; false?: string } }
+    | { type: "choice"; instructions: OmegacodeEvaluationState; criteria: Record<string, string | null> }
+    | { type: "score"; instructions: OmegacodeEvaluationState; criteria: string[] }
+  type OmegacodeEvaluationAnswer =
+    | { type: "noul"; noul: number }
+    | { type: "choice"; choice: string; probabilities: Record<string, number>; confidence: number }
+    | { type: "score"; score: number; legend: Record<string, string>; probabilities: Record<string, number>; confidence: number }
+  interface OmegacodeEvaluationOptions { key?: string; label?: string }
+  interface OmegacodeEvaluationRequest { state: OmegacodeEvaluationState; questions: Record<string, OmegacodeEvaluationQuestion>; model?: string }
+  interface OmegacodeEvaluationResult {
+    model: string
+    answers: Record<string, OmegacodeEvaluationAnswer>
+    usage: { input_tokens: number; output_tokens: number }
+  }
+
   /** Options an author passes to `agent()`. All optional; defaults come from meta/config/CLI. */
   interface OmegacodeAgentBaseOpts {
     label?: string
@@ -68,6 +86,9 @@ declare global {
   /** Run one agent turn through the selected provider. Returns final text, or a
    *  validated object when opts.schema is set. */
   function agent<T = string>(prompt: string, opts?: OmegacodeAgentOpts): Promise<T>
+
+  /** Ask TypeSafe System One to make many independent typed judgments against one state. */
+  function evaluate(request: OmegacodeEvaluationRequest, opts?: OmegacodeEvaluationOptions): Promise<OmegacodeEvaluationResult>
 
   /** Run thunks concurrently (under the cap) and await all. Wrap each call: () => agent(...). */
   function parallel<T>(thunks: Array<() => Promise<T>>): Promise<T[]>

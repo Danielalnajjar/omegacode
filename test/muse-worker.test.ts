@@ -14,9 +14,13 @@ import type { AgentSpec, Effort } from "../src/dsl/types.js"
 
 // Tests never read the operator's Muse settings or authentication.
 const configRoot = mkdtempSync(join(tmpdir(), "muse-worker-config-"))
+const priorData = process.env.XDG_DATA_HOME
+const priorMuse = process.env.MUSE_HOME
 const priorXdg = process.env.XDG_CONFIG_HOME
-before(() => { process.env.XDG_CONFIG_HOME = configRoot })
+before(() => { process.env.XDG_CONFIG_HOME = configRoot; process.env.XDG_DATA_HOME = configRoot; delete process.env.MUSE_HOME })
 after(() => {
+  if (priorData === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = priorData
+  if (priorMuse === undefined) delete process.env.MUSE_HOME; else process.env.MUSE_HOME = priorMuse
   if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME
   else process.env.XDG_CONFIG_HOME = priorXdg
   rmSync(configRoot, { recursive: true, force: true })
@@ -125,15 +129,16 @@ test("Muse replays recorded read-only success without inventing usage", async ()
   const result = await worker.runAgent(spec({ model: "muse-spark-1.3-contributor", effort: "max", maxTurns: 12 }), context)
   assert.match(result.text, /> hello/)
   assert.deepEqual(result.usage, { inputTokens: 0, outputTokens: 0, costUsd: 0 })
-  assert.equal(context.events.some(e => e.kind === "usage"), false)
+  assert.equal(context.events.filter(e => e.kind === "usage").length, 1)
   assert.ok(context.events.some(e => e.kind === "tool-result" && e.name === "read_file" && e.output?.includes("1|hello")))
   assert.ok(context.events.some(e => e.kind === "phase" && e.phase.includes("muse-spark")))
   assert.ok(context.events.some(e => e.kind === "text"))
   const args = spawned[1]!.args
-  for (const flag of ["exec", "--json", "--no-session-log", "--no-foreign-personal-context", "--disable-web-tools", "--user-input-auto-resolve"]) assert.ok(args.includes(flag))
+  for (const flag of ["exec", "--json", "--no-foreign-personal-context", "--disable-web-tools", "--user-input-auto-resolve"]) assert.ok(args.includes(flag))
   for (const [flag, value] of [["--model", "muse-spark-1.3-contributor"], ["--reasoning-effort", "max"], ["--max-model-steps", "12"], ["--permission-profile", "omegacode-read-only"]]) assert.equal(args[args.indexOf(flag!) + 1], value)
   for (const flag of ["--disable-write", "--disable-shell", "--approval-mode", "--approval-judge", "--sandbox-network"]) assert.equal(args.includes(flag), false)
-  assert.equal(args.includes("--session-id"), false)
+  assert.match(args[args.indexOf("--session-id") + 1]!, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+  assert.equal(args.includes("--no-session-log"), false)
   assert.equal(existsSync(args[args.indexOf("--prompt-file") + 1]!), false)
 })
 
@@ -166,7 +171,8 @@ test("Muse accepts a terminal with no items and ignores later items", async () =
   }])
   const context = ctx()
   assert.equal((await worker.runAgent(spec(), context)).text, "authoritative")
-  assert.deepEqual(context.events, [])
+  // Only the usage bookkeeping may follow the terminal; the late item must not surface as progress.
+  assert.deepEqual(context.events.map(e => e.kind), ["phase", "usage"])
 })
 
 for (const [code, signal, error, retryable] of [[0, null, "turn_incomplete", false], [143, null, "provider_exit", false], [null, "SIGTERM", "provider_exit", true]] as const) {
@@ -528,4 +534,55 @@ test("Muse retries shared preflight for the uncancelled concurrent attempt", asy
   assert.equal(results[1]!.status, "fulfilled")
   if (results[1]!.status === "fulfilled") assert.equal(results[1]!.value.text, "final")
   assert.deepEqual(spawned.map(call => call.args[0]), ["--version", "--version", "exec"])
+})
+
+function writeUsageLog(call: SpawnCall, lines: unknown[], child = "") {
+  const id = call.args[call.args.indexOf("--session-id") + 1]!
+  const path = join(configRoot, "muse", "sessions", "2001", "02", "03", id, child, "session.jsonl")
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, lines.map(line => typeof line === "string" ? line : JSON.stringify(line)).join("\n"))
+  return path
+}
+function completion(usage: unknown) { return { payload: { event: { kind: "model_completed", model: null, usage } } } }
+for (const sandbox of ["read-only", "danger-full-access"] as const) {
+  test(`Muse sums session and nested subagent usage: ${sandbox}`, async () => {
+    const { worker, spawned } = harness([versionOk, (p, call) => {
+      writeUsageLog(call, [completion({ input_tokens: 10, output_tokens: 3, cached_tokens: 4, reasoning_tokens: 2 }), "bad secret bytes", completion({ input_tokens: 0, output_tokens: 0 }), completion({ input_tokens: "bad" })])
+      writeUsageLog(call, [completion({ input_tokens: 20, output_tokens: 5, cache_read_tokens: 6, cached_tokens: 99, cache_write_tokens: 7 })], "subagent/a/subagent/b")
+      p.pushLine(terminal()); p.end(0)
+    }])
+    const context = ctx()
+    const result = await worker.runAgent(spec({ sandbox }), context)
+    assert.deepEqual(result.usage, { inputTokens: 30, outputTokens: 8, costUsd: 0, cacheReadInputTokens: 10, cacheCreationInputTokens: 7 })
+    assert.deepEqual(context.events.filter(e => e.kind === "usage"), [{ kind: "usage", usage: result.usage }])
+    assert.equal(spawned[1]!.args.includes("--no-session-log"), false)
+    assert.match(spawned[1]!.args[spawned[1]!.args.indexOf("--session-id") + 1]!, /^[0-9a-f-]{36}$/)
+  })
+}
+for (const problem of ["missing", "malformed", "unreadable"] as const) {
+  test(`Muse tolerates ${problem} usage log without exposing content`, async () => {
+    const { worker } = harness([versionOk, (p, call) => {
+      if (problem === "malformed") writeUsageLog(call, ["SECRET malformed bytes"])
+      if (problem === "unreadable") { const path = writeUsageLog(call, []); rmSync(path); mkdirSync(path) }
+      p.pushLine(terminal()); p.end(0)
+    }])
+    const context = ctx()
+    const result = await worker.runAgent(spec(), context)
+    assert.deepEqual(result.usage, { inputTokens: 0, outputTokens: 0, costUsd: 0 })
+    const phases = context.events.filter(e => e.kind === "phase")
+    assert.equal(phases.length, 1)
+    assert.match(JSON.stringify(phases), /session/)
+    assert.equal(JSON.stringify(phases).includes("SECRET"), false)
+  })
+}
+test("Muse preserves failed attempt usage on AgentError", async () => {
+  const { worker } = harness([versionOk, (p, call) => {
+    writeUsageLog(call, [completion({ input_tokens: 12, output_tokens: 2 })])
+    p.pushLine(terminal("failed", "failed", "run.terminal.failed")); p.end(1)
+  }])
+  await assert.rejects(worker.runAgent(spec(), ctx()), error => {
+    assert.ok(error instanceof AgentError)
+    assert.deepEqual(error.usage, { inputTokens: 12, outputTokens: 2, costUsd: 0 })
+    return true
+  })
 })

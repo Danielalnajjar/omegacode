@@ -22,6 +22,7 @@ export async function runMuseSmoke({ bin, cwd = process.cwd(), timeoutMs = 120_0
     const heading = readFileSync(join(cwd, "README.md"), "utf8").split("\n").find(line => line.startsWith("# "))
     if (!heading || !result.text.includes(heading)) throw new Error(`Muse smoke did not return README heading: ${result.text}`)
     if (!events.some(event => event.kind === "tool-result" && event.name === "read_file" && event.isError === false)) throw new Error("Muse smoke did not read the file")
+    if (!(result.usage.inputTokens > 0 && result.usage.outputTokens > 0)) throw new Error("Muse smoke requires positive token usage")
     return { status: result.status, text: result.text, usage: result.usage, readFileObserved: true }
   } finally {
     clearTimeout(timer)
@@ -61,6 +62,11 @@ export function runEndToEnd(bin, spawnProcess = spawnSync) {
     const events = readdirSync(agents).filter(name => name.endsWith(".jsonl")).flatMap(name =>
       readFileSync(join(agents, name), "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line)))
     if (!events.some(event => event.kind === "tool-result" && event.name === "read_file" && event.isError === false)) throw new Error("Muse end-to-end has no read_file evidence")
+    const journal = readFileSync(join(scratch, "omega-home", "runs", outcome.runId, "journal.jsonl"), "utf8")
+      .split("\n").filter(Boolean).map(line => JSON.parse(line))
+    const journalUsage = journal.filter(entry => entry.type === "result" && entry.provider === "muse").map(entry => entry.usage)
+    if (!journalUsage.some(usage => usage.inputTokens > 0 && usage.outputTokens > 0)) throw new Error("Muse end-to-end requires positive journal token usage")
+    console.log(JSON.stringify({ journalUsage }))
   } finally {
     rmSync(scratch, { recursive: true, force: true })
   }

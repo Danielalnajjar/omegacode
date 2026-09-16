@@ -1,9 +1,10 @@
 // One fresh Muse exec process per attempt; the shared transport owns cancellation and stalls.
+import { randomUUID } from "node:crypto"
 import { type Dirent, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { isDeepStrictEqual } from "node:util"
 import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { emptyUsage, type AgentResult, type AgentSpec } from "../dsl/types.js"
+import { emptyUsage, type AgentResult, type AgentSpec, type AgentUsage } from "../dsl/types.js"
 import { AgentError, AgentInterrupted, type Worker, type WorkerContext } from "./index.js"
 import { assertValidSchema, parseJsonLoose } from "./schema.js"
 import { captureStdout, DEFAULT_STALL_TIMEOUT_MS, exitError, runJsonlSubprocess, versionAtLeast, type SpawnProcess } from "./subprocess-jsonl.js"
@@ -51,6 +52,7 @@ export class MuseWorker implements Worker {
     const scratch = mkdtempSync(join(tmpdir(), "omegacode-muse-"))
     let run: ReturnType<typeof runJsonlSubprocess> | undefined
     let failed = false
+    const sessionId = randomUUID()
     try {
       const env = privateConfigEnv(scratch, spec.sandbox === "read-only")
       const promptPath = join(scratch, "prompt.txt")
@@ -59,13 +61,12 @@ export class MuseWorker implements Worker {
       writeFileSync(promptPath, prompt, { mode: 0o600 })
       const args = [
         "exec", "--json", "--prompt-file", promptPath, "--workspace", spec.cwd,
-        "--no-session-log", "--no-foreign-personal-context", "--disable-web-tools",
+        "--session-id", sessionId, "--no-foreign-personal-context", "--disable-web-tools",
         "--user-input-auto-resolve",
         ...(spec.sandbox === "read-only"
           ? ["--permission-profile", "omegacode-read-only"]
           : ["--approval-mode", "never", "--approval-judge", "off", "--disable-sandbox", "--disable-approval"]),
       ]
-      // Muse generates the fresh id: --session-id conflicts with --no-session-log in 1.2.1.
       if (spec.model) args.push("--model", spec.model)
       // The Muse effort menu equals OmegaCode's.
       if (spec.effort) args.push("--reasoning-effort", spec.effort)
@@ -114,9 +115,15 @@ export class MuseWorker implements Worker {
           // finalizeResult raises the existing schema error and owns the single corrective attempt.
         }
       }
-      return { text, structured, status: "completed", usage: emptyUsage() }
+      const usage = sessionUsage(sessionId, ctx)
+      ctx.onProgress({ kind: "usage", usage })
+      return { text, structured, status: "completed", usage }
     } catch (err) {
       failed = true
+      if (err instanceof AgentError && run) {
+        await run.closed
+        throw new AgentError({ provider: err.provider, code: err.code, message: err.message, retryable: err.retryable, usage: sessionUsage(sessionId, ctx) })
+      }
       throw err
     } finally {
       await run?.closed
@@ -189,3 +196,79 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
 }
 function str(value: unknown): string | undefined { return typeof value === "string" ? value : undefined }
+
+/** Read only this attempt's logs; never include log bytes in diagnostics. */
+function sessionUsage(sessionId: string, ctx: WorkerContext): AgentUsage {
+  const data = process.env.MUSE_HOME ? join(process.env.MUSE_HOME, "data")
+    : process.env.XDG_DATA_HOME ? join(process.env.XDG_DATA_HOME, "muse") : join(homedir(), ".local", "share", "muse")
+  const root = join(data, "sessions")
+  let path = join(root, sessionId, "session.jsonl")
+  try {
+    const now = new Date()
+    const datePath = (utc: boolean) => join(root, String(utc ? now.getUTCFullYear() : now.getFullYear()),
+      String((utc ? now.getUTCMonth() : now.getMonth()) + 1).padStart(2, "0"),
+      String(utc ? now.getUTCDate() : now.getDate()).padStart(2, "0"))
+    const directories = (parent: string, pattern?: RegExp): string[] => {
+      try { return readdirSync(parent, { withFileTypes: true }).filter(e => e.isDirectory() && (!pattern || pattern.test(e.name))).map(e => e.name) }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error }
+    }
+    let session: string | undefined
+    const find = (day: string) => { if (directories(day).includes(sessionId)) session = join(day, sessionId) }
+    for (const day of new Set([datePath(false), datePath(true)])) { find(day); if (session) break }
+    if (!session) {
+      for (const year of directories(root, /^\d{4}$/)) {
+        for (const month of directories(join(root, year), /^\d{2}$/)) {
+          for (const day of directories(join(root, year, month), /^\d{2}$/)) {
+            find(join(root, year, month, day)); if (session) break
+          }
+          if (session) break
+        }
+        if (session) break
+      }
+    }
+    if (!session) throw new Error("session log missing")
+    const logs = [join(session, "session.jsonl")]
+    const collect = (dir: string) => {
+      path = dir
+      let entries: Dirent[]
+      try { entries = readdirSync(dir, { withFileTypes: true }) }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error }
+      for (const entry of entries) {
+        if (entry.isDirectory()) collect(join(dir, entry.name))
+        else if (entry.name === "session.jsonl") logs.push(join(dir, entry.name))
+      }
+    }
+    collect(join(session, "subagent"))
+    const usage = emptyUsage()
+    const number = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined
+    for (const log of logs) {
+      path = log
+      let validLines = 0
+      let malformed = false
+      for (const line of readFileSync(log, "utf8").split(/\r?\n/)) {
+        if (!line.trim()) continue
+        let value: unknown
+        try { value = JSON.parse(line) } catch { malformed = true; continue }
+        if (!isObject(value)) { malformed = true; continue }
+        validLines++
+        const event = isObject(value.payload) ? value.payload.event : undefined
+        if (!isObject(event) || event.kind !== "model_completed" || !isObject(event.usage)) continue
+        const raw = event.usage
+        usage.inputTokens += number(raw.input_tokens) ?? 0
+        // Match Grok: reasoning is not added to the reported output total.
+        usage.outputTokens += number(raw.output_tokens) ?? 0
+        const read = number(raw.cache_read_tokens) ?? number(raw.cached_tokens)
+        const write = number(raw.cache_write_tokens)
+        if (read !== undefined) usage.cacheReadInputTokens = (usage.cacheReadInputTokens ?? 0) + read
+        if (write !== undefined) usage.cacheCreationInputTokens = (usage.cacheCreationInputTokens ?? 0) + write
+      }
+      if (malformed && !validLines) throw new Error("malformed session log")
+    }
+    return usage
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    const reason = code || (error instanceof Error && ["session log missing", "malformed session log"].includes(error.message) ? error.message : "session log unavailable")
+    ctx.onProgress({ kind: "phase", phase: `Muse usage unavailable: ${path} (${reason})` })
+    return emptyUsage()
+  }
+}

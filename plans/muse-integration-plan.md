@@ -67,7 +67,7 @@ web docs):
   `--prompt-file`, `--model <ID>`, `--reasoning-effort
   none|minimal|low|medium|high|xhigh|max|ultra`, `--max-model-steps <N>`,
   `--workspace <PATH>` (policy-gated workspace tools rooted there),
-  `--session-id <UUID>`, `--no-session-log`, `--no-foreign-personal-context`,
+  `--session-id <UUID>`, `--no-foreign-personal-context`,
   `--disable-web-tools`, `--user-input-auto-resolve`.
 - Safety flags: `--approval-mode untrusted|on-request|never`,
   `--approval-judge off|on`, `--permission-profile <ID>`, `--disable-write`
@@ -170,14 +170,13 @@ prove broader predicates that the recorded probes did not exercise.
 
 Other measured facts:
 
-- `--session-id` conflicts with `--no-session-log`; let Muse generate the id.
+- `--session-id` is accepted with session logging enabled; generate a fresh UUID per attempt.
 - `--provider echo` cannot run while user settings set `run.parallel_tool_calls`
   (both the setting and its override flag are rejected for echo). Fixtures are
   recorded real transcripts, not echo output.
 - `--approval-mode never` auto-approves policy-gated calls (reads and writes
   both succeeded without prompts).
-- No usage event exists in the exec stream by design; token accounting lives
-  only on the `muse serve` plane. Usage is unreported.
+- No usage event exists in the exec stream; `model_completed` records in the session log provide token accounting.
 - The earlier "permission profile conflicts with per-run isolation" reading was
   a CLI flag clash with `--approval-mode` / `--sandbox-network` only, not private
   XDG configuration. The follow-up profile spike `~/.bb/thread-storage/thr_crc3gy2ppu/muse-profile-spike/receipt.md` (A/D/E)
@@ -252,7 +251,7 @@ to `--max-model-steps`; `sandbox` maps per the table in Chosen Approach.
 Each call writes the prompt to a temp file and spawns
 `muse exec --json --prompt-file <f> --model <m> --reasoning-effort <e>
 --workspace <cwd> --max-model-steps <n>
---no-session-log --no-foreign-personal-context --disable-web-tools
+--session-id <UUID> --no-foreign-personal-context --disable-web-tools
 --user-input-auto-resolve`
 plus the sandbox flags below. `runJsonlSubprocess` owns the process lifetime.
 There is no shared host, so host scope, session leases, start throttling, and
@@ -286,11 +285,7 @@ validation failure throws the existing schema `AgentError`; the corrective
 attempt in `src/runtime/primitives.ts` is the only retry. No resume-based
 extraction turn in v1.
 
-**Usage:** the exec stream emits no usage event. Return the zero-valued
-`emptyUsage()` shape and emit no usage progress event; downstream totals cannot
-distinguish unknown usage from zero. The earlier "unavailable, not zero" claim is withdrawn as
-unrepresentable in the result contract; DESIGN.md records that Muse cost is
-unreported when the CLI does not report it.
+**Usage:** The exec stream emits no usage event. Each attempt passes a fresh `--session-id <randomUUID()>` and leaves session logging enabled in the real Muse data directory (`$MUSE_HOME/data`, else `$XDG_DATA_HOME/muse`, else `~/.local/share/muse`). After process completion, sum `payload.event.kind === "model_completed"` records from the session's `session.jsonl` and every `subagent/**/session.jsonl`. Look under today's local and UTC date directories first, then scan date-directory names for the id. Map `input_tokens` and `output_tokens` directly, with `costUsd: 0` for the unpriced subscription. `input_tokens` already includes cached input, as the `AgentUsage` contract requires: a measured second call reported 30,386 input tokens with 27,761 cache reads on a 27,903-token first call. Map `cache_read_tokens` (falling back to `cached_tokens`) to `cacheReadInputTokens`, and `cache_write_tokens` to `cacheCreationInputTokens`; omit cache fields never reported. Like Grok, do not add reasoning tokens to output tokens. Old zero-valued records with null models are valid. Ignore malformed individual lines alongside valid records; a missing, unreadable, or wholly malformed log yields `emptyUsage()` and one content-free phase diagnostic with path and reason. Emit one usage progress event and return the same usage on success. Preserve summed usage on `AgentError` failures after close; `AgentInterrupted` has no usage field and remains unchanged.
 
 **Authentication and configuration:** the worker runs as the logged-in OS
 user with the existing `muse login`. Because Muse has no per-run MCP control,
@@ -307,7 +302,7 @@ entry when the source dir exists, and
 spawn with `XDG_CONFIG_HOME=<tmp>/xdg`. In `finally`, await the subprocess
 `closed` fence (including kill escalation) before removing the directory and
 prompt file; preserve the original classified run error if removal fails. Never copy `auth.json`; never override
-HOME. Per-run flags stay: `--no-foreign-personal-context`, `--no-session-log`,
+HOME. Per-run flags stay: `--no-foreign-personal-context`, `--session-id <UUID>`,
 `--disable-web-tools`, `--user-input-auto-resolve`.
 
 **Provider-wide options only:** `museBin` joins `FactoryOpts` and `MUSE_BIN`
@@ -439,7 +434,7 @@ re-scored with a relaxed predicate.
   `MUSE_MIN_VERSION`, temp prompt file, flag assembly from the tables above,
   event mapping to `WorkerProgress`, success only on the matching terminal
   event plus exit 0 and string payload.text; pre-terminal progress only,
-  authoritative final text from the terminal, zero-valued usage, structured output per the
+  authoritative final text from the terminal, session-log usage, structured output per the
   decided path.
 - Terminal and error classification, each a required test with expected
   `code` and `retryable`: `run.terminal.completed` with `terminal:
@@ -450,7 +445,7 @@ re-scored with a relaxed predicate.
   (exit 0) or `exitError` (nonzero); stall → retryable `turn_stalled`
   (helper-owned); missing binary → `binary_not_found`; unsupported sandbox or
   version → non-retryable pre-spawn rejection. No terminal value is retryable
-  until a measured transient failure shows one. Muse emits no usage event, so no usage-preservation path is implemented.
+  until a measured transient failure shows one. Failed `AgentError` attempts preserve session-log usage; `AgentInterrupted` remains unchanged because it has no usage field.
 - Provider id in `PROVIDER_IDS`, `ambient.d.ts`, factory, `run.ts`, CLI
   strings, `doctor`, `capabilities`, viewer glyph, README, DESIGN.md
   provider-set note (six providers), `skill/SKILL.md`, ADR-0002.

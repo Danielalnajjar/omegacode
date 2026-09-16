@@ -128,3 +128,33 @@ complete authoring reference.
 ### Muse workers
 
 Muse uses the existing CLI login and one `muse exec --json` process per attempt. Select `provider: "muse"` together with a model (for example `muse-spark-1.3-contributor`). Effort values pass through unchanged; `maxTurns` sets the model-step limit. Read-only selects the private `omegacode-read-only` permission profile: shell reads remain enabled, direct writes are denied, and the OS sandbox enforces read-only filesystem and restricted network access; full access is explicit; workspace-write is rejected because confinement failed the spike. Per-run private settings remove MCP servers and symlink authentication without copying credentials. Token usage is reported from the session log; subscription cost remains unpriced (`costUsd: 0`). Muse’s sandbox denies the per-user cache, so read-only Muse workers cannot compile Swift or Clang projects; Node and Python test runs worked in live product runs. `MUSE_BIN` overrides the executable. Run `pnpm verify:muse-smoke -- --bin /path/to/muse` for the opt-in real-binary smoke; ordinary tests use fakes.
+
+### Evaluation accounting
+
+`evaluate({state, questions, model?}, {label?, key?})` keeps its raw
+`{model, answers, usage: {input_tokens, output_tokens}}` contract. Enable it with
+`--typesafe`; fake mode rejects evaluation. Agent provider routing is unchanged.
+
+`runWorkflow()` and foreground `run --json` expose `evaluationUsage` separately:
+
+- `ledger`: cumulative HTTP admissions, in order, each `{bytes, model, usage}`.
+  `usage` is reported numeric input/output tokens or `null` (unknown), and `model`
+  is a validated returned identifier or `null`. No source IDs or rubrics are stored.
+- `actual`: `{attempts, unknownAttempts, reported, total}` across the entire run,
+  including earlier executions before resume. `reported` sums known token counts;
+  `total` is `null` if any admission has unknown usage. Numeric overflow also yields
+  `null`, never an imprecise token sum. A zero reported subtotal does not mean zero charges.
+- `replayed`: `{successes, failures, usage}` for cached/coalesced deliveries in this
+  invocation. `usage` attributes successful answers only (nullable on overflow);
+  failed replays increment `failures`, not tokens. Never add replay attribution to
+  `actual`, or sum cumulative `actual` snapshots across resumes.
+
+The existing `evaluation-attempt` journal entry is appended before HTTP. A separate
+`evaluation-usage` entry binds reported counts to its one-based numeric `attempt`.
+Admissions without that record remain unknown, including older admission-only
+journals, interrupted/ambiguous sends and HTTP errors whose bodies are discarded.
+Usage from a successful earlier batch or a malformed answer remains evidence even
+when the evaluation fails. Positional answer/failure replay receipts are unchanged.
+Native exporters can reconstruct the ledger with `Journal.load(runId).evaluationLedger`;
+detached status/wait output is unchanged. These are reported tokens, not exactly-once
+billing, precise subscription consumption, or a guarantee of complete provider charges.

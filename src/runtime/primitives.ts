@@ -148,6 +148,11 @@ export class Runtime {
   // (launched without `await`) can't turn into an unhandledRejection crash after "completed".
   private readonly inFlight = new Set<Promise<unknown>>()
   totalUsage = emptyUsage()
+  private evaluator?: Evaluator
+
+  evaluationAccounting() {
+    return this.evaluator?.accounting()
+  }
 
   constructor(private readonly o: RuntimeOpts) {
     this.sem = new Semaphore(o.defaults.concurrency)
@@ -168,11 +173,13 @@ export class Runtime {
   }
 
   globals(): WorkflowGlobals {
-    const evaluator = new Evaluator({ enabled: this.o.typesafe === true, signal: this.o.signal,
+    const evaluator = this.evaluator ??= new Evaluator({ enabled: this.o.typesafe === true, signal: this.o.signal,
       cached: this.o.loaded.evaluations ?? new Map(),
       save: (key, result) => this.o.journal.append({ type: "evaluation", key, result }),
       attempts: this.o.loaded.evaluationAttempts,
       saveAttempt: bytes => this.o.journal.append({ type: "evaluation-attempt", bytes }),
+      ledger: this.o.loaded.evaluationLedger,
+      saveUsage: (attempt, model, usage) => this.o.journal.append({ type: "evaluation-usage", attempt, model, usage }),
     })
     const total = this.o.defaults.budget
     const budget = Object.freeze({

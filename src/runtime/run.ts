@@ -24,6 +24,7 @@ import { parseWorkflow } from "./sandbox.js"
 import { TerminalRenderer } from "./progress.js"
 import { runInSandbox } from "./sandbox.js"
 import { isValidRunId } from "./run-store.js"
+import type { EvaluationAccounting } from "../evaluation-types.js"
 
 export interface RunOverrides {
   provider?: ProviderId
@@ -78,6 +79,7 @@ export interface RunOutcome {
   result: unknown
   status: "completed" | "failed" | "interrupted"
   error?: string
+  evaluationUsage?: EvaluationAccounting
 }
 
 /** How often a live run refreshes its heartbeat file (see the deadman switch below). */
@@ -217,7 +219,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     await events.close()
   }
 
-  return { runId, result, status, error }
+  return { runId, result, status, error, evaluationUsage: runtime.evaluationAccounting() }
 }
 
 function resolveCodexAppServerSocket(overrides: RunOverrides | undefined): string | undefined {

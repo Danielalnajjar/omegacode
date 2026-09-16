@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 import { setTimeout as delay } from "node:timers/promises"
 import { Semaphore } from "./runtime/semaphore.js"
 import { AgentInterrupted } from "./worker/index.js"
-import type { EvaluationRequest, EvaluationOptions, EvaluationResult, EvaluationReceipt, Question } from "./evaluation-types.js"
+import type { EvaluationRequest, EvaluationOptions, EvaluationResult, EvaluationReceipt, EvaluationAttempt, EvaluationAccounting, Question } from "./evaluation-types.js"
 export const EVALUATION_LIMITS = Object.freeze({
   concurrency: 4, deadlineMs: 30_000, maxCalls: 256, maxRequests: 1024, maxRequestBytes: 16 * 1_048_576,
 })
@@ -98,6 +98,8 @@ export class Evaluator {
   private calls = 0
   private requests = 0
   private requestBytes = 0
+  private readonly ledger: EvaluationAttempt[]
+  private readonly replayed: EvaluationAccounting["replayed"] = { successes: 0, failures: 0, usage: { input_tokens: 0, output_tokens: 0 } }
   private readonly pending = new Map<string, Promise<EvaluationResult>>()
   constructor(private readonly o: {
     enabled: boolean; signal: AbortSignal;
@@ -105,6 +107,8 @@ export class Evaluator {
     save: (key: string, result: EvaluationReceipt) => void;
     attempts?: { requests: number; bytes: number };
     saveAttempt?: (bytes: number) => void;
+    ledger?: EvaluationAttempt[];
+    saveUsage?: (attempt: number, model: string | null, usage: EvaluationResult["usage"]) => void;
     /** Embedding/test limits; the workflow DSL cannot change these. */
     limits?: Partial<{ [K in keyof typeof EVALUATION_LIMITS]: number }>;
   }) {
@@ -113,6 +117,14 @@ export class Evaluator {
     this.sem = new Semaphore(this.limits.concurrency)
     this.requests = o.attempts?.requests ?? 0
     this.requestBytes = o.attempts?.bytes ?? 0
+    this.ledger = structuredClone(o.ledger ?? [])
+  }
+
+  accounting(): EvaluationAccounting {
+    let reported: EvaluationResult["usage"] | null = { input_tokens: 0, output_tokens: 0 }
+    for (const attempt of this.ledger) if (attempt.usage) reported = addUsage(reported, attempt.usage)
+    const unknownAttempts = this.requests - this.ledger.filter(a => a.usage !== null).length
+    return structuredClone({ ledger: this.ledger, actual: { attempts: this.requests, unknownAttempts, reported, total: unknownAttempts ? null : reported }, replayed: this.replayed })
   }
 
   evaluate = async (input: EvaluationRequest, opts?: EvaluationOptions): Promise<EvaluationResult> => {
@@ -129,6 +141,7 @@ export class Evaluator {
     if (cached) {
       if (cached.status === "failed") {
         check(FAILURE_CODES.has(cached.code))
+        this.replayed.failures++
         throw new EvaluationError(cached.code)
       }
       check(cached.status === "completed")
@@ -143,9 +156,13 @@ export class Evaluator {
         return [id, q.type === "choice" ? { type: q.type, choice: keys[a.value], probabilities, confidence: a.confidence }
           : { type: q.type, score: a.value, legend: Object.fromEntries(q.criteria.map((v, j) => [String(j), v])), probabilities, confidence: a.confidence }]
       }))
-      return validateResult({ model: cached.model, usage: cached.usage, answers }, request.questions)
+      const result = validateResult({ model: cached.model, usage: cached.usage, answers }, request.questions)
+      this.replayed.successes++
+      this.replayed.usage = addUsage(this.replayed.usage, result.usage)
+      return result
     }
     let p = this.pending.get(key)
+    const follower = p !== undefined
     if (!p) {
       p = this.execute(request).then(result => {
         if (this.o.signal.aborted) throw new AgentInterrupted()
@@ -172,7 +189,19 @@ export class Evaluator {
       const clear = () => this.pending.delete(key)
       p.then(clear, clear)
     }
-    return structuredClone(await p)
+    try {
+      const result = await p
+      if (this.o.signal.aborted) throw new AgentInterrupted()
+      if (follower) {
+        this.replayed.successes++
+        this.replayed.usage = addUsage(this.replayed.usage, result.usage)
+      }
+      return structuredClone(result)
+    } catch (error) {
+      if (this.o.signal.aborted || error instanceof AgentInterrupted) throw new AgentInterrupted()
+      if (follower) this.replayed.failures++
+      throw error instanceof EvaluationError ? error : new EvaluationError("request_failed")
+    }
   }
 
   private async execute(request: EvaluationRequest & { model: string }): Promise<EvaluationResult> {
@@ -208,6 +237,9 @@ export class Evaluator {
             this.o.saveAttempt?.(outgoingBytes) // durable admission before HTTP, including interrupted attempts
             this.requests++
             this.requestBytes += outgoingBytes
+            const admission: EvaluationAttempt = { bytes: outgoingBytes, model: null, usage: null }
+            this.ledger.push(admission)
+            const admissionId = this.requests
             const response = await fetch("https://api.typesafe.ai/v1/systemone", {
               method: "POST", redirect: "error", signal,
               headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body,
@@ -239,7 +271,16 @@ export class Evaluator {
                 chunks.push(value)
               }
             } finally { await reader.cancel() }
-            return validateResult(JSON.parse(Buffer.concat(chunks).toString("utf8")), questions)
+            const raw = JSON.parse(Buffer.concat(chunks).toString("utf8"))
+            // Accounting evidence is independent of answer validity. Never retain raw fields.
+            if (object(raw) && object(raw.usage) && [raw.usage.input_tokens, raw.usage.output_tokens].every(n => Number.isSafeInteger(n) && n >= 0)) {
+              const usage = { input_tokens: raw.usage.input_tokens, output_tokens: raw.usage.output_tokens }
+              const model = typeof raw.model === "string" && /^[a-zA-Z0-9._:/-]{1,256}$/.test(raw.model) ? raw.model : null
+              this.o.saveUsage?.(admissionId, model, usage)
+              admission.model = model
+              admission.usage = usage
+            }
+            return validateResult(raw, questions)
           }
         }, signal)
         signal.throwIfAborted()
@@ -260,4 +301,11 @@ export class Evaluator {
       clearTimeout(timer)
     }
   }
+}
+
+function addUsage(a: EvaluationResult["usage"] | null, b: EvaluationResult["usage"]): EvaluationResult["usage"] | null {
+  if (!a) return null
+  const input_tokens = a.input_tokens + b.input_tokens
+  const output_tokens = a.output_tokens + b.output_tokens
+  return Number.isSafeInteger(input_tokens) && Number.isSafeInteger(output_tokens) ? { input_tokens, output_tokens } : null
 }

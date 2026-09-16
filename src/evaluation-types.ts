@@ -11,6 +11,14 @@ export type Answer = { type: "noul"; noul: number }
   | { type: "choice"; choice: string; probabilities: Record<string, number>; confidence: number }
   | { type: "score"; score: number; legend: Record<string, string>; probabilities: Record<string, number>; confidence: number }
 export interface EvaluationResult { model: string; answers: Record<string, Answer>; usage: { input_tokens: number; output_tokens: number } }
+export interface EvaluationAttempt { bytes: number; model: string | null; usage: EvaluationResult["usage"] | null }
+export interface EvaluationAccounting {
+  /** Cumulative admissions for this run, including before resume; null means unreported. */
+  ledger: EvaluationAttempt[]
+  actual: { attempts: number; unknownAttempts: number; reported: EvaluationResult["usage"] | null; total: EvaluationResult["usage"] | null }
+  /** Attribution for cached/coalesced deliveries in this invocation, never new billing. */
+  replayed: { successes: number; failures: number; usage: EvaluationResult["usage"] | null }
+}
 /** Positional numeric answers only: identifiers and rubrics are source, not telemetry. */
 export type EvaluationReceipt = { status: "failed"; code: string } | {
   status: "completed"

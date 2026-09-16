@@ -955,6 +955,13 @@ catch (error) { return error.message }`)
       assert.equal(resume.code, 0, resume.stderr)
       const resumed = await runCli(["wait", runId, "--json", "--poll-ms", "20", "--timeout-ms", "10000"], env)
       assert.equal(resumed.code, 0, resumed.stderr)
+      if (enabled) {
+        const foreground = await runCli(["run", file, ...flags, "--resume", runId, "--no-serve", "--json"], env)
+        assert.equal(foreground.code, 0, foreground.stderr)
+        const accounting = JSON.parse(foreground.stdout).evaluationUsage
+        assert.deepEqual(accounting.actual, { attempts: 1, unknownAttempts: 0, reported: { input_tokens: 2, output_tokens: 1 }, total: { input_tokens: 2, output_tokens: 1 } })
+        assert.deepEqual(accounting.replayed, { successes: 1, failures: 0, usage: { input_tokens: 2, output_tokens: 1 } })
+      }
       const mismatch = await runCli(["run", file, "--resume", runId, ...(meta.typesafe ? [] : ["--typesafe"]), "--no-serve", "--json"], env)
       assert.notEqual(mismatch.code, 0)
       assert.match(mismatch.stderr, /must match/)

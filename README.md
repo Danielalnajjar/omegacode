@@ -68,7 +68,19 @@ return await pipeline(
 )
 ```
 
-Plain JavaScript, no imports — the DSL is injected. Each `agent()` spawns a real Codex, Claude
+Plain JavaScript, no imports — the DSL is injected. `evaluate({state, questions, model?: "jev-latest"}, {label?, key?})` is a separate
+System One primitive for fast typed judgments through TypeSafe Jev; it is **not** an agent provider and never
+inherits coding-agent model/effort settings. It batches Choice/Score/Noul questions against one state, reads
+`TYPESAFE_API_KEY` only in the host process, journals both successes and failures for deterministic resume,
+and retries only transient 429/529/transport failures. Enable it explicitly with `--typesafe`; permission
+is pinned on resume, and legacy runs remain disabled. `--fake --typesafe` never calls the API.
+The result is `{model, answers, usage: {input_tokens, output_tokens}}` with raw token counts, not estimated
+currency. `runWorkflow().evaluationUsage` separates actual from replayed usage. Each call batches its
+questions under a conservative 128,000 JSON-character budget; requests have a 10-second attempt timeout,
+two retries and eight concurrent request slots. There is no endpoint override; redirects are refused. Workflows
+should catch evaluation failure and preserve their existing reasoning path when Jev is optional.
+
+Each `agent()` spawns a real Codex, Claude
 Code, OpenCode, pi, Grok, or Muse agent; omit `provider`/`model` to inherit whatever the run was started with
 (`--provider --model`, default `codex`), or pin them per call when you want cross-provider
 diversity. Provider and model are **both-or-neither** at every site (per-call, meta defaults,

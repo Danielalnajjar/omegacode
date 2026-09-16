@@ -1,6 +1,7 @@
 import { execFile, type ExecFileException } from "node:child_process"
 import type { AgentSpec } from "../dsl/types.js"
 import { AgentError, AgentInterrupted } from "./index.js"
+import { agentEnv } from "./agent-env.js"
 
 export const CLAUDE_PROFILE_AUTH_CONFLICTS = {
   defined: ["CLAUDE_SECURESTORAGE_CONFIG_DIR"],
@@ -92,7 +93,7 @@ export interface PreparedClaudeProfile {
 
 export function prepareClaudeProfile(spec: AgentSpec, signal: AbortSignal, resolver: ClaudeProfileResolver, env = process.env): Promise<PreparedClaudeProfile> {
   if (!spec.claudeProfile) throw new Error("claudeProfile is required")
-  const snapshot = { ...env }
+  const snapshot = agentEnv(env)
   assertNoClaudeProfileAuthConflict(snapshot)
   return resolver(spec.claudeProfile, signal).then((profile) => ({
     env: Object.freeze({

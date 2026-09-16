@@ -4,7 +4,7 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { homedir } from "node:os"
-import type { AgentStatus, AgentUsage, ProviderId } from "../dsl/types.js"
+import type { AgentStatus, AgentUsage, EvaluationResult, EvaluationUsage, ProviderId } from "../dsl/types.js"
 
 export interface JournalMeta {
   type: "meta"
@@ -19,6 +19,7 @@ export interface JournalMeta {
    * Absent in baseline (v1) journals — the field predates them — so absent IS v1 on resume.
    */
   keyVersion?: string
+  typesafeEvaluate?: boolean
 }
 
 export interface JournalStarted {
@@ -27,6 +28,31 @@ export interface JournalStarted {
   index: number
   label: string
   provider: ProviderId
+}
+
+
+export interface JournalEvaluationStarted {
+  type: "evaluation_started"
+  requestHash: string
+  key: string
+  index: number
+  label: string
+  model: string
+}
+
+export interface JournalEvaluationResult {
+  type: "evaluation_result"
+  requestHash: string
+  reused?: boolean
+  key: string
+  index: number
+  label: string
+  model: string
+  status: "completed" | "failed" | "interrupted"
+  result?: EvaluationResult
+  error?: { code: string; message: string; retryable: boolean; status?: number }
+  usage: EvaluationUsage
+  durationMs: number
 }
 
 export interface JournalResult {
@@ -44,7 +70,7 @@ export interface JournalResult {
   claudeProfileLabel?: string
 }
 
-export type JournalEntry = JournalMeta | JournalStarted | JournalResult
+export type JournalEntry = JournalMeta | JournalStarted | JournalResult | JournalEvaluationStarted | JournalEvaluationResult
 
 export interface LoadedJournal {
   meta?: JournalMeta
@@ -56,6 +82,8 @@ export interface LoadedJournal {
    * events and its agents/<index>.jsonl transcript stay associated across attempts (L12).
    */
   indexByKey: Map<string, number>
+  /** Exact-input System One evaluations, including deterministic failures for fallback replay. */
+  evaluations?: Map<string, JournalEvaluationResult>
 }
 
 /** Root data dir: ~/.omegacode (override with OMEGACODE_HOME). */
@@ -129,7 +157,7 @@ export class Journal {
 
   static load(runId: string): LoadedJournal {
     const path = journalPath(runId)
-    const out: LoadedJournal = { results: new Map(), indexByKey: new Map() }
+    const out: LoadedJournal = { results: new Map(), indexByKey: new Map(), evaluations: new Map() }
     if (!existsSync(path)) return out
     const text = readFileSync(path, "utf8")
     for (const line of text.split("\n")) {
@@ -143,7 +171,8 @@ export class Journal {
       }
       if (entry.type === "meta") out.meta = entry
       else if (entry.type === "result") out.results.set(entry.key, entry)
-      if ((entry.type === "started" || entry.type === "result") && typeof entry.index === "number") {
+      else if (entry.type === "evaluation_result") out.evaluations!.set(entry.key, entry)
+      if ((entry.type === "started" || entry.type === "result" || entry.type === "evaluation_started" || entry.type === "evaluation_result") && typeof entry.index === "number") {
         out.indexByKey.set(entry.key, entry.index)
       }
     }

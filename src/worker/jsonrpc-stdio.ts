@@ -9,6 +9,7 @@
 // worker proof against the "request registered but nothing ever settles" hang.
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
+import { agentEnv } from "./agent-env.js"
 
 import {
   parseInbound,
@@ -46,6 +47,7 @@ export interface JsonRpcStdioOptions {
   spawnChild?: SpawnChild
   bin?: string
   args?: string[]
+  env?: NodeJS.ProcessEnv
   /** Per-request timeout in ms (0/undefined disables). Rejects the request and is retryable. */
   requestTimeoutMs?: number
   /** Max stderr bytes retained for crash diagnostics (ring buffer). */
@@ -84,7 +86,7 @@ export class JsonRpcStdioClient {
   constructor(opts: JsonRpcStdioOptions = {}) {
     const bin = opts.bin ?? "codex"
     const args = opts.args ?? ["app-server"]
-    this.spawnChild = opts.spawnChild ?? (() => spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"] }))
+    this.spawnChild = opts.spawnChild ?? (() => spawn(bin, args, { env: agentEnv(opts.env), stdio: ["pipe", "pipe", "pipe"] }))
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 0
     this.stderrLimit = opts.stderrLimit ?? DEFAULT_STDERR_LIMIT
     this.onServerRequest = opts.onServerRequest

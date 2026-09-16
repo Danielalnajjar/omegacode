@@ -9,6 +9,13 @@ export type {
   Approval,
   CodexWebSearch,
   Effort,
+  EvaluationAnswer,
+  EvaluationOptions,
+  EvaluationQuestion,
+  EvaluationRequest,
+  EvaluationResult,
+  EvaluationState,
+  EvaluationUsage,
   JSONSchema,
   Meta,
   PipelineStage,
@@ -32,3 +39,6 @@ export type { AgentState, EventSink, WorkflowEvent, WorkflowEventInput } from ".
 export type { EventListener } from "./runtime/event-sink.js"
 export type { Worker, WorkerContext, WorkerFactory, WorkerProgress } from "./worker/index.js"
 export { AgentError, AgentInterrupted } from "./worker/index.js"
+
+export { EvaluationError, TypeSafeEvaluationClient, validateEvaluationInput, validateEvaluationResponse } from "./evaluation/typesafe.js"
+export type { EvaluationClient, TypeSafeClientOptions } from "./evaluation/typesafe.js"

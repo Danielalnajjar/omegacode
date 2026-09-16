@@ -37,6 +37,7 @@ export class UsageError extends Error {
  */
 const BOOLEAN_FLAGS = new Set([
   "fake",
+  "typesafe",
   "json",
   "start-json",
   "detach",
@@ -204,7 +205,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 
 /** Static integration contract: no provider process, auth, or model call. */
 function cmdCapabilities(flags: Flags): void {
-  const capabilities = { schemaVersion: 1, codexPermissions: true, providers: PROVIDER_IDS }
+  const capabilities = { schemaVersion: 1, codexPermissions: true, typesafeEvaluate: true, providers: PROVIDER_IDS }
   console.log(flags.json === true
     ? JSON.stringify(capabilities)
     : `OmegaCode capabilities (schema 1): codexPermissions; providers: ${PROVIDER_IDS.join(", ")}`)
@@ -503,13 +504,14 @@ async function cmdRun(flags: Flags): Promise<void> {
     runId: forcedRunId,
     resumeRunId,
     fake: flags.fake === true,
+    typesafe: flags.typesafe === true ? true : undefined,
     quiet: flags.json === true,
     onStart,
   })
 
   if (flags.json === true) {
     const url = base ? `${base}#/run/${outcome.runId}` : undefined
-    process.stdout.write(JSON.stringify({ runId: outcome.runId, status: outcome.status, url, result: outcome.result, error: outcome.error }, null, 2) + "\n")
+    process.stdout.write(JSON.stringify({ runId: outcome.runId, status: outcome.status, url, result: outcome.result, error: outcome.error, evaluationUsage: outcome.evaluationUsage }, null, 2) + "\n")
   } else if (outcome.status === "completed") {
     const r = outcome.result
     process.stdout.write((typeof r === "string" ? r : JSON.stringify(r, null, 2)) + "\n")
@@ -597,6 +599,7 @@ function buildDetachedChildArgs(
   if (opts.resumeRunId) out.push("--resume", opts.resumeRunId)
   else out.push("--run-id", runId)
   if (opts.flags.fake === true) out.push("--fake")
+  if (opts.flags.typesafe === true) out.push("--typesafe")
   if (opts.argsStr !== undefined) out.push("--args", opts.argsStr)
   if (opts.argsFile) out.push("--args-file", resolve(opts.argsFile))
   appendValue(out, "provider", opts.overrides.provider)
@@ -902,6 +905,7 @@ Usage:
       --codex-no-app-server-proxy          force a fresh stdio app-server even when env selects a proxy socket
       --resume <runId>                     replay unchanged prefix, re-run the rest
       --fake                               run with a fake worker (no real agents)
+      --typesafe                           enable host-side TypeSafe evaluate (pinned on resume)
       --json                               print {runId,status,url,result,error} as JSON (viewer still starts)
       --detach                             launch in the background; with --json print immediate launch JSON
       --start-json                         print {"type":"run.started",runId,runDir,url} on stderr at launch

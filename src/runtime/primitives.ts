@@ -14,6 +14,11 @@ import type {
   AgentOpts,
   AgentResult,
   AgentSpec,
+  EvaluationOptions,
+  EvaluationQuestion,
+  EvaluationRequest,
+  EvaluationResult,
+  EvaluationState,
   PipelineStage,
   RunDefaults,
   WorkflowGlobals,
@@ -26,8 +31,10 @@ import { CODEX_EXECUTION_PROFILE_NAMES } from "../worker/codex-profile.js"
 import { withRetry } from "../worker/errors.js"
 import { stripNullOptionals, validate } from "../worker/schema.js"
 import { Journal, type LoadedJournal } from "./journal.js"
-import { branchKey, chainKey, explicitKey, keyedSpec, ROOT_KEY } from "./keys.js"
+import { branchKey, chainKey, evaluationKey, explicitEvaluationKey, explicitKey, keyedSpec, ROOT_KEY } from "./keys.js"
 import type { EventSink } from "./events.js"
+import type { EvaluationClient } from "../evaluation/typesafe.js"
+import { admitEvaluation, freezeEvaluation, EvaluationError } from "../evaluation/typesafe.js"
 import { AgentTranscript } from "./transcript.js"
 import { Semaphore } from "./semaphore.js"
 import { createWorktree, findGitRoot, teardownWorktree, type Worktree } from "./worktree.js"
@@ -91,6 +98,7 @@ export interface RuntimeOpts {
   seed: number
   baseTimeMs: number
   signal: AbortSignal
+  evaluationClient?: EvaluationClient
   /** meta.phases, announced as pending phase events up front so the viewer shows the full plan. */
   declaredPhases?: Array<{ title: string; detail?: string }>
 }
@@ -104,6 +112,7 @@ export interface RuntimeOpts {
 interface KeyContext {
   branchKey: string
   agentIndex: number
+  evaluationIndex: number
   /** Position of the next parallel()/pipeline() CALL within this branch (see parallel/pipeline). */
   fanoutIndex: number
   nowCounter: number
@@ -115,7 +124,7 @@ interface KeyContext {
  * journaled), distinct per branch (concurrency-invariant), different across fresh runs.
  */
 function newKeyContext(key: string, runSeed: number): KeyContext {
-  return { branchKey: key, agentIndex: 0, fanoutIndex: 0, nowCounter: 0, rngState: seedFromKey(key, runSeed) }
+  return { branchKey: key, agentIndex: 0, evaluationIndex: 0, fanoutIndex: 0, nowCounter: 0, rngState: seedFromKey(key, runSeed) }
 }
 
 /** Derive a non-zero 32-bit rng seed from a branch key hash mixed with the run seed. */
@@ -130,6 +139,10 @@ function seedFromKey(key: string, runSeed: number): number {
 export class Runtime {
   private displayIndex = 0
   private agentCalls = 0
+  private evaluationCalls = 0
+  private readonly evaluationContent = new Map<string, Promise<EvaluationResult>>()
+  private readonly evaluationKeys = new Map<string, string>()
+  readonly evaluationUsage = { actual: { input_tokens: 0, output_tokens: 0 }, replayed: { input_tokens: 0, output_tokens: 0 } }
   private phaseIndex = 0
   private currentPhase: { index: number; title: string } | undefined
   private readonly phaseByTitle = new Map<string, number>()
@@ -174,6 +187,7 @@ export class Runtime {
     })
     return {
       agent: this.agent.bind(this) as WorkflowGlobals["agent"],
+      evaluate: this.evaluate.bind(this),
       parallel: this.parallel.bind(this),
       pipeline: this.pipeline.bind(this),
       phase: this.phase.bind(this),
@@ -317,6 +331,91 @@ export class Runtime {
       })
     }
     return spec
+  }
+
+  private evaluate(request: EvaluationRequest, opts: EvaluationOptions = {}): Promise<EvaluationResult> {
+    const p = this.evaluateImpl(request, opts)
+    this.inFlight.add(p)
+    const done = () => this.inFlight.delete(p)
+    p.then(done, done)
+    return p
+  }
+
+  private async evaluateImpl(input: EvaluationRequest, opts: EvaluationOptions): Promise<EvaluationResult> {
+    const client = this.o.evaluationClient
+    if (!client) throw new EvaluationError("evaluate() disabled; enable --typesafe explicitly", "disabled")
+    if (this.o.signal.aborted) throw new AgentInterrupted("evaluate interrupted")
+    if (!opts || typeof opts !== "object" || Array.isArray(opts)) throw new EvaluationError("evaluate options must be an object", "invalid_input")
+    const request = admitEvaluation(input, opts)
+    const { state, questions } = request
+    const ctx = this.ctx()
+    const localIndex = ctx.evaluationIndex++
+    const model = request.model ?? "jev-latest"
+    const requestHash = evaluationKey(ROOT_KEY, 0, state, questions, model)
+    const explicit = opts.key
+    const key = explicit
+      ? explicitEvaluationKey(explicit)
+      : requestHash
+    if (explicit) {
+      const prior = this.evaluationKeys.get(key)
+      if (prior && prior !== requestHash) throw new EvaluationError("evaluation key already used with different input", "duplicate_key")
+      this.evaluationKeys.set(key, requestHash)
+    }
+    if (++this.evaluationCalls > this.o.defaults.maxAgents) {
+      throw new WorkflowError(`evaluate() call cap reached (${this.o.defaults.maxAgents}) — likely a runaway loop`)
+    }
+    const label = opts.label?.trim() || `evaluation-${localIndex + 1}`
+    const replay = this.o.loaded.evaluations?.get(key)
+    if (replay?.requestHash === requestHash && replay.status !== "interrupted") {
+      if (replay.status === "completed" && replay.result) {
+        this.evaluationUsage.replayed.input_tokens += replay.usage.input_tokens
+        this.evaluationUsage.replayed.output_tokens += replay.usage.output_tokens
+        return freezeEvaluation(structuredClone(replay.result))
+      }
+      const stored = replay.error
+      throw new EvaluationError(
+        stored?.message || "journaled TypeSafe evaluation failed",
+        stored?.code || "journaled_failure",
+        stored?.retryable ?? false,
+        stored?.status,
+      )
+    }
+
+    const index = localIndex + 1
+    const existing = this.evaluationContent.get(requestHash)
+    if (existing) {
+      const result = await existing
+      this.evaluationUsage.replayed.input_tokens += result.usage.input_tokens
+      this.evaluationUsage.replayed.output_tokens += result.usage.output_tokens
+      this.o.journal.append({ type: "evaluation_result", key, requestHash, index, label, model: result.model, status: "completed", result, usage: result.usage, reused: true, durationMs: 0 })
+      return freezeEvaluation(structuredClone(result))
+    }
+    this.o.journal.append({ type: "evaluation_started", key, requestHash, index, label, model })
+    const started = Date.now()
+    const pending = client.evaluate(request, this.o.signal)
+    this.evaluationContent.set(requestHash, pending)
+    try {
+      const result = freezeEvaluation(structuredClone(await pending))
+      this.evaluationUsage.actual.input_tokens += result.usage.input_tokens
+      this.evaluationUsage.actual.output_tokens += result.usage.output_tokens
+      this.o.journal.append({
+        type: "evaluation_result", key, requestHash, index, label, model: result.model, status: "completed",
+        result, usage: result.usage, durationMs: Date.now() - started,
+      })
+      return result
+    } catch (error) {
+      const failure = error instanceof EvaluationError
+        ? error
+        : new EvaluationError("TypeSafe evaluation failed", "evaluation_failed")
+      this.evaluationContent.delete(requestHash)
+      const usage = { input_tokens: 0, output_tokens: 0 }
+      this.o.journal.append({
+        type: "evaluation_result", key, requestHash, index, label, model, status: this.o.signal.aborted ? "interrupted" : "failed",
+        error: { code: failure.code, message: failure.message, retryable: failure.retryable, ...(failure.status === undefined ? {} : { status: failure.status }) },
+        usage, durationMs: Date.now() - started,
+      })
+      throw failure
+    }
   }
 
   private agent<T = string>(prompt: string, opts?: AgentOpts): Promise<T> {

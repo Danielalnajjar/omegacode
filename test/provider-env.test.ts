@@ -23,6 +23,8 @@ interface Launch {
   env: Record<string, string | undefined>
 }
 
+const SECRET = "must-not-reach-provider"
+
 /** A fake provider CLI: answers --version, records the run invocation, emits happy events. */
 function writeFakeBin(path: string, version: string, eventJson: string | string[]): void {
   const events = Array.isArray(eventJson) ? eventJson : [eventJson]
@@ -39,7 +41,7 @@ function writeFakeBin(path: string, version: string, eventJson: string | string[
       'process.stdin.on("end", () => {',
       '  const promptIndex = args.indexOf("--prompt-file");',
       '  const prompt = promptIndex === -1 ? undefined : fs.readFileSync(args[promptIndex + 1], "utf8");',
-      "  fs.writeFileSync(process.env.RECORD, JSON.stringify({ argv: args, stdin, prompt, cwd: process.cwd(), env: { OPENCODE_DISABLE_AUTOUPDATE: process.env.OPENCODE_DISABLE_AUTOUPDATE, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, GROK_DISABLE_AUTOUPDATER: process.env.GROK_DISABLE_AUTOUPDATER } }));",
+      "  fs.writeFileSync(process.env.RECORD, JSON.stringify({ argv: args, stdin, prompt, cwd: process.cwd(), env: { TYPESAFE_API_KEY: process.env.TYPESAFE_API_KEY, OPENCODE_DISABLE_AUTOUPDATE: process.env.OPENCODE_DISABLE_AUTOUPDATE, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, GROK_DISABLE_AUTOUPDATER: process.env.GROK_DISABLE_AUTOUPDATER } }));",
       `  for (const event of ${JSON.stringify(events)}) console.log(event);`,
       "});",
     ].join("\n"),
@@ -54,7 +56,7 @@ function restoreEnv(key: string, value: string | undefined): void {
 
 test("pi: overrides.piBin drives a real spawn with the exact argv/stdin contract", posixOnly, async () => {
   const dir = mkdtempSync(join(tmpdir(), "omega-pi-env-"))
-  const prev = { OMEGACODE_HOME: process.env.OMEGACODE_HOME, RECORD: process.env.RECORD }
+  const prev = { OMEGACODE_HOME: process.env.OMEGACODE_HOME, RECORD: process.env.RECORD, TYPESAFE_API_KEY: process.env.TYPESAFE_API_KEY }
   try {
     const record = join(dir, "record.json")
     const bin = join(dir, "pi-fake.cjs")
@@ -74,6 +76,7 @@ test("pi: overrides.piBin drives a real spawn with the exact argv/stdin contract
     )
     process.env.OMEGACODE_HOME = join(dir, "home")
     process.env.RECORD = record
+    process.env.TYPESAFE_API_KEY = SECRET
 
     const outcome = await runWorkflow({ file: wf, quiet: true, overrides: { piBin: bin } })
     assert.equal(outcome.status, "completed", `error=${outcome.error}`)
@@ -95,16 +98,18 @@ test("pi: overrides.piBin drives a real spawn with the exact argv/stdin contract
     assert.equal(realpathSync(launch.cwd), realpathSync(dir))
     // The RUN inherits the user's agent dir (auth lives there) — no scratch isolation here.
     assert.equal(launch.env.PI_CODING_AGENT_DIR, undefined)
+    assert.equal(launch.env.TYPESAFE_API_KEY, undefined)
   } finally {
     restoreEnv("OMEGACODE_HOME", prev.OMEGACODE_HOME)
     restoreEnv("RECORD", prev.RECORD)
+    restoreEnv("TYPESAFE_API_KEY", prev.TYPESAFE_API_KEY)
     rmSync(dir, { recursive: true, force: true })
   }
 })
 
 test("opencode: OPENCODE_BIN env drives a real spawn with the exact argv/stdin contract", posixOnly, async () => {
   const dir = mkdtempSync(join(tmpdir(), "omega-oc-env-"))
-  const prev = { OMEGACODE_HOME: process.env.OMEGACODE_HOME, RECORD: process.env.RECORD, OPENCODE_BIN: process.env.OPENCODE_BIN }
+  const prev = { OMEGACODE_HOME: process.env.OMEGACODE_HOME, RECORD: process.env.RECORD, OPENCODE_BIN: process.env.OPENCODE_BIN, TYPESAFE_API_KEY: process.env.TYPESAFE_API_KEY }
   try {
     const record = join(dir, "record.json")
     const bin = join(dir, "opencode-fake.cjs")
@@ -118,6 +123,7 @@ test("opencode: OPENCODE_BIN env drives a real spawn with the exact argv/stdin c
     process.env.OMEGACODE_HOME = join(dir, "home")
     process.env.RECORD = record
     process.env.OPENCODE_BIN = bin
+    process.env.TYPESAFE_API_KEY = SECRET
 
     const outcome = await runWorkflow({ file: wf, quiet: true })
     assert.equal(outcome.status, "completed", `error=${outcome.error}`)
@@ -129,17 +135,19 @@ test("opencode: OPENCODE_BIN env drives a real spawn with the exact argv/stdin c
     assert.equal(launch.stdin, "<instructions>\nbe terse\n</instructions>\n\nhello from workflow")
     assert.equal(realpathSync(launch.cwd), realpathSync(dir))
     assert.equal(launch.env.OPENCODE_DISABLE_AUTOUPDATE, "1")
+    assert.equal(launch.env.TYPESAFE_API_KEY, undefined)
   } finally {
     restoreEnv("OMEGACODE_HOME", prev.OMEGACODE_HOME)
     restoreEnv("RECORD", prev.RECORD)
     restoreEnv("OPENCODE_BIN", prev.OPENCODE_BIN)
+    restoreEnv("TYPESAFE_API_KEY", prev.TYPESAFE_API_KEY)
     rmSync(dir, { recursive: true, force: true })
   }
 })
 
 test("grok: GROK_BIN env drives a real spawn with prompt-file and policy flags", posixOnly, async () => {
   const dir = mkdtempSync(join(tmpdir(), "omega-grok-env-"))
-  const prev = { OMEGACODE_HOME: process.env.OMEGACODE_HOME, RECORD: process.env.RECORD, GROK_BIN: process.env.GROK_BIN }
+  const prev = { OMEGACODE_HOME: process.env.OMEGACODE_HOME, RECORD: process.env.RECORD, GROK_BIN: process.env.GROK_BIN, TYPESAFE_API_KEY: process.env.TYPESAFE_API_KEY }
   try {
     const record = join(dir, "record.json")
     const bin = join(dir, "grok-fake.cjs")
@@ -156,6 +164,7 @@ test("grok: GROK_BIN env drives a real spawn with prompt-file and policy flags",
     process.env.OMEGACODE_HOME = join(dir, "home")
     process.env.RECORD = record
     process.env.GROK_BIN = bin
+    process.env.TYPESAFE_API_KEY = SECRET
 
     const outcome = await runWorkflow({ file: wf, quiet: true })
     assert.equal(outcome.status, "completed", `error=${outcome.error}`)
@@ -188,10 +197,12 @@ test("grok: GROK_BIN env drives a real spawn with prompt-file and policy flags",
     assert.equal(launch.prompt, "hello from workflow")
     assert.equal(realpathSync(launch.cwd), realpathSync(dir))
     assert.equal(launch.env.GROK_DISABLE_AUTOUPDATER, "1")
+    assert.equal(launch.env.TYPESAFE_API_KEY, undefined)
   } finally {
     restoreEnv("OMEGACODE_HOME", prev.OMEGACODE_HOME)
     restoreEnv("RECORD", prev.RECORD)
     restoreEnv("GROK_BIN", prev.GROK_BIN)
+    restoreEnv("TYPESAFE_API_KEY", prev.TYPESAFE_API_KEY)
     rmSync(dir, { recursive: true, force: true })
   }
 })
@@ -199,7 +210,7 @@ test("grok: GROK_BIN env drives a real spawn with prompt-file and policy flags",
 // Regression: Muse env/factory wiring and schema correction perform exactly one fresh corrective call.
 test("muse: MUSE_BIN drives runtime schema correction through a fake executable", posixOnly, async () => {
   const dir = mkdtempSync(join(tmpdir(), "omega-muse-env-"))
-  const prev = { OMEGACODE_HOME: process.env.OMEGACODE_HOME, MUSE_BIN: process.env.MUSE_BIN, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }
+  const prev = { OMEGACODE_HOME: process.env.OMEGACODE_HOME, MUSE_BIN: process.env.MUSE_BIN, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, TYPESAFE_API_KEY: process.env.TYPESAFE_API_KEY }
   try {
     const record = join(dir, "prompts.json")
     const bin = join(dir, "muse-fake.cjs")
@@ -209,7 +220,7 @@ if (process.argv.includes('--version')) { console.log('1.2.1'); process.exit(0);
 const record = ${JSON.stringify(record)};
 const prompts = fs.existsSync(record) ? JSON.parse(fs.readFileSync(record, 'utf8')) : [];
 const path = process.argv[process.argv.indexOf('--prompt-file') + 1];
-prompts.push({path, text:fs.readFileSync(path,'utf8')}); fs.writeFileSync(record,JSON.stringify(prompts));
+prompts.push({path, text:fs.readFileSync(path,'utf8'), key:process.env.TYPESAFE_API_KEY}); fs.writeFileSync(record,JSON.stringify(prompts));
 const text = prompts.length === 1 ? '{"ok":"wrong type"}' : '{"ok":true}';
 console.log(JSON.stringify({payload_type:'run.terminal.completed',payload:{terminal:'completed',text}}));
 `)
@@ -219,11 +230,14 @@ console.log(JSON.stringify({payload_type:'run.terminal.completed',payload:{termi
     process.env.OMEGACODE_HOME = join(dir, "home")
     process.env.XDG_CONFIG_HOME = dir
     process.env.MUSE_BIN = bin
+    process.env.TYPESAFE_API_KEY = SECRET
     const outcome = await runWorkflow({ file: wf, quiet: true })
     assert.equal(outcome.status, "completed", outcome.error)
     assert.deepEqual(outcome.result, { ok: true })
     const prompts = JSON.parse(readFileSync(record, "utf8"))
     assert.equal(prompts.length, 2)
+    assert.equal(prompts[0].key, undefined)
+    assert.equal(prompts[1].key, undefined)
     assert.notEqual(prompts[0].path, prompts[1].path)
     assert.match(prompts[1].text, /previous response did not match/)
   } finally {

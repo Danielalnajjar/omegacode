@@ -19,6 +19,7 @@ after(() => clearInterval(keepAlive))
 function fakeGlobals(over: Partial<WorkflowGlobals> = {}): WorkflowGlobals {
   return {
     agent: (async () => "x") as WorkflowGlobals["agent"],
+    evaluate: (async () => ({ model: "jev-latest", answers: {}, usage: { input_tokens: 0, output_tokens: 0 } })) as WorkflowGlobals["evaluate"],
     parallel: (async (ts) => Promise.all(ts.map((t) => t()))) as WorkflowGlobals["parallel"],
     pipeline: (async (items) => items) as WorkflowGlobals["pipeline"],
     phase: () => {},

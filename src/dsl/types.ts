@@ -17,6 +17,57 @@ export type Approval = "never" | "on-request"
 
 export type CodexWebSearch = "disabled" | "cached" | "live"
 
+export type EvaluationState = string | number | boolean | null | EvaluationState[] | { [key: string]: EvaluationState }
+
+export interface NoulEvaluationQuestion {
+  type: "noul"
+  instructions: EvaluationState
+  criteria?: { true?: string; false?: string }
+}
+
+export interface ChoiceEvaluationQuestion {
+  type: "choice"
+  instructions: EvaluationState
+  criteria: Record<string, string | null>
+}
+
+export interface ScoreEvaluationQuestion {
+  type: "score"
+  instructions: EvaluationState
+  criteria: string[]
+}
+
+export type EvaluationQuestion = NoulEvaluationQuestion | ChoiceEvaluationQuestion | ScoreEvaluationQuestion
+
+export type EvaluationAnswer =
+  | { type: "noul"; noul: number }
+  | { type: "choice"; choice: string; probabilities: Record<string, number>; confidence: number }
+  | { type: "score"; score: number; legend: Record<string, string>; probabilities: Record<string, number>; confidence: number }
+
+export interface EvaluationUsage {
+  input_tokens: number
+  output_tokens: number
+}
+
+export interface EvaluationResult {
+  model: string
+  answers: Record<string, EvaluationAnswer>
+  usage: EvaluationUsage
+}
+
+export interface EvaluationOptions {
+  /** Stable replay key for this evaluation site. */
+  key?: string
+  /** Display/debug label; not sent as hidden inference context. */
+  label?: string
+}
+
+export interface EvaluationRequest {
+  state: EvaluationState
+  questions: Record<string, EvaluationQuestion>
+  model?: "jev-latest"
+}
+
 /** A plain JSON Schema object (draft-07-ish). We do not constrain it further at the type level. */
 export type JSONSchema = Record<string, unknown>
 
@@ -155,6 +206,7 @@ export interface WorkflowBudget {
 /** The injected globals available inside a workflow file. */
 export interface WorkflowGlobals {
   agent: <T = string>(prompt: string, opts?: AgentOpts) => Promise<T>
+  evaluate: (request: EvaluationRequest, opts?: EvaluationOptions) => Promise<EvaluationResult>
   parallel: <T>(thunks: Array<() => Promise<T>>) => Promise<T[]>
   pipeline: (items: unknown[], ...stages: PipelineStage[]) => Promise<unknown[]>
   phase: (title: string) => void

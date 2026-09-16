@@ -14,6 +14,7 @@ import { emptyUsage } from "../dsl/types.js"
 import { Semaphore } from "../runtime/semaphore.js"
 import type { Worker, WorkerContext } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
+import { agentEnv } from "./agent-env.js"
 import { resolveCodexExecutionProfile, type CodexExecutionProfileName } from "./codex-profile.js"
 import { toCodexOutputSchema, parseJsonLoose, parseValidJson } from "./schema.js"
 import { JsonRpcStdioClient, StdioTransportError, JsonRpcResponseError, type SpawnChild } from "./jsonrpc-stdio.js"
@@ -296,6 +297,7 @@ export function selectCodexFeatureOverrides(
 
 async function readCodexMcpInventory(bin: string): Promise<string> {
   const { stdout } = await exec(bin, ["mcp", "list", "--json"], {
+    env: agentEnv(),
     encoding: "utf8",
     timeout: MCP_INVENTORY_TIMEOUT_MS,
     maxBuffer: 4 * 1024 * 1024,
@@ -305,6 +307,7 @@ async function readCodexMcpInventory(bin: string): Promise<string> {
 
 async function readCodexFeatureInventory(bin: string): Promise<string> {
   const { stdout } = await exec(bin, ["features", "list"], {
+    env: agentEnv(),
     encoding: "utf8",
     timeout: FEATURE_INVENTORY_TIMEOUT_MS,
     maxBuffer: 4 * 1024 * 1024,
@@ -687,6 +690,7 @@ export class CodexWorker implements Worker {
     const client = new JsonRpcStdioClient({
       bin: this.bin,
       args: appServerArgs,
+      env: agentEnv(),
       spawnChild: this.spawnChild,
       requestTimeoutMs: this.requestTimeoutMs,
       onServerRequest: (id, method, params) => this.handleServerRequest(id, method, params),

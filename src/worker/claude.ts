@@ -13,6 +13,7 @@ import { query, type Options, type PermissionResult, type SDKMessage } from "@an
 import { addUsage, emptyUsage, type AgentResult, type AgentSpec, type AgentUsage, type Effort, type Sandbox } from "../dsl/types.js"
 import type { PreparedAgentCall, Worker, WorkerContext } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
+import { agentEnv } from "./agent-env.js"
 import { prepareClaudeProfile, resolveClaudeProfile, type ClaudeProfileResolver } from "./claude-profile.js"
 import { assertValidSchema, toClaudeOutputFormat } from "./schema.js"
 
@@ -120,7 +121,7 @@ export class ClaudeWorker implements Worker {
         : { settingSources: [] }),
       permissionMode: "default",
       abortController: abort,
-      ...(env ? { env: { ...env } } : {}),
+      env: agentEnv(env ?? this.opts.baseEnv ?? process.env),
       canUseTool: (toolName: string, input: Record<string, unknown>): Promise<PermissionResult> => {
         const verdict = checkTool(spec.sandbox, spec.cwd, toolName, input)
         if (verdict) return Promise.resolve({ behavior: "deny", message: verdict })

@@ -7,6 +7,7 @@ import { join, resolve } from "node:path"
 import { DEFAULTS, type Effort, type ProviderId, type RunDefaults, type Sandbox } from "../dsl/types.js"
 import { DefaultWorkerFactory } from "../worker/factory.js"
 import { writeBbOrigin } from "./bb-origin.js"
+import { TypeSafeEvaluationClient } from "../evaluation/typesafe.js"
 import { type EventListener, FileEventSink } from "./event-sink.js"
 import { determinismLint, KEY_VERSION } from "./keys.js"
 import {
@@ -60,6 +61,8 @@ export interface RunOptions {
   runId?: string
   resumeRunId?: string
   fake?: boolean
+  /** Explicit host evaluation permission; pinned in the journal, never inferred from credentials. */
+  typesafe?: boolean
   /** Suppress the terminal renderer (still writes events.jsonl). */
   quiet?: boolean
   /** Extra event listener (e.g. an embedded UI). */
@@ -77,6 +80,7 @@ export interface RunOutcome {
   result: unknown
   status: "completed" | "failed" | "interrupted"
   error?: string
+  evaluationUsage?: { actual: { input_tokens: number; output_tokens: number }; replayed: { input_tokens: number; output_tokens: number } }
 }
 
 /** How often a live run refreshes its heartbeat file (see the deadman switch below). */
@@ -111,7 +115,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   }
 
   const runId = opts.resumeRunId ?? opts.runId ?? newRunId()
-  let loaded: LoadedJournal = { results: new Map(), indexByKey: new Map() }
+  let loaded: LoadedJournal = { results: new Map(), indexByKey: new Map(), evaluations: new Map() }
   if (opts.resumeRunId) {
     // A typo'd / unknown run id must fail loudly: silently starting a fresh run under the typo'd id
     // re-pays the whole workflow with no resume benefit.
@@ -122,6 +126,10 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   } else if (opts.runId && Journal.exists(runId)) {
     throw new Error(`run "${runId}" already has a journal; use --resume ${runId} instead`)
   }
+  const typesafeEvaluate = opts.resumeRunId ? loaded.meta?.typesafeEvaluate === true : opts.typesafe === true
+  if (opts.resumeRunId && opts.typesafe !== undefined && opts.typesafe !== typesafeEvaluate) {
+    throw new Error("cannot change --typesafe permission on resume; start a fresh run")
+  }
   const seed = loaded.meta?.seed ?? randomSeed()
   const baseTimeMs = loaded.meta?.createdAt ?? Date.now()
 
@@ -130,7 +138,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   opts.onStart?.(runId)
   const journal = new Journal(runId)
   if (!loaded.meta) {
-    journal.append({ type: "meta", runId, workflowFile: filePath, fileHash, args: opts.args ?? null, seed, createdAt: baseTimeMs, keyVersion: KEY_VERSION })
+    journal.append({ type: "meta", runId, workflowFile: filePath, fileHash, args: opts.args ?? null, seed, createdAt: baseTimeMs, keyVersion: KEY_VERSION, typesafeEvaluate })
   }
 
   const renderer = new TerminalRenderer({ enabled: !opts.quiet })
@@ -183,7 +191,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   let status: RunOutcome["status"] = "completed"
   let result: unknown
   let error: string | undefined
-  const runtime = new Runtime({ runId, defaults, factory, journal, loaded, events, args: opts.args, seed, baseTimeMs, signal: ac.signal, declaredPhases: parsed.meta.phases })
+  const runtime = new Runtime({ runId, defaults, factory, journal, loaded, events, args: opts.args, seed, baseTimeMs, signal: ac.signal, evaluationClient: typesafeEvaluate ? new TypeSafeEvaluationClient({ fake: opts.fake }) : undefined, declaredPhases: parsed.meta.phases })
   try {
     // The abort signal MUST reach the sandbox (M13 wiring): the vm timeout bounds only synchronous
     // execution, so without it `await new Promise(() => {})` in a workflow body would hang this
@@ -213,7 +221,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     await events.close()
   }
 
-  return { runId, result, status, error }
+  return { runId, result, status, error, evaluationUsage: runtime.evaluationUsage }
 }
 
 function resolveCodexAppServerSocket(overrides: RunOverrides | undefined): string | undefined {

@@ -225,12 +225,12 @@ test("claudeAgent selects a user-level SDK agent without loading project or loca
   assert.deepEqual(calls[1]!.options.settingSources, [])
 })
 
-test("profile preparation binds a fresh call-local SDK environment while ordinary calls leave env unset", async () => {
+test("Claude SDK always receives an explicit sanitized environment, including profile snapshots", async () => {
   const calls: QueryCall[] = []
   let resolutions = 0
   const worker = new ClaudeWorker({
     queryFn: scripted([resultMsg(), resultMsg(), resultMsg()], calls),
-    baseEnv: { ORDINARY: "kept", CLAUDE_CONFIG_DIR: "/ordinary", CLAUDE_CODE_EXECUTABLE: "/ordinary/claude" },
+    baseEnv: { ORDINARY: "kept", TYPESAFE_API_KEY: "must-not-reach-sdk", CLAUDE_CONFIG_DIR: "/ordinary", CLAUDE_CODE_EXECUTABLE: "/ordinary/claude" },
     profileResolver: async (profileId) => {
       resolutions += 1
       return {
@@ -265,7 +265,9 @@ test("profile preparation binds a fresh call-local SDK environment while ordinar
   assert.equal(calls[0]!.options.pathToClaudeCodeExecutable, "/launchers/claude-a")
   assert.equal(calls[1]!.options.pathToClaudeCodeExecutable, "/launchers/claude-b")
   assert.notEqual(calls[0]!.options.env, calls[1]!.options.env)
-  assert.equal(calls[2]!.options.env, undefined)
+  assert.deepEqual(calls[2]!.options.env, {
+    ORDINARY: "kept", CLAUDE_CONFIG_DIR: "/ordinary", CLAUDE_CODE_EXECUTABLE: "/ordinary/claude",
+  })
   assert.equal(calls[2]!.options.pathToClaudeCodeExecutable, undefined)
 })
 

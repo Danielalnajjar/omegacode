@@ -24,6 +24,7 @@ import { parseWorkflow } from "./sandbox.js"
 import { TerminalRenderer } from "./progress.js"
 import { runInSandbox } from "./sandbox.js"
 import { isValidRunId } from "./run-store.js"
+import { resolveRunModes } from "./run-modes.js"
 import type { EvaluationAccounting } from "../evaluation-types.js"
 
 export interface RunOverrides {
@@ -122,12 +123,10 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     loaded = Journal.load(runId)
     // A journaled result is only safe to replay if the file/args/key-version still match.
     checkResumePreconditions(loaded.meta, { fileHash, args: opts.args ?? null, keyVersion: KEY_VERSION })
-    if ((loaded.meta?.typesafe ?? false) !== (opts.typesafe ?? false) || (loaded.meta?.fake ?? false) !== (opts.fake ?? false)) {
-      throw new Error("cannot resume: --typesafe and --fake must match the original run")
-    }
   } else if (opts.runId && Journal.exists(runId)) {
     throw new Error(`run "${runId}" already has a journal; use --resume ${runId} instead`)
   }
+  const modes = resolveRunModes(opts, loaded.meta, opts.resumeRunId !== undefined)
   const seed = loaded.meta?.seed ?? randomSeed()
   const baseTimeMs = loaded.meta?.createdAt ?? Date.now()
 
@@ -136,7 +135,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   opts.onStart?.(runId)
   const journal = new Journal(runId)
   if (!loaded.meta) {
-    journal.append({ type: "meta", runId, workflowFile: filePath, fileHash, args: opts.args ?? null, seed, createdAt: baseTimeMs, keyVersion: KEY_VERSION, typesafe: opts.typesafe === true, fake: opts.fake === true })
+    journal.append({ type: "meta", runId, workflowFile: filePath, fileHash, args: opts.args ?? null, seed, createdAt: baseTimeMs, keyVersion: KEY_VERSION, typesafe: modes.typesafe, fake: modes.fake })
   }
 
   const renderer = new TerminalRenderer({ enabled: !opts.quiet })
@@ -145,7 +144,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   const events = new FileEventSink(runId, { listeners })
 
   const factory = new DefaultWorkerFactory({
-    fake: opts.fake,
+    fake: modes.fake,
     codexBin: process.env.CODEX_BIN,
     opencodeBin: opts.overrides?.opencodeBin ?? process.env.OPENCODE_BIN,
     piBin: opts.overrides?.piBin ?? process.env.PI_BIN,
@@ -189,7 +188,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   let status: RunOutcome["status"] = "completed"
   let result: unknown
   let error: string | undefined
-  const runtime = new Runtime({ runId, typesafe: opts.typesafe === true && !opts.fake, defaults, factory, journal, loaded, events, args: opts.args, seed, baseTimeMs, signal: ac.signal, declaredPhases: parsed.meta.phases })
+  const runtime = new Runtime({ runId, typesafe: modes.typesafe && !modes.fake, defaults, factory, journal, loaded, events, args: opts.args, seed, baseTimeMs, signal: ac.signal, declaredPhases: parsed.meta.phases })
   try {
     // The abort signal MUST reach the sandbox (M13 wiring): the vm timeout bounds only synchronous
     // execution, so without it `await new Promise(() => {})` in a workflow body would hang this

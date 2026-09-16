@@ -92,7 +92,10 @@ test("real sandbox global, persisted replay, permission pinning and fake/off no 
   const replay = await runWorkflow({ file, typesafe: true, quiet: true, resumeRunId: run.runId })
   assert.deepEqual(replay.result, result)
   assert.equal(calls, 1)
-  await assert.rejects(runWorkflow({ file, quiet: true, resumeRunId: run.runId }), /must match/)
+  const inherited = await runWorkflow({ file, quiet: true, resumeRunId: run.runId })
+  assert.equal(inherited.status, "completed", inherited.error)
+  assert.deepEqual(inherited.result, result)
+  await assert.rejects(runWorkflow({ file, typesafe: false, quiet: true, resumeRunId: run.runId }), /must match/)
   for (const options of [{}, { typesafe: true, fake: true }]) {
     const off = await runWorkflow({ file, quiet: true, ...options })
     assert.equal(off.status, "failed")

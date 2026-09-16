@@ -130,8 +130,9 @@ test("Muse replays recorded read-only success without inventing usage", async ()
   assert.ok(context.events.some(e => e.kind === "phase" && e.phase.includes("muse-spark")))
   assert.ok(context.events.some(e => e.kind === "text"))
   const args = spawned[1]!.args
-  for (const flag of ["exec", "--json", "--disable-write", "--disable-shell", "--no-session-log", "--no-foreign-personal-context", "--disable-web-tools", "--user-input-auto-resolve"]) assert.ok(args.includes(flag))
-  for (const [flag, value] of [["--model", "muse-spark-1.3-contributor"], ["--reasoning-effort", "max"], ["--max-model-steps", "12"], ["--approval-mode", "never"], ["--approval-judge", "off"]]) assert.equal(args[args.indexOf(flag!) + 1], value)
+  for (const flag of ["exec", "--json", "--no-session-log", "--no-foreign-personal-context", "--disable-web-tools", "--user-input-auto-resolve"]) assert.ok(args.includes(flag))
+  for (const [flag, value] of [["--model", "muse-spark-1.3-contributor"], ["--reasoning-effort", "max"], ["--max-model-steps", "12"], ["--permission-profile", "omegacode-read-only"]]) assert.equal(args[args.indexOf(flag!) + 1], value)
+  for (const flag of ["--disable-write", "--disable-shell", "--approval-mode", "--approval-judge", "--sandbox-network"]) assert.equal(args.includes(flag), false)
   assert.equal(args.includes("--session-id"), false)
   assert.equal(existsSync(args[args.indexOf("--prompt-file") + 1]!), false)
 })
@@ -231,6 +232,9 @@ for (const effort of ["none", "minimal", "low", "medium", "high", "xhigh", "max"
     assert.equal(args[args.indexOf("--reasoning-effort") + 1], effort)
     assert.ok(args.includes("--disable-sandbox") && args.includes("--disable-approval"))
     assert.equal(args.includes("--disable-write"), false)
+    assert.equal(args.includes("--permission-profile"), false)
+    assert.equal(args[args.indexOf("--approval-mode") + 1], "never")
+    assert.equal(args[args.indexOf("--approval-judge") + 1], "off")
   })
 }
 
@@ -264,7 +268,7 @@ test("Muse per-call private configuration and concurrent cleanup", { skip: proce
     process.env.XDG_CONFIG_HOME = root
     const source = join(root, "muse")
     mkdirSync(source)
-    const settings = { mcpServers: { forbidden: { command: "never" } }, run: { nested: { mcpServers: "preserve" } }, other: 42 }
+    const settings = { mcpServers: { forbidden: { command: "never" } }, run: { nested: { mcpServers: "preserve" } }, other: 42, permissions: { schema_version: 1, profiles: { personal: { extends: ":read-only" }, "omegacode-read-only": { extends: ":full-access" } } } }
     writeFileSync(join(source, "settings.json"), JSON.stringify(settings))
     writeFileSync(join(source, "auth.json"), "fake-auth-never-copy")
     mkdirSync(join(source, "rules"))
@@ -274,7 +278,7 @@ test("Muse per-call private configuration and concurrent cleanup", { skip: proce
     const inspect: Script = (p, call) => {
       const target = join(call.env!.XDG_CONFIG_HOME!, "muse")
       paths.push(target)
-      assert.deepEqual(JSON.parse(readFileSync(join(target, "settings.json"), "utf8")), { run: settings.run, other: 42 })
+      assert.deepEqual(JSON.parse(readFileSync(join(target, "settings.json"), "utf8")), { schema_version: 1, run: settings.run, other: 42, permissions: { ...settings.permissions, profiles: { ...settings.permissions.profiles, "omegacode-read-only": { extends: ":read-only", approval: "allow_all", reviewer: "none" } } } })
       assert.equal(statSync(target).mode & 0o777, 0o700)
       assert.equal(statSync(join(target, "settings.json")).mode & 0o777, 0o600)
       for (const entry of ["auth.json", "rules", "lock"]) {
@@ -305,24 +309,38 @@ test("Muse per-call private configuration and concurrent cleanup", { skip: proce
   }
 })
 
-// Regression: missing source settings means no private override or inherited-home rewrite.
-test("Muse missing source settings preserves XDG_CONFIG_HOME", async () => {
-  const root = mkdtempSync(join(tmpdir(), "muse-empty-config-"))
-  const previous = process.env.XDG_CONFIG_HOME
-  try {
-    process.env.XDG_CONFIG_HOME = root
-    const { worker } = harness([versionOk, (p, call) => {
-      assert.equal(call.env!.XDG_CONFIG_HOME, root)
-      assert.equal(call.env!.HOME, process.env.HOME)
-      p.pushLine(terminal()); p.end(0)
-    }])
-    await worker.runAgent(spec(), ctx())
-  } finally {
-    if (previous === undefined) delete process.env.XDG_CONFIG_HOME
-    else process.env.XDG_CONFIG_HOME = previous
-    rmSync(root, { recursive: true, force: true })
+// Regression: missing settings still install read-only policy, preserving full-access behavior.
+for (const sourceExists of [false, true]) {
+  for (const sandbox of ["read-only", "danger-full-access"] as const) {
+    test(`Muse missing settings with source=${sourceExists} sandbox=${sandbox}`, async () => {
+      const root = mkdtempSync(join(tmpdir(), "muse-empty-config-"))
+      const previous = process.env.XDG_CONFIG_HOME
+      try {
+        process.env.XDG_CONFIG_HOME = root
+        if (sourceExists) {
+          mkdirSync(join(root, "muse"))
+          writeFileSync(join(root, "muse", "auth.json"), "fake-auth")
+        }
+        const { worker } = harness([versionOk, (p, call) => {
+          if (sandbox === "read-only") {
+            const target = join(call.env!.XDG_CONFIG_HOME!, "muse")
+            assert.notEqual(call.env!.XDG_CONFIG_HOME, root)
+            assert.deepEqual(JSON.parse(readFileSync(join(target, "settings.json"), "utf8")), { schema_version: 1, permissions: { schema_version: 1, profiles: { "omegacode-read-only": { extends: ":read-only", approval: "allow_all", reviewer: "none" } } } })
+            if (sourceExists) assert.equal(readlinkSync(join(target, "auth.json")), join(root, "muse", "auth.json"))
+          } else assert.equal(call.env!.XDG_CONFIG_HOME, root)
+          assert.equal(call.env!.HOME, process.env.HOME)
+          p.pushLine(terminal()); p.end(0)
+        }])
+        await worker.runAgent(spec({ sandbox }), ctx())
+      } finally {
+        if (previous === undefined) delete process.env.XDG_CONFIG_HOME
+        else process.env.XDG_CONFIG_HOME = previous
+        rmSync(root, { recursive: true, force: true })
+      }
+    })
+
   }
-})
+}
 
 // Regression: malformed source settings fail as the worker's own error, before any executable is invoked.
 test("Muse malformed source settings is invalid_config", async () => {
@@ -362,7 +380,7 @@ test("Muse empty XDG_CONFIG_HOME uses private home settings", { skip: process.pl
     await worker.runAgent(spec(), ctx())
     assert.ok(spawned[1]!.env!.XDG_CONFIG_HOME, "child must receive a private XDG_CONFIG_HOME")
     assert.notEqual(spawned[1]!.env!.XDG_CONFIG_HOME, join(home, ".config"))
-    assert.deepEqual(settings, { other: 42 })
+    assert.deepEqual(settings, { other: 42, schema_version: 1, permissions: { schema_version: 1, profiles: { "omegacode-read-only": { extends: ":read-only", approval: "allow_all", reviewer: "none" } } } })
   } finally {
     if (previousHome === undefined) delete process.env.HOME
     else process.env.HOME = previousHome

@@ -178,8 +178,16 @@ Other measured facts:
   both succeeded without prompts).
 - No usage event exists in the exec stream by design; token accounting lives
   only on the `muse serve` plane. Usage is unreported.
-- `--permission-profile :read-only` is an accepted id but conflicts with the
-  disable flags (usage error); the worker does not use profiles.
+- The earlier "permission profile conflicts with per-run isolation" reading was
+  a CLI flag clash with `--approval-mode` / `--sandbox-network` only, not private
+  XDG configuration. The follow-up profile spike `~/.bb/thread-storage/thr_crc3gy2ppu/muse-profile-spike/receipt.md` (A/D/E)
+  proved shell reads (git diff, rg, git log), direct-write and in/out-of-workspace
+  shell-write denials, and a curl failure with a successful unsandboxed control.
+  D completed at exit 0 with zero new broker rows. The derived profile extends
+  `:read-only` with `approval: "allow_all"` and `reviewer: "none"`.
+- The recorded W1 out-of-workspace write landed in the temp area the default
+  sandbox documents as writable. `workspace-write` support is a follow-up
+  candidate for a later spike; it remains unsupported here.
 - Public docs stop at release 0.2.1; the subscriptions page restricts only the
   credential (must be signed in through the CLI), not the mode. The linked
   terms of service were not read.
@@ -245,7 +253,7 @@ Each call writes the prompt to a temp file and spawns
 `muse exec --json --prompt-file <f> --model <m> --reasoning-effort <e>
 --workspace <cwd> --max-model-steps <n>
 --no-session-log --no-foreign-personal-context --disable-web-tools
---user-input-auto-resolve --approval-mode never --approval-judge off`
+--user-input-auto-resolve`
 plus the sandbox flags below. `runJsonlSubprocess` owns the process lifetime.
 There is no shared host, so host scope, session leases, start throttling, and
 the `prepareAgentCall` seam do not apply; every whole-worker retry and the one
@@ -256,13 +264,13 @@ spawn-failure classification to a third party the repo does not own, for a
 single caller that never needs a second turn. This decision is recorded in
 `docs/adr/0002-muse-exec-transport.md`.
 
-**Sandbox mapping, decided by two spike gates:**
+**Sandbox mapping, including the follow-up profile spike:**
 
 | OmegaCode sandbox | Muse flags | Gate |
 |---|---|---|
-| `read-only` | `--disable-write --disable-shell` (sandbox and approval-never as above) | R1: review evidence reachable without shell |
+| `read-only` | `--permission-profile omegacode-read-only`; shell enabled, OS filesystem read-only and network restricted | Follow-up profile spike A/D/E above |
 | `workspace-write` | refused pre-spawn with non-retryable `unsupported_sandbox` (W1 FAIL) | measured |
-| `danger-full-access` | `--disable-sandbox --disable-approval` | none |
+| `danger-full-access` | `--approval-mode never --approval-judge off --disable-sandbox --disable-approval` | unchanged |
 
 R1 passed, so `read-only` maps. W1 failed, so `workspace-write` is refused
 before spawn with a non-retryable `unsupported_sandbox` error naming the two
@@ -288,10 +296,14 @@ unreported when the CLI does not report it.
 user with the existing `muse login`. Because Muse has no per-run MCP control,
 each `runAgent` call builds a private config directory in its temp dir: resolve
 the source config dir (`$XDG_CONFIG_HOME/muse` if set, else
-`~/.config/muse`); if it has no `settings.json`, run without an override;
-otherwise create `<tmp>/xdg/muse` (mode 0700), write `settings.json` (mode
+`~/.config/muse`); full-access runs without source `settings.json` retain no
+override. Read-only always writes private settings. Create `<tmp>/xdg/muse` (mode 0700), write `settings.json` (mode
 0600) as the source JSON with the top-level `mcpServers` member removed and
-nothing else changed, symlink every other entry of the source dir into it, and
+for read-only merge the authoritative `omegacode-read-only` profile under
+`permissions.profiles`, preserving other profiles and permissions fields, with
+`schema_version: 1` at the top level and inside `permissions`. Without source
+settings, write only the schema and permissions fields. Symlink every other
+entry when the source dir exists, and
 spawn with `XDG_CONFIG_HOME=<tmp>/xdg`. In `finally`, await the subprocess
 `closed` fence (including kill escalation) before removing the directory and
 prompt file; preserve the original classified run error if removal fails. Never copy `auth.json`; never override

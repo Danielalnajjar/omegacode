@@ -1,5 +1,5 @@
 // One fresh Muse exec process per attempt; the shared transport owns cancellation and stalls.
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { type Dirent, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { isDeepStrictEqual } from "node:util"
 import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -52,7 +52,7 @@ export class MuseWorker implements Worker {
     let run: ReturnType<typeof runJsonlSubprocess> | undefined
     let failed = false
     try {
-      const env = privateConfigEnv(scratch)
+      const env = privateConfigEnv(scratch, spec.sandbox === "read-only")
       const promptPath = join(scratch, "prompt.txt")
       let prompt = spec.instructions ? `${spec.instructions}\n\n${spec.prompt}` : spec.prompt
       if (spec.schema) prompt += `\n\nReturn ONLY a JSON value conforming to this JSON Schema, without prose or code fences:\n${JSON.stringify(spec.schema)}`
@@ -60,8 +60,10 @@ export class MuseWorker implements Worker {
       const args = [
         "exec", "--json", "--prompt-file", promptPath, "--workspace", spec.cwd,
         "--no-session-log", "--no-foreign-personal-context", "--disable-web-tools",
-        "--user-input-auto-resolve", "--approval-mode", "never", "--approval-judge", "off",
-        ...(spec.sandbox === "read-only" ? ["--disable-write", "--disable-shell"] : ["--disable-sandbox", "--disable-approval"]),
+        "--user-input-auto-resolve",
+        ...(spec.sandbox === "read-only"
+          ? ["--permission-profile", "omegacode-read-only"]
+          : ["--approval-mode", "never", "--approval-judge", "off", "--disable-sandbox", "--disable-approval"]),
       ]
       // Muse generates the fresh id: --session-id conflicts with --no-session-log in 1.2.1.
       if (spec.model) args.push("--model", spec.model)
@@ -140,14 +142,17 @@ export class MuseWorker implements Worker {
 }
 
 /** Only settings are copied; all other entries, including auth, remain source-owned symlinks. */
-function privateConfigEnv(scratch: string): NodeJS.ProcessEnv {
+function privateConfigEnv(scratch: string, readOnly: boolean): NodeJS.ProcessEnv {
   const env = { ...process.env }
   const source = resolve(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "muse")
-  let settingsText: string
+  let settingsText = "{}"
   try { settingsText = readFileSync(join(source, "settings.json"), "utf8") } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return env
-    const cause = err as NodeJS.ErrnoException
-    throw new AgentError({ provider: PROVIDER, code: "invalid_config", message: `Muse settings.json could not be read: ${cause.code}: ${cause.message}` })
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      if (!readOnly) return env
+    } else {
+      const cause = err as NodeJS.ErrnoException
+      throw new AgentError({ provider: PROVIDER, code: "invalid_config", message: `Muse settings.json could not be read: ${cause.code}: ${cause.message}` })
+    }
   }
   let settings: unknown
   try { settings = JSON.parse(settingsText) } catch {
@@ -155,11 +160,26 @@ function privateConfigEnv(scratch: string): NodeJS.ProcessEnv {
   }
   if (!isObject(settings)) throw new AgentError({ provider: PROVIDER, code: "invalid_config", message: "Muse settings.json must contain an object" })
   delete settings.mcpServers
+  if (readOnly) {
+    const permissions = isObject(settings.permissions) ? settings.permissions : {}
+    const profiles = isObject(permissions.profiles) ? permissions.profiles : {}
+    settings.schema_version = 1
+    settings.permissions = { ...permissions, schema_version: 1, profiles: {
+      ...profiles,
+      // OmegaCode owns this profile; overwrite any same-named user definition.
+      "omegacode-read-only": { extends: ":read-only", approval: "allow_all", reviewer: "none" },
+    } }
+  }
   const xdg = join(scratch, "xdg")
   const target = join(xdg, "muse")
   mkdirSync(target, { recursive: true, mode: 0o700 })
   writeFileSync(join(target, "settings.json"), JSON.stringify(settings), { mode: 0o600 })
-  for (const entry of readdirSync(source, { withFileTypes: true })) {
+  let entries: Dirent[]
+  try { entries = readdirSync(source, { withFileTypes: true }) } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err
+    entries = []
+  }
+  for (const entry of entries) {
     if (entry.name !== "settings.json") symlinkSync(join(source, entry.name), join(target, entry.name), entry.isDirectory() ? "junction" : "file")
   }
   return { ...env, XDG_CONFIG_HOME: xdg }

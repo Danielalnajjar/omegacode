@@ -962,7 +962,7 @@ catch (error) { return error.message }`)
         assert.deepEqual(accounting.actual, { attempts: 1, unknownAttempts: 0, reported: { input_tokens: 2, output_tokens: 1 }, total: { input_tokens: 2, output_tokens: 1 } })
         assert.deepEqual(accounting.replayed, { successes: 1, failures: 0, usage: { input_tokens: 2, output_tokens: 1 } })
       }
-      const mismatch = await runCli(["run", file, "--resume", runId, ...(meta.typesafe ? [] : ["--typesafe"]), "--no-serve", "--json"], env)
+      const mismatch = await runCli(["run", file, "--resume", runId, ...(meta.typesafe ? ["--typesafe=false"] : ["--typesafe"]), "--no-serve", "--json"], env)
       assert.notEqual(mismatch.code, 0)
       assert.match(mismatch.stderr, /must match/)
     }

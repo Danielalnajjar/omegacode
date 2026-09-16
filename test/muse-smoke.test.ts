@@ -8,18 +8,18 @@ import { runEndToEnd, runMuseSmoke } from "../scripts/muse-smoke.mjs"
 // Regression: the credential smoke stays injectable and proves a read without any installed Muse.
 test("Muse smoke uses a fake binary only", { skip: process.platform === "win32" }, async () => {
   const root = mkdtempSync(join(tmpdir(), "muse-smoke-test-"))
-  const previousMuse = process.env.MUSE_HOME
+  const previousData = process.env.XDG_DATA_HOME
   const previous = process.env.XDG_CONFIG_HOME
   try {
     process.env.XDG_CONFIG_HOME = root
-    process.env.MUSE_HOME = root
+    process.env.XDG_DATA_HOME = root
     writeFileSync(join(root, "README.md"), "# Smoke README\n")
     const bin = join(root, "fake-muse")
     writeFileSync(bin, `#!/usr/bin/env node
 if (process.argv.includes('--version')) { console.log('1.2.1'); process.exit(0) }
 const fs = require('node:fs'), path = require('node:path');
 const id = process.argv[process.argv.indexOf('--session-id') + 1];
-const logDir = path.join(${JSON.stringify(root)}, 'data', 'sessions', '2001', '01', '01', id);
+const logDir = path.join(${JSON.stringify(root)}, 'muse', 'sessions', '2001', '01', '01', id);
 fs.mkdirSync(logDir, {recursive:true});
 fs.writeFileSync(path.join(logDir, 'session.jsonl'), JSON.stringify({payload:{event:{kind:'model_completed',usage:{input_tokens:10,output_tokens:2}}}}));
 console.log(JSON.stringify({payload_type:'tool.result' ,payload:{text:'1|# Smoke README',correlation_facts:{tool_name:'read_file',outcome:'success'}}}));
@@ -33,7 +33,7 @@ console.log(JSON.stringify({payload_type:'run.terminal.completed',payload:{termi
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
     assert.equal(pkg.scripts.test.includes("verify:muse-smoke"), false)
   } finally {
-    if (previousMuse === undefined) delete process.env.MUSE_HOME; else process.env.MUSE_HOME = previousMuse
+    if (previousData === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = previousData
     if (previous === undefined) delete process.env.XDG_CONFIG_HOME
     else process.env.XDG_CONFIG_HOME = previous
     rmSync(root, { recursive: true, force: true })

@@ -15,12 +15,10 @@ import type { AgentSpec, Effort } from "../src/dsl/types.js"
 // Tests never read the operator's Muse settings or authentication.
 const configRoot = mkdtempSync(join(tmpdir(), "muse-worker-config-"))
 const priorData = process.env.XDG_DATA_HOME
-const priorMuse = process.env.MUSE_HOME
 const priorXdg = process.env.XDG_CONFIG_HOME
-before(() => { process.env.XDG_CONFIG_HOME = configRoot; process.env.XDG_DATA_HOME = configRoot; delete process.env.MUSE_HOME })
+before(() => { process.env.XDG_CONFIG_HOME = configRoot; process.env.XDG_DATA_HOME = configRoot })
 after(() => {
   if (priorData === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = priorData
-  if (priorMuse === undefined) delete process.env.MUSE_HOME; else process.env.MUSE_HOME = priorMuse
   if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME
   else process.env.XDG_CONFIG_HOME = priorXdg
   rmSync(configRoot, { recursive: true, force: true })

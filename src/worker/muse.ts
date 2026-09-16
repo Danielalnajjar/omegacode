@@ -199,8 +199,8 @@ function str(value: unknown): string | undefined { return typeof value === "stri
 
 /** Read only this attempt's logs; never include log bytes in diagnostics. */
 function sessionUsage(sessionId: string, ctx: WorkerContext): AgentUsage {
-  const data = process.env.MUSE_HOME ? join(process.env.MUSE_HOME, "data")
-    : process.env.XDG_DATA_HOME ? join(process.env.XDG_DATA_HOME, "muse") : join(homedir(), ".local", "share", "muse")
+  // Muse 1.2.1 resolves only the XDG data root for session logs; a MUSE_HOME override is ignored (measured).
+  const data = process.env.XDG_DATA_HOME ? join(process.env.XDG_DATA_HOME, "muse") : join(homedir(), ".local", "share", "muse")
   const root = join(data, "sessions")
   let path = join(root, sessionId, "session.jsonl")
   try {

@@ -93,7 +93,7 @@ test("concurrency cap and in-flight dedup preserve independent copies and full e
 
 test("Retry-After seconds/date cannot overrun total budget or trigger an early retry", async t => {
   t.mock.property(process, "env", { TYPESAFE_API_KEY: "synthetic" })
-  for (const header of ["120", new Date(Date.now() + 120_000).toUTCString()]) {
+  for (const header of ["120", "9".repeat(400), new Date(Date.now() + 120_000).toUTCString()]) {
     let calls = 0
     t.mock.method(globalThis, "fetch", async () => { calls++; return new Response(null, { status: 429, headers: { "retry-after": header } }) })
     const evaluator = new Evaluator({ enabled: true, signal: new AbortController().signal, cached: new Map(), save: (_key, receipt) => assert.deepEqual(receipt, { status: "failed", code: "deadline" }), limits: { deadlineMs: 50 } })
@@ -198,4 +198,17 @@ test("interrupted HTTP admissions survive resume without recording a fallback fa
     save: (_key, receipt) => assert.deepEqual(receipt, { status: "failed", code: "request_cap" }), attempts: admissions, limits: { maxRequests: 1 },
   }).evaluate(request), /request_cap/)
   assert.equal(calls, 1)
+})
+
+test("aggregated usage must remain a safe integer across question batches", async t => {
+  t.mock.property(process, "env", { TYPESAFE_API_KEY: "synthetic" })
+  t.mock.method(globalThis, "fetch", async (_url, opts) => {
+    const { questions } = JSON.parse(opts.body)
+    return Response.json({ ...result, usage: { input_tokens: Number.MAX_SAFE_INTEGER, output_tokens: 1 },
+      answers: Object.fromEntries(Object.keys(questions).map(k => [k, { type: "noul", noul: 0.7 }])) })
+  })
+  const questions = Object.fromEntries(Array.from({ length: 33 }, (_, i) => [String(i), request.questions.privateQuestion]))
+  await assert.rejects(new Evaluator({ enabled: true, signal: new AbortController().signal, cached: new Map(),
+    save: (_key, receipt) => assert.deepEqual(receipt, { status: "failed", code: "invalid_data" }),
+  }).evaluate({ state: "state", questions }), /invalid_data/)
 })

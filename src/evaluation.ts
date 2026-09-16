@@ -201,6 +201,7 @@ export class Evaluator {
           check(Buffer.byteLength(body) <= MAX_BYTES)
           for (let attempt = 0; ; attempt++) {
             signal.throwIfAborted()
+            if (performance.now() >= expires) throw new EvaluationError("deadline")
             if (this.requests >= this.limits.maxRequests) throw new EvaluationError("request_cap")
             const outgoingBytes = Buffer.byteLength(body)
             if (this.requestBytes + outgoingBytes > this.limits.maxRequestBytes) throw new EvaluationError("transfer_budget")
@@ -216,8 +217,8 @@ export class Evaluator {
               if ((response.status === 429 || response.status === 529) && attempt < 2) {
                 const header = response.headers.get("retry-after")
                 const seconds = header !== null && /^\d+(\.\d+)?$/.test(header.trim()) ? Number(header) : NaN
-                const retry = Number.isFinite(seconds) ? seconds * 1000 : header ? Date.parse(header) - Date.now() : 0
-                const wait = Math.max(250 * 2 ** attempt, Number.isFinite(retry) ? retry : 0)
+                const retry = !Number.isNaN(seconds) ? seconds * 1000 : header ? Date.parse(header) - Date.now() : 0
+                const wait = Math.max(250 * 2 ** attempt, Number.isNaN(retry) ? 0 : retry)
                 if (wait >= expires - performance.now()) throw new EvaluationError("deadline")
                 await delay(wait, undefined, { signal })
                 continue
@@ -248,6 +249,7 @@ export class Evaluator {
         Object.assign(result.answers, batch.answers)
         result.usage.input_tokens += batch.usage.input_tokens
         result.usage.output_tokens += batch.usage.output_tokens
+        check(Number.isSafeInteger(result.usage.input_tokens) && Number.isSafeInteger(result.usage.output_tokens))
       }
       return result
     } catch (error) {

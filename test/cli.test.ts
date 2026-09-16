@@ -5,7 +5,7 @@
 
 import { strict as assert } from "node:assert"
 import { execFileSync, spawn } from "node:child_process"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { get as httpGet } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -914,8 +914,51 @@ test("capabilities reports named-permission support without provider or auth pro
       encoding: "utf8",
       env: { ...process.env, OMEGACODE_HOME: join(home, "untouched"), CODEX_HOME: join(home, "no-codex-home"), OMEGACODE_CODEX_BIN: join(home, "no-codex-bin") },
     })
-    assert.deepEqual(JSON.parse(output), { schemaVersion: 1, codexPermissions: true, providers: [...PROVIDER_IDS] })
+    assert.deepEqual(JSON.parse(output), { schemaVersion: 1, codexPermissions: true, typesafeEvaluate: true, providers: [...PROVIDER_IDS] })
     assert.equal(existsSync(join(home, "untouched")), false)
     assert.equal(existsSync(join(home, "no-codex-home")), false)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test("detached TypeSafe true/false/fake and resume preserve explicit permission and HTTP replay", async () => {
+  const home = mkdtempSync(join(tmpdir(), "omega-cli-evaluation-"))
+  try {
+    const mock = join(home, "http.mjs")
+    const calls = join(home, "calls.txt")
+    writeFileSync(mock, `import { appendFileSync } from 'node:fs';
+globalThis.fetch = async (url) => {
+  if (url !== 'https://api.typesafe.ai/v1/systemone') throw new Error('unexpected URL');
+  appendFileSync(${JSON.stringify(calls)}, 'call\\n');
+  return Response.json({ model:'jev-latest', answers:{ q:{type:'noul',noul:0.8} }, usage:{input_tokens:2,output_tokens:1} });
+};`)
+    const file = join(home, "evaluate.workflow.js")
+    writeFileSync(file, `export const meta = {name:'evaluate',description:'test'};
+try { return await evaluate({state:'synthetic',questions:{q:{type:'noul',instructions:'test'}}}) }
+catch (error) { return error.message }`)
+    const env = { HOME: home, OMEGACODE_HOME: home, TYPESAFE_API_KEY: "synthetic", NODE_OPTIONS: `--import=${mock}` }
+    assert.equal(parseArgs(["run", "--typesafe", file]).typesafe, true)
+    assert.equal(parseArgs(["run", "--typesafe=false", file]).typesafe, false)
+    for (const flags of [["--typesafe=false"], ["--typesafe=true", "--fake"], ["--typesafe=true"]]) {
+      const enabled = flags.length === 1 && flags[0] === "--typesafe=true"
+      const launch = await runCli(["run", file, ...flags, "--detach", "--no-serve", "--json"], env)
+      assert.equal(launch.code, 0, launch.stderr)
+      const { runId } = JSON.parse(launch.stdout)
+      const done = await runCli(["wait", runId, "--json", "--poll-ms", "20", "--timeout-ms", "10000"], env)
+      assert.equal(done.code, 0, done.stderr)
+      const output = JSON.parse(done.stdout)
+      if (enabled) assert.equal(output.result.answers.q.noul, 0.8)
+      else assert.equal(output.result, "evaluation: disabled")
+      const meta = JSON.parse(readFileSync(join(home, "runs", runId, "journal.jsonl"), "utf8").split("\n")[0]!)
+      assert.equal(meta.typesafe, flags[0] === "--typesafe=true")
+      assert.equal(meta.fake, flags.includes("--fake"))
+      const resume = await runCli(["run", file, ...flags, "--resume", runId, "--detach", "--no-serve", "--json"], env)
+      assert.equal(resume.code, 0, resume.stderr)
+      const resumed = await runCli(["wait", runId, "--json", "--poll-ms", "20", "--timeout-ms", "10000"], env)
+      assert.equal(resumed.code, 0, resumed.stderr)
+      const mismatch = await runCli(["run", file, "--resume", runId, ...(meta.typesafe ? [] : ["--typesafe"]), "--no-serve", "--json"], env)
+      assert.notEqual(mismatch.code, 0)
+      assert.match(mismatch.stderr, /must match/)
+    }
+    assert.equal(readFileSync(calls, "utf8"), "call\n")
   } finally { rmSync(home, { recursive: true, force: true }) }
 })

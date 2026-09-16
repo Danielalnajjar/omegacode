@@ -1070,6 +1070,33 @@ test("L6: a failed turn's provider-reported usage reaches totalUsage and the jou
   }
 })
 
+test("L6: usage from a retried attempt is kept when a later attempt succeeds", async () => {
+  let calls = 0
+  const b = build({
+    hooks: {
+      run: async () => {
+        if (calls++ === 0) {
+          throw new AgentError({ provider: "codex", code: "turn_stalled", message: "stalled", retryable: true, usage: { inputTokens: 3, outputTokens: 7, costUsd: 0 } })
+        }
+        return { text: "ok", status: "completed", usage: { inputTokens: 5, outputTokens: 1, costUsd: 0 } }
+      },
+    },
+  })
+  try {
+    await runBody(b, `return await agent("p")`)
+    assert.equal(calls, 2)
+    // The stalled attempt billed before the retry succeeded; both attempts reach the totals and the journal.
+    assert.equal(b.runtime.totalUsage.inputTokens, 8)
+    assert.equal(b.runtime.totalUsage.outputTokens, 8)
+    const [entry] = [...Journal.load("run_test").results.values()]
+    assert.equal(entry.status, "completed")
+    assert.equal(entry.usage.inputTokens, 8)
+    assert.equal(entry.usage.outputTokens, 8)
+  } finally {
+    b.cleanup()
+  }
+})
+
 test("L6: failed-turn usage counts against the budget ceiling end-to-end", async () => {
   const b = build({
     defaults: { budget: 5 },

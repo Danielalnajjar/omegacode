@@ -35,6 +35,7 @@ jobs:
           base64 -d /tmp/newfiles.b64 > /tmp/newfiles.tgz
           tar -xzf /tmp/newfiles.tgz
           sed -i 's/out\.evaluations\.set(entry\.key, entry)/out.evaluations!.set(entry.key, entry)/' src/runtime/journal.ts
+          sed -i 's/validateAnswer(id, answers\[id\], questions\[id\])/validateAnswer(id, answers[id], questions[id]!)/' src/evaluation/typesafe.ts
           rm -rf .jev-build .github/workflows/jev-construction.yml
           corepack enable
           pnpm install --frozen-lockfile --prefer-offline

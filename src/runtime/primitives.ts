@@ -10,6 +10,7 @@
 // finish in. now()/random() also draw from per-branch substreams.
 
 import { AsyncLocalStorage } from "node:async_hooks"
+import { Evaluator } from "../evaluation.js"
 import type {
   AgentOpts,
   AgentResult,
@@ -82,6 +83,7 @@ export function checkProviderModelPair(provider: string | undefined, model: stri
 
 export interface RuntimeOpts {
   runId: string
+  typesafe?: boolean
   defaults: RunDefaults
   factory: WorkerFactory
   journal: Journal
@@ -166,6 +168,10 @@ export class Runtime {
   }
 
   globals(): WorkflowGlobals {
+    const evaluator = new Evaluator({ enabled: this.o.typesafe === true, signal: this.o.signal,
+      cached: this.o.loaded.evaluations ?? new Map(),
+      save: (key, result) => this.o.journal.append({ type: "evaluation", key, result }),
+    })
     const total = this.o.defaults.budget
     const budget = Object.freeze({
       total,
@@ -173,6 +179,13 @@ export class Runtime {
       remaining: () => (total == null ? Infinity : Math.max(0, total - this.totalUsage.outputTokens)),
     })
     return {
+      evaluate: (request, opts) => {
+        const p = evaluator.evaluate(request, opts)
+        this.inFlight.add(p)
+        const done = () => this.inFlight.delete(p)
+        p.then(done, done)
+        return p
+      },
       agent: this.agent.bind(this) as WorkflowGlobals["agent"],
       parallel: this.parallel.bind(this),
       pipeline: this.pipeline.bind(this),

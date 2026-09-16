@@ -5,9 +5,12 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, write
 import { dirname, join } from "node:path"
 import { homedir } from "node:os"
 import type { AgentStatus, AgentUsage, ProviderId } from "../dsl/types.js"
+import type { EvaluationResult } from "../evaluation.js"
 
 export interface JournalMeta {
   type: "meta"
+  typesafe?: boolean
+  fake?: boolean
   runId: string
   workflowFile: string
   fileHash: string
@@ -44,10 +47,11 @@ export interface JournalResult {
   claudeProfileLabel?: string
 }
 
-export type JournalEntry = JournalMeta | JournalStarted | JournalResult
+export type JournalEntry = JournalMeta | JournalStarted | JournalResult | { type: "evaluation"; key: string; result: EvaluationResult }
 
 export interface LoadedJournal {
   meta?: JournalMeta
+  evaluations?: Map<string, EvaluationResult>
   /** key -> result (last one wins on duplicates). Only `completed` results are replayable. */
   results: Map<string, JournalResult>
   /**
@@ -142,6 +146,7 @@ export class Journal {
         continue // skip unparseable / torn line
       }
       if (entry.type === "meta") out.meta = entry
+      else if (entry.type === "evaluation") (out.evaluations ??= new Map()).set(entry.key, entry.result)
       else if (entry.type === "result") out.results.set(entry.key, entry)
       if ((entry.type === "started" || entry.type === "result") && typeof entry.index === "number") {
         out.indexByKey.set(entry.key, entry.index)

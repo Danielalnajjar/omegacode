@@ -60,6 +60,7 @@ export interface RunOptions {
   runId?: string
   resumeRunId?: string
   fake?: boolean
+  typesafe?: boolean
   /** Suppress the terminal renderer (still writes events.jsonl). */
   quiet?: boolean
   /** Extra event listener (e.g. an embedded UI). */
@@ -119,6 +120,9 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     loaded = Journal.load(runId)
     // A journaled result is only safe to replay if the file/args/key-version still match.
     checkResumePreconditions(loaded.meta, { fileHash, args: opts.args ?? null, keyVersion: KEY_VERSION })
+    if ((loaded.meta?.typesafe ?? false) !== (opts.typesafe ?? false) || (loaded.meta?.fake ?? false) !== (opts.fake ?? false)) {
+      throw new Error("cannot resume: --typesafe and --fake must match the original run")
+    }
   } else if (opts.runId && Journal.exists(runId)) {
     throw new Error(`run "${runId}" already has a journal; use --resume ${runId} instead`)
   }
@@ -130,7 +134,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   opts.onStart?.(runId)
   const journal = new Journal(runId)
   if (!loaded.meta) {
-    journal.append({ type: "meta", runId, workflowFile: filePath, fileHash, args: opts.args ?? null, seed, createdAt: baseTimeMs, keyVersion: KEY_VERSION })
+    journal.append({ type: "meta", runId, workflowFile: filePath, fileHash, args: opts.args ?? null, seed, createdAt: baseTimeMs, keyVersion: KEY_VERSION, typesafe: opts.typesafe === true, fake: opts.fake === true })
   }
 
   const renderer = new TerminalRenderer({ enabled: !opts.quiet })
@@ -183,7 +187,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   let status: RunOutcome["status"] = "completed"
   let result: unknown
   let error: string | undefined
-  const runtime = new Runtime({ runId, defaults, factory, journal, loaded, events, args: opts.args, seed, baseTimeMs, signal: ac.signal, declaredPhases: parsed.meta.phases })
+  const runtime = new Runtime({ runId, typesafe: opts.typesafe === true && !opts.fake, defaults, factory, journal, loaded, events, args: opts.args, seed, baseTimeMs, signal: ac.signal, declaredPhases: parsed.meta.phases })
   try {
     // The abort signal MUST reach the sandbox (M13 wiring): the vm timeout bounds only synchronous
     // execution, so without it `await new Promise(() => {})` in a workflow body would hang this

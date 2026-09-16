@@ -5,6 +5,7 @@
 // interprets payloads.
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
+import { providerEnv } from "./provider-env.js"
 import type { ProviderId } from "../dsl/types.js"
 import { AgentError, AgentInterrupted } from "./index.js"
 
@@ -75,7 +76,7 @@ export function runJsonlSubprocess(o: JsonlRunOpts): Promise<JsonlExit> & { clos
       o.spawnProcess ?? ((bin, args, opts) => spawn(bin, args, { cwd: opts.cwd, env: opts.env, stdio: ["pipe", "pipe", "pipe"] }))
     let child: ChildProcessWithoutNullStreams
     try {
-      child = spawnProcess(o.bin, o.args, { cwd: o.cwd, env: o.env })
+      child = spawnProcess(o.bin, o.args, { cwd: o.cwd, env: providerEnv(o.env) })
     } catch (err) {
       markClosed()
       reject(spawnFailure(o.provider, o.bin, err))

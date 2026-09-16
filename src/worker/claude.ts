@@ -14,6 +14,7 @@ import { addUsage, emptyUsage, type AgentResult, type AgentSpec, type AgentUsage
 import type { PreparedAgentCall, Worker, WorkerContext } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
 import { prepareClaudeProfile, resolveClaudeProfile, type ClaudeProfileResolver } from "./claude-profile.js"
+import { providerEnv } from "./provider-env.js"
 import { assertValidSchema, toClaudeOutputFormat } from "./schema.js"
 
 const WRITE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"])
@@ -77,7 +78,7 @@ export class ClaudeWorker implements Worker {
 
   async prepareAgentCall(spec: AgentSpec, ctx: WorkerContext): Promise<PreparedAgentCall> {
     this.preflight(spec, ctx)
-    const prepared = await prepareClaudeProfile(spec, ctx.signal, this.opts.profileResolver ?? resolveClaudeProfile, this.opts.baseEnv ?? process.env)
+    const prepared = await prepareClaudeProfile(spec, ctx.signal, this.opts.profileResolver ?? resolveClaudeProfile, providerEnv(this.opts.baseEnv))
     ctx.onProgress({ kind: "claude-profile", label: prepared.label })
     return (attemptSpec, attemptContext) => this.runAgentWithEnv(attemptSpec, attemptContext, prepared.env)
   }
@@ -120,7 +121,7 @@ export class ClaudeWorker implements Worker {
         : { settingSources: [] }),
       permissionMode: "default",
       abortController: abort,
-      ...(env ? { env: { ...env } } : {}),
+      env: providerEnv(env),
       canUseTool: (toolName: string, input: Record<string, unknown>): Promise<PermissionResult> => {
         const verdict = checkTool(spec.sandbox, spec.cwd, toolName, input)
         if (verdict) return Promise.resolve({ behavior: "deny", message: verdict })

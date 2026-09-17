@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { setTimeout as delay } from "node:timers/promises"
-import { Evaluator, MAX_NETWORK_BYTES } from "../src/evaluation.ts"
+import { Evaluator, MAX_NETWORK_BYTES, validateResult } from "../src/evaluation.ts"
 import { AgentInterrupted } from "../src/worker/index.ts"
 import { providerEnv } from "../src/worker/provider-env.ts"
 import { Semaphore } from "../src/runtime/semaphore.ts"
@@ -180,6 +180,61 @@ test("network packing respects whole-state byte budget; pinned models and option
   await assert.rejects(evaluator.evaluate({ state, questions, model: "different-pinned" }), /model_mismatch/)
   for (const opts of [{ key: 12 }, { label: Infinity }, { key: "" }, { key: "x".repeat(257) }]) {
     await assert.rejects(evaluator.evaluate(request, opts as any), /invalid_options/)
+  }
+})
+
+test("documented aliases resolve consistently across batches and replay the recorded model", async t => {
+  setTestEnv(t, { TYPESAFE_API_KEY: "synthetic" })
+  let calls = 0
+  t.mock.method(globalThis, "fetch", async (_url, opts) => {
+    calls++
+    const body = JSON.parse(opts.body)
+    assert.ok(["jev-latest", "jev-preview"].includes(body.model))
+    return Response.json({ ...result, model: "jev-1.13.0",
+      answers: Object.fromEntries(Object.keys(body.questions).map(k => [k, { type: "noul", noul: 0.7 }])) })
+  })
+  const questions = Object.fromEntries(Array.from({ length: 33 }, (_, i) => [String(i), request.questions.privateQuestion]))
+  for (const model of ["jev-latest", "jev-preview"]) {
+    const evaluator = new Evaluator({ enabled: true, signal: new AbortController().signal, cached: new Map(), save: () => {} })
+    const input = { state: "state", questions, model }
+    const first = await evaluator.evaluate(input)
+    assert.equal(first.model, "jev-1.13.0")
+    assert.equal(Object.keys(first.answers).length, 33)
+    assert.deepEqual(await evaluator.evaluate(input), first)
+    assert.equal(evaluator.accounting().actual.attempts, 2)
+    assert.equal(evaluator.accounting().replayed.successes, 1)
+  }
+  assert.equal(calls, 4)
+})
+
+test("score accepts 2 through 10 criteria and rejects out-of-range counts before HTTP", async t => {
+  setTestEnv(t, { TYPESAFE_API_KEY: "synthetic" })
+  let calls = 0
+  t.mock.method(globalThis, "fetch", async (_url, opts) => {
+    calls++
+    const { questions } = JSON.parse(opts.body)
+    const criteria = questions.score.criteria as string[]
+    return Response.json({ ...result, answers: { score: { type: "score", score: 0, confidence: 1,
+      legend: Object.fromEntries(criteria.map((c, i) => [String(i), c])),
+      probabilities: Object.fromEntries(criteria.map((_, i) => [String(i), i === 0 ? 1 : 0])),
+    } } })
+  })
+  const evaluator = new Evaluator({ enabled: true, signal: new AbortController().signal, cached: new Map(), save: () => {} })
+  const input = (count: number) => ({ state: "state", questions: { score: { type: "score" as const,
+    instructions: "Rate the state", criteria: Array.from({ length: count }, (_, i) => `level ${i}`) } } })
+  for (const count of [2, 10]) assert.equal((await evaluator.evaluate(input(count))).answers.score?.type, "score")
+  for (const count of [1, 11]) await assert.rejects(evaluator.evaluate(input(count)), /invalid_data/)
+  assert.equal(calls, 2)
+})
+
+test("live Score rounding boundary is accepted without admitting inconsistent scores", () => {
+  const questions = { score: { type: "score" as const, instructions: "Read the count", criteria: ["zero", "one", "two"] } }
+  const response = { ...result, model: "jev-1.13.0", answers: { score: { type: "score", score: 1.99,
+    confidence: 0.99, legend: { "0": "zero", "1": "one", "2": "two" }, probabilities: { "0": 0, "1": 0, "2": 1 },
+  } } }
+  assert.deepEqual(validateResult(response, questions).answers, response.answers)
+  for (const score of [1.989, 1.5, 2.01]) {
+    assert.throws(() => validateResult({ ...response, answers: { score: { ...response.answers.score, score } } }, questions), /invalid_data/)
   }
 })
 

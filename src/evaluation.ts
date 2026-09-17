@@ -57,7 +57,7 @@ export function snapshot(input: EvaluationRequest): EvaluationRequest & { model:
     check(Object.keys(q).every(k => ["type", "instructions", "criteria"].includes(k)))
     if (q.type === "noul") check(q.criteria === undefined || (object(q.criteria) && Object.entries(q.criteria).every(([k, v]) => ["true", "false"].includes(k) && typeof v === "string")))
     else if (q.type === "choice") check(object(q.criteria) && Object.keys(q.criteria).length > 0 && Object.keys(q.criteria).length <= 255 && Object.values(q.criteria).every(v => v === null || typeof v === "string"))
-    else if (q.type === "score") check(Array.isArray(q.criteria) && q.criteria.length >= 2 && q.criteria.every((v: unknown) => typeof v === "string"))
+    else if (q.type === "score") check(Array.isArray(q.criteria) && q.criteria.length >= 2 && q.criteria.length <= 10 && q.criteria.every((v: unknown) => typeof v === "string"))
     else check(false)
   }
   return r as EvaluationRequest & { model: string }
@@ -79,7 +79,9 @@ export function validateResult(raw: unknown, questions: Record<string, Question>
     else {
       check(typeof a.score === "number" && Number.isFinite(a.score) && a.score >= 0 && a.score <= keys.length - 1)
       check(object(a.legend) && Object.keys(a.legend).length === keys.length && keys.every(k => Object.hasOwn(a.legend, k) && a.legend[k] === q.criteria[Number(k)]))
-      check(Math.abs(a.score - keys.reduce((sum, k) => sum + Number(k) * a.probabilities[k], 0)) < 0.01)
+      // The live API rounds score and probabilities independently. Include the
+      // one-hundredth boundary plus floating-point error (e.g. 2 - 1.99).
+      check(Math.abs(a.score - keys.reduce((sum, k) => sum + Number(k) * a.probabilities[k], 0)) <= 0.01 + Number.EPSILON * keys.length)
     }
   }
   // Discard extra remote fields: they must not become a journal or error disclosure channel.
@@ -284,7 +286,7 @@ export class Evaluator {
           }
         }, signal)
         signal.throwIfAborted()
-        if (request.model !== "jev-latest" && batch.model !== request.model) throw new EvaluationError("model_mismatch")
+        if (!["jev-latest", "jev-preview"].includes(request.model) && batch.model !== request.model) throw new EvaluationError("model_mismatch")
         check(!result.model || result.model === batch.model)
         result.model = batch.model
         Object.assign(result.answers, batch.answers)

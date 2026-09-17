@@ -147,9 +147,18 @@ it case-insensitively. An already-running external Codex app-server must be star
 without that key by its owner: a socket client cannot sanitize the server's environment.
 Evaluation input must be finite JSON, with string/object/array state and instructions.
 The complete snapshot, questions and requested model remain bound to replay even
-with an explicit key. `jev-latest` is the default alias; replay returns the recorded
+with an explicit key. `jev-latest` (default) and `jev-preview` may resolve to a
+versioned model; other requested models must match exactly. Replay returns the recorded
 model, not a fresh evaluation against today's alias. Differing models across a
 batched response fail rather than combine judgments from different revisions.
+Score rubrics accept 2–10 levels. Score validation includes a 0.01 rounding
+boundary plus floating-point tolerance; larger inconsistencies still fail.
+
+Live synthetic compatibility checked on 2026-09-17 with official SDK 0.6.0 and
+this native evaluator: Choice, Score and Noul succeeded on `jev-1.13.0`; both
+aliases resolved to that revision. Native replay added no HTTP attempt, and
+ledger usage matched the API response. This does not verify dashboard billing,
+review quality equivalence, or representative cost/latency savings.
 
 `runWorkflow()` and foreground `run --json` expose `evaluationUsage` separately:
 

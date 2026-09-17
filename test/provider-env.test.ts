@@ -2,13 +2,15 @@
 // real spawned fake binary that records its argv/stdin/env/cwd. Complements the worker unit tests,
 // which exercise the same logic only through the injectable spawn seam. POSIX-only (shebang bins).
 
-import { test } from "node:test"
+import { after, before, test } from "node:test"
 import assert from "node:assert/strict"
 import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { runWorkflow } from "../src/runtime/run.ts"
+import { JsonRpcStdioClient } from "../src/worker/jsonrpc-stdio.ts"
+import { providerEnv } from "../src/worker/provider-env.ts"
 
 const posixOnly = { skip: process.platform === "win32" }
 const grokAgentProfile = fileURLToPath(
@@ -22,6 +24,10 @@ interface Launch {
   cwd: string
   env: Record<string, string | undefined>
 }
+
+const inheritedTypesafeKey = process.env.TYPESAFE_API_KEY
+before(() => { process.env.TYPESAFE_API_KEY = "must-not-reach-provider" })
+after(() => { restoreEnv("TYPESAFE_API_KEY", inheritedTypesafeKey) })
 
 /** A fake provider CLI: answers --version, records the run invocation, emits happy events. */
 function writeFakeBin(path: string, version: string, eventJson: string | string[]): void {
@@ -39,7 +45,7 @@ function writeFakeBin(path: string, version: string, eventJson: string | string[
       'process.stdin.on("end", () => {',
       '  const promptIndex = args.indexOf("--prompt-file");',
       '  const prompt = promptIndex === -1 ? undefined : fs.readFileSync(args[promptIndex + 1], "utf8");',
-      "  fs.writeFileSync(process.env.RECORD, JSON.stringify({ argv: args, stdin, prompt, cwd: process.cwd(), env: { OPENCODE_DISABLE_AUTOUPDATE: process.env.OPENCODE_DISABLE_AUTOUPDATE, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, GROK_DISABLE_AUTOUPDATER: process.env.GROK_DISABLE_AUTOUPDATER } }));",
+      "  fs.writeFileSync(process.env.RECORD, JSON.stringify({ argv: args, stdin, prompt, cwd: process.cwd(), env: { TYPESAFE_API_KEY: process.env.TYPESAFE_API_KEY, OPENCODE_DISABLE_AUTOUPDATE: process.env.OPENCODE_DISABLE_AUTOUPDATE, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, GROK_DISABLE_AUTOUPDATER: process.env.GROK_DISABLE_AUTOUPDATER } }));",
       `  for (const event of ${JSON.stringify(events)}) console.log(event);`,
       "});",
     ].join("\n"),
@@ -95,6 +101,7 @@ test("pi: overrides.piBin drives a real spawn with the exact argv/stdin contract
     assert.equal(realpathSync(launch.cwd), realpathSync(dir))
     // The RUN inherits the user's agent dir (auth lives there) — no scratch isolation here.
     assert.equal(launch.env.PI_CODING_AGENT_DIR, undefined)
+    assert.equal(launch.env.TYPESAFE_API_KEY, undefined)
   } finally {
     restoreEnv("OMEGACODE_HOME", prev.OMEGACODE_HOME)
     restoreEnv("RECORD", prev.RECORD)
@@ -129,6 +136,7 @@ test("opencode: OPENCODE_BIN env drives a real spawn with the exact argv/stdin c
     assert.equal(launch.stdin, "<instructions>\nbe terse\n</instructions>\n\nhello from workflow")
     assert.equal(realpathSync(launch.cwd), realpathSync(dir))
     assert.equal(launch.env.OPENCODE_DISABLE_AUTOUPDATE, "1")
+    assert.equal(launch.env.TYPESAFE_API_KEY, undefined)
   } finally {
     restoreEnv("OMEGACODE_HOME", prev.OMEGACODE_HOME)
     restoreEnv("RECORD", prev.RECORD)
@@ -188,6 +196,7 @@ test("grok: GROK_BIN env drives a real spawn with prompt-file and policy flags",
     assert.equal(launch.prompt, "hello from workflow")
     assert.equal(realpathSync(launch.cwd), realpathSync(dir))
     assert.equal(launch.env.GROK_DISABLE_AUTOUPDATER, "1")
+    assert.equal(launch.env.TYPESAFE_API_KEY, undefined)
   } finally {
     restoreEnv("OMEGACODE_HOME", prev.OMEGACODE_HOME)
     restoreEnv("RECORD", prev.RECORD)
@@ -205,6 +214,7 @@ test("muse: MUSE_BIN drives runtime schema correction through a fake executable"
     const bin = join(dir, "muse-fake.cjs")
     writeFileSync(bin, `#!/usr/bin/env node
 const fs = require('node:fs');
+if (process.env.TYPESAFE_API_KEY) { console.error('credential leaked'); process.exit(91); }
 if (process.argv.includes('--version')) { console.log('1.2.1'); process.exit(0); }
 const record = ${JSON.stringify(record)};
 const prompts = fs.existsSync(record) ? JSON.parse(fs.readFileSync(record, 'utf8')) : [];
@@ -228,6 +238,34 @@ console.log(JSON.stringify({payload_type:'run.terminal.completed',payload:{termi
     assert.match(prompts[1].text, /previous response did not match/)
   } finally {
     for (const [key, value] of Object.entries(prev)) restoreEnv(key, value)
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("JSON-RPC default spawn strips TypeSafe credentials and preserves unrelated env", posixOnly, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "omega-jsonrpc-env-"))
+  const record = join(dir, "record.json")
+  const bin = join(dir, "jsonrpc-env.cjs")
+  const previousRecord = process.env.RECORD
+  const client = new JsonRpcStdioClient({ bin, args: [], requestTimeoutMs: 5000 })
+  try {
+    writeFileSync(bin, `#!/usr/bin/env node
+const fs = require('node:fs');
+fs.writeFileSync(process.env.RECORD, JSON.stringify({ typesafe: process.env.TYPESAFE_API_KEY, record: process.env.RECORD }));
+require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+  const request = JSON.parse(line);
+  console.log(JSON.stringify({ id: request.id, result: { ready: true } }));
+});
+`)
+    chmodSync(bin, 0o755)
+    process.env.RECORD = record
+    client.start()
+    assert.deepEqual(await client.request("ready"), { ready: true })
+    assert.deepEqual(JSON.parse(readFileSync(record, "utf8")), { record })
+    assert.equal(providerEnv({ TYPESAFE_API_KEY: "secret", KEEP_ME: "yes" }).KEEP_ME, "yes")
+  } finally {
+    await client.shutdown()
+    restoreEnv("RECORD", previousRecord)
     rmSync(dir, { recursive: true, force: true })
   }
 })

@@ -37,6 +37,7 @@ export class UsageError extends Error {
  */
 const BOOLEAN_FLAGS = new Set([
   "fake",
+  "typesafe",
   "json",
   "start-json",
   "detach",
@@ -204,10 +205,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 
 /** Static integration contract: no provider process, auth, or model call. */
 function cmdCapabilities(flags: Flags): void {
-  const capabilities = { schemaVersion: 1, codexPermissions: true, providers: PROVIDER_IDS }
+  const capabilities = { schemaVersion: 1, codexPermissions: true, typesafeEvaluate: true, providers: PROVIDER_IDS }
   console.log(flags.json === true
     ? JSON.stringify(capabilities)
-    : `OmegaCode capabilities (schema 1): codexPermissions; providers: ${PROVIDER_IDS.join(", ")}`)
+    : `OmegaCode capabilities (schema 1): codexPermissions, typesafeEvaluate; providers: ${PROVIDER_IDS.join(", ")}`)
 }
 
 async function cmdServe(flags: Flags): Promise<void> {
@@ -502,14 +503,15 @@ async function cmdRun(flags: Flags): Promise<void> {
     overrides,
     runId: forcedRunId,
     resumeRunId,
-    fake: flags.fake === true,
+    fake: typeof flags.fake === "boolean" ? flags.fake : undefined,
+    typesafe: typeof flags.typesafe === "boolean" ? flags.typesafe : undefined,
     quiet: flags.json === true,
     onStart,
   })
 
   if (flags.json === true) {
     const url = base ? `${base}#/run/${outcome.runId}` : undefined
-    process.stdout.write(JSON.stringify({ runId: outcome.runId, status: outcome.status, url, result: outcome.result, error: outcome.error }, null, 2) + "\n")
+    process.stdout.write(JSON.stringify({ runId: outcome.runId, status: outcome.status, url, result: outcome.result, error: outcome.error, evaluationUsage: outcome.evaluationUsage }, null, 2) + "\n")
   } else if (outcome.status === "completed") {
     const r = outcome.result
     process.stdout.write((typeof r === "string" ? r : JSON.stringify(r, null, 2)) + "\n")
@@ -597,6 +599,9 @@ function buildDetachedChildArgs(
   if (opts.resumeRunId) out.push("--resume", opts.resumeRunId)
   else out.push("--run-id", runId)
   if (opts.flags.fake === true) out.push("--fake")
+  else if (opts.flags.fake === false) out.push("--fake=false")
+  if (opts.flags.typesafe === true) out.push("--typesafe")
+  else if (opts.flags.typesafe === false) out.push("--typesafe=false")
   if (opts.argsStr !== undefined) out.push("--args", opts.argsStr)
   if (opts.argsFile) out.push("--args-file", resolve(opts.argsFile))
   appendValue(out, "provider", opts.overrides.provider)
@@ -789,6 +794,7 @@ async function cmdDoctor(): Promise<void> {
   const { mkdtempSync } = await import("node:fs")
   const { tmpdir } = await import("node:os")
   const { versionAtLeast } = await import("./worker/subprocess-jsonl.js")
+  const { providerEnv } = await import("./worker/provider-env.js")
   const { OPENCODE_MIN_VERSION } = await import("./worker/opencode.js")
   const { PI_MIN_VERSION } = await import("./worker/pi.js")
   const { MUSE_MIN_VERSION } = await import("./worker/muse.js")
@@ -797,7 +803,7 @@ async function cmdDoctor(): Promise<void> {
   const check = (bin: string, args: string[], opts: { env?: NodeJS.ProcessEnv; cwd?: string } = {}): string => {
     try {
       return (
-        execFileSync(bin, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env: opts.env, cwd: opts.cwd, timeout: 10_000 })
+        execFileSync(bin, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env: providerEnv(opts.env), cwd: opts.cwd, timeout: 10_000 })
           .trim()
           .split("\n")[0] ?? "ok"
       )
@@ -902,6 +908,7 @@ Usage:
       --codex-no-app-server-proxy          force a fresh stdio app-server even when env selects a proxy socket
       --resume <runId>                     replay unchanged prefix, re-run the rest
       --fake                               run with a fake worker (no real agents)
+      --typesafe                           allow host-only Jev evaluations (disabled under --fake)
       --json                               print {runId,status,url,result,error} as JSON (viewer still starts)
       --detach                             launch in the background; with --json print immediate launch JSON
       --start-json                         print {"type":"run.started",runId,runDir,url} on stderr at launch

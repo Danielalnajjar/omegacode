@@ -20,6 +20,7 @@ import { join } from "node:path"
 import { addUsage, emptyUsage, type AgentResult, type AgentSpec, type AgentUsage, type Effort } from "../dsl/types.js"
 import type { Worker, WorkerContext, WorkerProgress } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
+import { providerEnv } from "./provider-env.js"
 import { assertValidSchema, parseJsonLoose, parseValidJson } from "./schema.js"
 import {
   captureStdout,
@@ -195,7 +196,7 @@ export class PiWorker implements Worker {
         bin: this.bin,
         args: ["--version"],
         cwd: tmpdir(),
-        env: { ...process.env, PI_CODING_AGENT_DIR: scratch },
+        env: { ...providerEnv(), PI_CODING_AGENT_DIR: scratch },
         spawnProcess: this.spawnProcess,
       })
     } finally {
@@ -253,7 +254,7 @@ export class PiWorker implements Worker {
       // dir (~/.pi/agent/auth.json), so a scratch PI_CODING_AGENT_DIR would break every run.
       // --no-session keeps run state out of the user's session history; only the --version
       // probe (which needs no auth) gets the scratch-dir treatment.
-      env: process.env,
+      env: providerEnv(),
       stdin: prompt,
       signal: ctx.signal,
       stallTimeoutMs: this.stallTimeoutMs,

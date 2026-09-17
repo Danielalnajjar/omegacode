@@ -1,6 +1,7 @@
 import { execFile, type ExecFileException } from "node:child_process"
 import type { AgentSpec } from "../dsl/types.js"
 import { AgentError, AgentInterrupted } from "./index.js"
+import { providerEnv } from "./provider-env.js"
 
 export const CLAUDE_PROFILE_AUTH_CONFLICTS = {
   defined: ["CLAUDE_SECURESTORAGE_CONFIG_DIR"],
@@ -71,7 +72,7 @@ export function resolveClaudeProfile(profileId: string, signal: AbortSignal, run
     let child
     try {
       child = runExecFile("bb", ["subscription", "resolve-omega", "--profile-id", profileId, "--json"], {
-        shell: false, signal, killSignal: "SIGKILL", maxBuffer: 64 * 1024, timeout: 10_000, encoding: "utf8",
+        env: providerEnv(), shell: false, signal, killSignal: "SIGKILL", maxBuffer: 64 * 1024, timeout: 10_000, encoding: "utf8",
       }, (error, stdout, stderr) => { outcome = { error, stdout, stderr }; callbackDone = true; settle() })
     } catch {
       reject(unavailable("resolver command failed"))

@@ -4,7 +4,7 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { homedir } from "node:os"
-import type { AgentStatus, AgentUsage, ProviderId } from "../dsl/types.js"
+import type { AgentStatus, AgentUsage, Effort, ProviderId } from "../dsl/types.js"
 import type { EvaluationReceipt, EvaluationAttempt, EvaluationResult } from "../evaluation-types.js"
 
 export interface JournalMeta {
@@ -30,6 +30,14 @@ export interface JournalStarted {
   index: number
   label: string
   provider: ProviderId
+  /**
+   * The resolved route the worker was handed: what the workflow (or its defaults) asked for, before
+   * the worker maps effort onto its backend's menu. Recorded so a run receipt can prove the route
+   * without reading the workflow's args. Absent on journals written before these fields existed.
+   */
+  model?: string
+  effort?: Effort
+  serviceTier?: string
 }
 
 export interface JournalResult {

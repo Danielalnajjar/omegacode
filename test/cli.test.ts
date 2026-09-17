@@ -457,19 +457,20 @@ describe("CLI end-to-end (--fake)", () => {
   test("doctor resolves bins via env overrides and flags below-minimum versions as OUTDATED", { skip: process.platform === "win32" }, async () => {
     // Regression: Muse doctor uses MUSE_BIN and exposes outdated versions without a real CLI.
     // Stub binaries: opencode and grok report outdated versions, pi a current one.
+    const isolatedProbe = '#!/bin/sh\n[ -z "$TYPESAFE_API_KEY$Typesafe_Api_Key" ] || exit 91\n'
     const ocStub = join(home, "fake-opencode")
     const piStub = join(home, "fake-pi")
     const museStub = join(home, "fake-muse")
-    writeFileSync(museStub, "#!/bin/sh\necho 1.2.0\n")
+    writeFileSync(museStub, isolatedProbe + "echo 1.2.0\n")
     chmodSync(museStub, 0o755)
     const grokStub = join(home, "fake-grok")
-    writeFileSync(ocStub, "#!/bin/sh\necho 1.15.0\n")
-    writeFileSync(piStub, "#!/bin/sh\necho 0.79.1\n")
-    writeFileSync(grokStub, "#!/bin/sh\necho 'grok 0.2.100'\n")
+    writeFileSync(ocStub, isolatedProbe + "echo 1.15.0\n")
+    writeFileSync(piStub, isolatedProbe + "echo 0.79.1\n")
+    writeFileSync(grokStub, isolatedProbe + "echo 'grok 0.2.100'\n")
     chmodSync(ocStub, 0o755)
     chmodSync(piStub, 0o755)
     chmodSync(grokStub, 0o755)
-    const r = await runCli(["doctor"], { OMEGACODE_HOME: home, OPENCODE_BIN: ocStub, PI_BIN: piStub, GROK_BIN: grokStub, MUSE_BIN: museStub })
+    const r = await runCli(["doctor"], { OMEGACODE_HOME: home, OPENCODE_BIN: ocStub, PI_BIN: piStub, GROK_BIN: grokStub, MUSE_BIN: museStub, TYPESAFE_API_KEY: "synthetic", Typesafe_Api_Key: "synthetic-mixed" })
     assert.equal(r.code, 0, `stderr=${r.stderr}`)
     assert.match(r.stdout, /muse\s+: 1\.2\.0 — OUTDATED \(< 1\.2\.1\)/)
     assert.match(r.stdout, /opencode\s+: 1\.15\.0 — OUTDATED \(< 1\.16\.2\)/)

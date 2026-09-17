@@ -135,6 +135,22 @@ Muse uses the existing CLI login and one `muse exec --json` process per attempt.
 `{model, answers, usage: {input_tokens, output_tokens}}` contract. Enable it with
 `--typesafe`; fake mode rejects evaluation. Agent provider routing is unchanged.
 
+Fresh runs default to TypeSafe **off**, even when the host has an API key.
+`--typesafe=false` is an explicit denial, not an omitted flag. Resume inherits
+omitted `--typesafe` and `--fake` values from the journal; explicit contradictions
+reject before HTTP in both foreground and detached runs. Legacy journals without
+a TypeSafe flag remain off. Legacy journals without a fake flag retain their
+historical fake/live selection behavior; they cannot gain TypeSafe permission.
+
+The host alone reads `TYPESAFE_API_KEY`; SDK and spawned worker environments strip
+it case-insensitively. An already-running external Codex app-server must be started
+without that key by its owner: a socket client cannot sanitize the server's environment.
+Evaluation input must be finite JSON, with string/object/array state and instructions.
+The complete snapshot, questions and requested model remain bound to replay even
+with an explicit key. `jev-latest` is the default alias; replay returns the recorded
+model, not a fresh evaluation against today's alias. Differing models across a
+batched response fail rather than combine judgments from different revisions.
+
 `runWorkflow()` and foreground `run --json` expose `evaluationUsage` separately:
 
 - `ledger`: cumulative HTTP admissions, in order, each `{bytes, model, usage}`.
@@ -158,3 +174,19 @@ when the evaluation fails. Positional answer/failure replay receipts are unchang
 Native exporters can reconstruct the ledger with `Journal.load(runId).evaluationLedger`;
 detached status/wait output is unchanged. These are reported tokens, not exactly-once
 billing, precise subscription consumption, or a guarantee of complete provider charges.
+
+Before obtaining access, the evaluator, credential, run-mode and accounting tests
+use synthetic HTTP responses and temporary homes. After access is granted, validate
+with a deliberately small, non-sensitive state and an explicit `--typesafe` run:
+
+1. Check one Noul, Choice and Score response against the [documented API](https://docs.typesafe.ai/api), including returned model and reported usage.
+2. Resume that exact run without changing input; confirm no additional HTTP admission
+   and separate replay attribution. Use a fresh run to evaluate a changed model alias.
+3. Exercise a bounded multi-batch request and cancellation; compare the admission ledger
+   with provider-visible usage, preserving unknowns rather than inferring zero charges.
+4. Validate the skills #240 integration against this native ledger before collecting
+   quality, latency or cost comparisons. Synthetic tests do not establish those outcomes.
+
+Do not place credentials in workflow arguments, state, explicit logging or returned
+values: those channels are not covered by evaluator-receipt redaction. Rate-limit
+and outage behavior is tested with mocks; do not deliberately exhaust live quota.

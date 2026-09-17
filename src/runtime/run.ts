@@ -203,9 +203,11 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     // Await any agent() the body launched without awaiting, so a late rejection can't crash the
     // process after we've declared "completed".
     await runtime.settle()
+    ac.signal.throwIfAborted()
     writeResult(runId, result ?? null)
   } catch (err) {
     status = ac.signal.aborted ? "interrupted" : "failed"
+    if (status === "interrupted") result = undefined
     error = err instanceof Error ? err.message : String(err)
   } finally {
     await runtime.settle()

@@ -1,8 +1,9 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { setTimeout as delay } from "node:timers/promises"
 import { Evaluator } from "../src/evaluation.ts"
 import { runWorkflow } from "../src/runtime/run.ts"
 import { Journal, journalPath } from "../src/runtime/journal.ts"
@@ -114,4 +115,54 @@ test("cancellation during receipt save reaches producer and coalesced follower",
   await Promise.all([assert.rejects(evaluator.evaluate(request), AgentInterrupted), assert.rejects(evaluator.evaluate(request), AgentInterrupted)])
   assert.deepEqual(evaluator.accounting().actual.total, usage)
   assert.equal(evaluator.accounting().replayed.successes, 0)
+})
+
+test("cancellation while settling an unawaited evaluation cannot publish run success", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "eval-settle-abort-"))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  setTestEnv(t, { OMEGACODE_HOME: dir, TYPESAFE_API_KEY: "synthetic" })
+  const ac = new AbortController()
+  t.mock.method(globalThis, "fetch", async () => {
+    await delay(20)
+    ac.abort()
+    throw new Error("private-abort-detail")
+  })
+  const file = join(dir, "settle.workflow.js")
+  writeFileSync(file, `export const meta={name:'settle',description:'test'}; evaluate(${JSON.stringify(request)}); return "body-finished"`)
+  const outcome = await runWorkflow({ file, typesafe: true, quiet: true, signal: ac.signal })
+  assert.equal(outcome.status, "interrupted")
+  assert.equal(existsSync(join(dir, "runs", outcome.runId, "result.json")), false)
+  assert.equal(outcome.evaluationUsage!.actual.unknownAttempts, 1)
+  assert.equal(outcome.evaluationUsage!.actual.total, null)
+  const events = readFileSync(join(dir, "runs", outcome.runId, "events.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line))
+  assert.equal(events.some(e => e.type === "run" && e.status === "completed"), false)
+})
+
+test("journal rejects unsafe admission sums and invalid or duplicate usage attribution", t => {
+  const dir = mkdtempSync(join(tmpdir(), "eval-journal-validation-"))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  setTestEnv(t, { OMEGACODE_HOME: dir })
+  const overflow = new Journal("overflow")
+  overflow.append({ type: "evaluation-attempt", bytes: Number.MAX_SAFE_INTEGER })
+  overflow.append({ type: "evaluation-attempt", bytes: 1 })
+  assert.throws(() => Journal.load("overflow"), /invalid evaluation admission/)
+  for (const [index, badUsage] of [null, { input_tokens: -1, output_tokens: 1 }, { input_tokens: 1.5, output_tokens: 1 }, { input_tokens: Number.MAX_SAFE_INTEGER + 1, output_tokens: 1 }].entries()) {
+    const id = `invalid-${index}`
+    const journal = new Journal(id)
+    journal.append({ type: "evaluation-attempt", bytes: 10 })
+    journal.append({ type: "evaluation-usage", attempt: 1, model: null, usage: badUsage as never })
+    assert.throws(() => Journal.load(id), /invalid evaluation usage/)
+  }
+  for (const attempt of [0, 0.5, 2]) {
+    const id = `attempt-${attempt}`
+    const journal = new Journal(id)
+    journal.append({ type: "evaluation-attempt", bytes: 10 })
+    journal.append({ type: "evaluation-usage", attempt, model: "jev-latest", usage })
+    assert.throws(() => Journal.load(id), /invalid evaluation usage/)
+  }
+  const duplicate = new Journal("duplicate")
+  duplicate.append({ type: "evaluation-attempt", bytes: 10 })
+  duplicate.append({ type: "evaluation-usage", attempt: 1, model: "jev-latest", usage })
+  duplicate.append({ type: "evaluation-usage", attempt: 1, model: "jev-latest", usage })
+  assert.throws(() => Journal.load("duplicate"), /invalid evaluation usage/)
 })

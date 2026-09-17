@@ -163,6 +163,7 @@ export class Journal {
       else if (entry.type === "evaluation-attempt") {
         if (!Number.isSafeInteger(entry.bytes) || entry.bytes < 0) throw new ResumePreconditionError("invalid evaluation admission journal")
         const attempts = out.evaluationAttempts ??= { requests: 0, bytes: 0 }
+        if (!Number.isSafeInteger(attempts.bytes + entry.bytes)) throw new ResumePreconditionError("invalid evaluation admission journal")
         attempts.requests++
         attempts.bytes += entry.bytes
         ;(out.evaluationLedger ??= []).push({ bytes: entry.bytes, model: null, usage: null })

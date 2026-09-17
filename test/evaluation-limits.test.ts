@@ -209,7 +209,58 @@ test("aggregated usage must remain a safe integer across question batches", asyn
       answers: Object.fromEntries(Object.keys(questions).map(k => [k, { type: "noul", noul: 0.7 }])) })
   })
   const questions = Object.fromEntries(Array.from({ length: 33 }, (_, i) => [String(i), request.questions.privateQuestion]))
-  await assert.rejects(new Evaluator({ enabled: true, signal: new AbortController().signal, cached: new Map(),
+  const evaluator = new Evaluator({ enabled: true, signal: new AbortController().signal, cached: new Map(),
     save: (_key, receipt) => assert.deepEqual(receipt, { status: "failed", code: "invalid_data" }),
-  }).evaluate({ state: "state", questions }), /invalid_data/)
+  })
+  await assert.rejects(evaluator.evaluate({ state: "state", questions }), /invalid_data/)
+  assert.equal(evaluator.accounting().actual.unknownAttempts, 0)
+  assert.equal(evaluator.accounting().actual.reported, null)
+  assert.equal(evaluator.accounting().actual.total, null)
+  assert.deepEqual(evaluator.accounting().ledger.map(a => a.usage), [
+    { input_tokens: Number.MAX_SAFE_INTEGER, output_tokens: 1 },
+    { input_tokens: Number.MAX_SAFE_INTEGER, output_tokens: 1 },
+  ])
+})
+
+test("alias drift between batches fails deterministically while preserving both usage reports", async t => {
+  setTestEnv(t, { TYPESAFE_API_KEY: "synthetic" })
+  let calls = 0
+  t.mock.method(globalThis, "fetch", async (_url, opts) => {
+    calls++
+    const { questions } = JSON.parse(opts.body)
+    return Response.json({ model: calls === 1 ? "jev-revision-a" : "jev-revision-b",
+      answers: Object.fromEntries(Object.keys(questions).map(k => [k, { type: "noul", noul: 0.7 }])),
+      usage: { input_tokens: calls * 3, output_tokens: calls },
+    })
+  })
+  const questions = Object.fromEntries(Array.from({ length: 33 }, (_, i) => [String(i), request.questions.privateQuestion]))
+  const evaluator = new Evaluator({ enabled: true, signal: new AbortController().signal, cached: new Map(), save: () => {} })
+  await assert.rejects(evaluator.evaluate({ state: "state", questions }), /invalid_data/)
+  await assert.rejects(evaluator.evaluate({ state: "state", questions }), /invalid_data/)
+  assert.equal(calls, 2)
+  assert.deepEqual(evaluator.accounting().actual.total, { input_tokens: 9, output_tokens: 3 })
+  assert.deepEqual(evaluator.accounting().ledger.map(a => a.model), ["jev-revision-a", "jev-revision-b"])
+  assert.equal(evaluator.accounting().replayed.failures, 1)
+})
+
+test("snapshots bind mutable input before queueing and alias replay retains the recorded model", async t => {
+  setTestEnv(t, { TYPESAFE_API_KEY: "synthetic" })
+  const received: unknown[] = []
+  t.mock.method(globalThis, "fetch", async (_url, opts) => {
+    const body = JSON.parse(opts.body)
+    received.push(body)
+    return Response.json({ ...result, model: "jev-revision-a" })
+  })
+  const cached = new Map()
+  const evaluator = new Evaluator({ enabled: true, signal: new AbortController().signal, cached, save: () => {} })
+  const mutable = structuredClone(request)
+  const first = evaluator.evaluate(mutable, { key: "same-key" })
+  mutable.state = "changed"
+  mutable.questions.privateQuestion.instructions = "changed question"
+  assert.equal((await first).model, "jev-revision-a")
+  assert.deepEqual(received, [{ ...request, model: "jev-latest" }])
+  assert.equal((await evaluator.evaluate(request, { key: "same-key" })).model, "jev-revision-a")
+  await evaluator.evaluate(mutable, { key: "same-key" })
+  assert.equal(received.length, 2)
+  assert.deepEqual(received[1], { ...mutable, model: "jev-latest" })
 })

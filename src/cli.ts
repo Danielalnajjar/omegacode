@@ -794,6 +794,7 @@ async function cmdDoctor(): Promise<void> {
   const { mkdtempSync } = await import("node:fs")
   const { tmpdir } = await import("node:os")
   const { versionAtLeast } = await import("./worker/subprocess-jsonl.js")
+  const { providerEnv } = await import("./worker/provider-env.js")
   const { OPENCODE_MIN_VERSION } = await import("./worker/opencode.js")
   const { PI_MIN_VERSION } = await import("./worker/pi.js")
   const { MUSE_MIN_VERSION } = await import("./worker/muse.js")
@@ -802,7 +803,7 @@ async function cmdDoctor(): Promise<void> {
   const check = (bin: string, args: string[], opts: { env?: NodeJS.ProcessEnv; cwd?: string } = {}): string => {
     try {
       return (
-        execFileSync(bin, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env: opts.env, cwd: opts.cwd, timeout: 10_000 })
+        execFileSync(bin, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env: providerEnv(opts.env), cwd: opts.cwd, timeout: 10_000 })
           .trim()
           .split("\n")[0] ?? "ok"
       )

@@ -6,7 +6,7 @@ import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { addUsage, emptyUsage, type AgentResult, type AgentSpec, type AgentUsage, type Effort } from "../dsl/types.js"
 import { AgentError, AgentInterrupted, type Worker, type WorkerContext } from "./index.js"
-import { assertValidSchema, parseJsonLoose, parseValidJson, stampLabeledUnitId, validate } from "./schema.js"
+import { assertValidSchema, parseJsonLoose, parseValidJson, validate } from "./schema.js"
 import { captureStdout, exitError, runJsonlSubprocess, versionAtLeast, type SpawnProcess } from "./subprocess-jsonl.js"
 
 const PROVIDER = "muse" as const
@@ -77,12 +77,7 @@ export class MuseWorker implements Worker {
     try {
       const env = privateConfigEnv(scratch, spec.sandbox === "read-only")
       let prompt = spec.instructions ? `${spec.instructions}\n\n${spec.prompt}` : spec.prompt
-      if (spec.schema) {
-        prompt += `\n\nReturn ONLY a JSON value conforming to this JSON Schema, without prose or code fences:\n${JSON.stringify(spec.schema)}`
-        if (spec.label) {
-          prompt += `\nAssigned agent label: ${JSON.stringify(spec.label)}. If the schema has a root unitId, it must equal that label exactly.`
-        }
-      }
+      if (spec.schema) prompt += `\n\nReturn ONLY a JSON value conforming to this JSON Schema, without prose or code fences:\n${JSON.stringify(spec.schema)}`
       const working = await this.runExec(spec, {
         prompt, env, scratch, sessionId: workingSessionId, ctx,
         effort: spec.effort, maxTurns: spec.maxTurns, forwardProgress: true,
@@ -93,7 +88,7 @@ export class MuseWorker implements Worker {
       let usage = sessionUsage(workingSessionId, ctx)
       let structured: unknown
       if (spec.schema) {
-        structured = parseValidJson(text, spec.schema, spec.label)
+        structured = parseValidJson(text, spec.schema)
         if (structured === undefined) {
           let errors = "not valid JSON"
           try {
@@ -111,9 +106,9 @@ export class MuseWorker implements Worker {
           run = extraction.run
           text = extraction.text
           usage = addUsage(usage, sessionUsage(extractSessionId, ctx))
-          structured = parseValidJson(text, spec.schema, spec.label)
+          structured = parseValidJson(text, spec.schema)
           if (structured === undefined) {
-            try { structured = stampLabeledUnitId(spec.schema, spec.label, parseJsonLoose(text)) } catch {
+            try { structured = parseJsonLoose(text) } catch {
               // finalizeResult raises the existing schema error and owns the last-resort full retry.
             }
           }
@@ -225,9 +220,7 @@ function extractionPrompt(spec: AgentSpec, workingText: string, errors: string):
     `It did not match the JSON Schema (${errors}). ` +
     "Return that same answer as a single JSON value that conforms to the following JSON Schema. " +
     "Output ONLY the JSON — no prose, no explanation, no code fences. Do not call tools. " +
-    "Keep every finding and recommendation; only fix property names, enums, and required fields." +
-    (spec.label ? ` Assigned agent label: ${JSON.stringify(spec.label)}. Root unitId, if present, must equal that label.` : "") +
-    "\n\nSchema:\n" +
+    "Keep every finding and recommendation; only fix property names, enums, and required fields.\n\nSchema:\n" +
     JSON.stringify(spec.schema)
   )
 }

@@ -255,24 +255,10 @@ function balancedJsonSpans(text: string): Array<{ text: string; end: number }> {
   return spans
 }
 
-/**
- * When the author set agent({ label }) and the schema has a root `unitId`, stamp that
- * label onto the parsed object. Muse invents descriptive unitIds; OmegaCode then marks
- * the agent done and the workflow throws the result away (`unitId === label`).
- */
-export function stampLabeledUnitId(schema: JSONSchema | undefined, label: string | undefined, value: unknown): unknown {
-  if (!label || !schema || value === null || typeof value !== "object" || Array.isArray(value)) return value
-  const properties = schema.properties
-  if (properties === null || typeof properties !== "object" || Array.isArray(properties) || !("unitId" in properties)) return value
-  const record = value as Record<string, unknown>
-  if (record.unitId === label) return value
-  return { ...record, unitId: label }
-}
-
 /** Parse and validate a main-turn answer before paying for a separate extraction turn. */
-export function parseValidJson(text: string, schema: JSONSchema, label?: string): unknown | undefined {
+export function parseValidJson(text: string, schema: JSONSchema): unknown | undefined {
   try {
-    const parsed = stampLabeledUnitId(schema, label, parseJsonLoose(text))
+    const parsed = parseJsonLoose(text)
     const normalized = stripNullOptionals(parsed, schema)
     return validate(schema, normalized).ok ? parsed : undefined
   } catch {

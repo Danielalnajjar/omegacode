@@ -260,21 +260,6 @@ for (const effort of ["none", "minimal", "low", "medium", "high", "xhigh", "max"
   })
 }
 
-// Regression: Muse invents descriptive unitIds; stamp the assigned label instead of extracting or discarding.
-test("Muse stamps agent label onto root unitId without an extraction turn", async () => {
-  const { worker, spawned } = harness([versionOk, (p, call) => {
-    const prompt = readFileSync(call.args[call.args.indexOf("--prompt-file") + 1]!, "utf8")
-    assert.match(prompt, /Assigned agent label: "inventory"/)
-    p.pushLine(terminal('{"unitId":"jev-doc-source-additions","n":1}')); p.end(0)
-  }])
-  const s = spec({
-    label: "inventory",
-    schema: { type: "object", required: ["unitId", "n"], properties: { unitId: { type: "string" }, n: { type: "number" } } },
-  })
-  assert.deepEqual((await worker.runAgent(s, ctx())).structured, { unitId: "inventory", n: 1 })
-  assert.equal(spawned.length, 2)
-})
-
 // Regression: a schema-valid first terminal skips the extraction exec.
 test("Muse skips extraction when first JSON matches schema", async () => {
   const { worker, spawned } = harness([versionOk, (p, call) => {

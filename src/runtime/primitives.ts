@@ -24,7 +24,7 @@ import { AgentError, AgentInterrupted } from "../worker/index.js"
 import { CODEX_SERVICE_TIERS } from "../worker/codex.js"
 import { CODEX_EXECUTION_PROFILE_NAMES } from "../worker/codex-profile.js"
 import { withRetry } from "../worker/errors.js"
-import { stampLabeledUnitId, stripNullOptionals, validate } from "../worker/schema.js"
+import { stripNullOptionals, validate } from "../worker/schema.js"
 import { Journal, type LoadedJournal } from "./journal.js"
 import { branchKey, chainKey, explicitKey, keyedSpec, ROOT_KEY } from "./keys.js"
 import type { EventSink } from "./events.js"
@@ -247,7 +247,6 @@ export class Runtime {
       sandbox: opts?.sandbox ?? d.sandbox,
       approval: opts?.approval ?? d.approval,
       instructions: opts?.instructions,
-      label: opts?.label,
       schema: opts?.schema,
       maxTurns: opts?.maxTurns,
       serviceTier: opts?.serviceTier,
@@ -665,8 +664,7 @@ export class Runtime {
   private finalizeResult(spec: AgentSpec, result: AgentResult): unknown {
     if (!spec.schema) return result.text
     if (result.structured !== undefined) {
-      const stamped = stampLabeledUnitId(spec.schema, spec.label, result.structured)
-      const normalized = stripNullOptionals(stamped, spec.schema)
+      const normalized = stripNullOptionals(result.structured, spec.schema)
       const check = validate(spec.schema, normalized)
       if (!check.ok) {
         throw new WorkflowError(`structured output failed schema: ${check.errors}; ${structuredOutputTextDiagnostic(result.text)}`)

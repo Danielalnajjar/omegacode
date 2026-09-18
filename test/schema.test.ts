@@ -7,6 +7,8 @@ import {
   assertValidSchema,
   stripNullOptionals,
   parseJsonLoose,
+  parseValidJson,
+  stampLabeledUnitId,
 } from "../src/worker/schema.ts"
 import type { JSONSchema } from "../src/dsl/types.ts"
 
@@ -228,6 +230,29 @@ test("strictify + stripNullOptionals round-trip restores author-optional semanti
   // After normalization the value validates against the ORIGINAL optional schema.
   assert.equal(validate(authorSchema, normalized).ok, true)
   assert.deepEqual(normalized, { a: "hi" })
+})
+
+test("stampLabeledUnitId overwrites a invented root unitId when the schema has unitId", () => {
+  const schema: JSONSchema = { type: "object", properties: { unitId: { type: "string" }, n: { type: "number" } } }
+  assert.deepEqual(
+    stampLabeledUnitId(schema, "inventory", { unitId: "jev-doc-source-additions", n: 1 }),
+    { unitId: "inventory", n: 1 },
+  )
+  assert.deepEqual(stampLabeledUnitId(schema, "inventory", { unitId: "inventory", n: 1 }), { unitId: "inventory", n: 1 })
+  assert.deepEqual(stampLabeledUnitId(schema, undefined, { unitId: "x" }), { unitId: "x" })
+  assert.deepEqual(stampLabeledUnitId({ type: "object", properties: { n: { type: "number" } } }, "inventory", { n: 1 }), { n: 1 })
+})
+
+test("parseValidJson stamps labeled unitId so Ajv does not reject a descriptive name", () => {
+  const schema: JSONSchema = {
+    type: "object",
+    required: ["unitId", "n"],
+    properties: { unitId: { type: "string" }, n: { type: "number" } },
+  }
+  assert.deepEqual(parseValidJson('{"unitId":"jev-docs-s006","n":1}', schema, "sources-official-1"), {
+    unitId: "sources-official-1",
+    n: 1,
+  })
 })
 
 test("parseJsonLoose handles bare JSON and fenced JSON", () => {

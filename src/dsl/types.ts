@@ -75,6 +75,8 @@ export interface AgentSpec {
   sandbox: Sandbox
   approval: Approval
   instructions?: string
+  /** From agent({ label }). Stamps root schema unitId so invented names are not discarded. */
+  label?: string
   schema?: JSONSchema
   maxTurns?: number
   serviceTier?: string

@@ -87,6 +87,11 @@ const versionOk: Script = (p) => {
   p.end(0)
 }
 
+const version13: Script = (p) => {
+  p.stdout.emit("data", "1.3.0 (1.3.0-R3401.1)\n")
+  p.end(0)
+}
+
 function harness(
   scripts: Script[],
   workerOpts: Omit<MuseWorkerOpts, "spawnProcess"> = {},
@@ -271,6 +276,19 @@ test("Muse skips extraction when first JSON matches schema", async () => {
   const s = spec({ instructions: "corrective instructions", schema: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } } })
   assert.deepEqual((await worker.runAgent(s, ctx())).structured, { ok: true })
   assert.equal(spawned.length, 2)
+  assert.equal(spawned[1]!.args.includes("--output-schema"), false)
+})
+
+// Regression: Muse 1.3 passes the schema file; 1.2.1 cannot.
+test("Muse 1.3 schema calls pass --output-schema", async () => {
+  const { worker, spawned } = harness([version13, (p, call) => {
+    const i = call.args.indexOf("--output-schema")
+    assert.ok(i >= 0)
+    assert.deepEqual(JSON.parse(readFileSync(call.args[i + 1]!, "utf8")), { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } })
+    p.pushLine(terminal('{"ok":true}')); p.end(0)
+  }])
+  const s = spec({ schema: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } } })
+  assert.deepEqual((await worker.runAgent(s, ctx())).structured, { ok: true })
 })
 
 // Regression: a schema miss runs a low-effort extraction exec instead of redoing the original task.

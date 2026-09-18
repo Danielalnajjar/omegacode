@@ -11,6 +11,8 @@ import { captureStdout, exitError, runJsonlSubprocess, versionAtLeast, type Spaw
 
 const PROVIDER = "muse" as const
 export const MUSE_MIN_VERSION = "1.2.1"
+/** Native `muse exec --output-schema` exists from 1.3.0; 1.2.1 stays prompt-parse + extraction. */
+export const MUSE_OUTPUT_SCHEMA_VERSION = "1.3.0"
 /**
  * Muse's model HTTP stream dies after 180s of silence unless these are set.
  * Max reasoning is silent longer than that. Values are seconds; Muse rejects 0.
@@ -45,6 +47,7 @@ export class MuseWorker implements Worker {
   private readonly spawnProcess?: SpawnProcess
   private readonly stallTimeoutMs: number
   private versionCheck: Promise<void> | null = null
+  private resolvedVersion = ""
 
   constructor(opts: MuseWorkerOpts = {}) {
     this.bin = opts.bin ?? "muse"
@@ -165,6 +168,11 @@ export class MuseWorker implements Worker {
     if (spec.model) args.push("--model", spec.model)
     if (opts.effort) args.push("--reasoning-effort", opts.effort)
     if (opts.maxTurns !== undefined) args.push("--max-model-steps", String(opts.maxTurns))
+    if (spec.schema && versionAtLeast(this.resolvedVersion, MUSE_OUTPUT_SCHEMA_VERSION)) {
+      const schemaPath = join(opts.scratch, "schema.json")
+      writeFileSync(schemaPath, JSON.stringify(spec.schema), { mode: 0o600 })
+      args.push("--output-schema", schemaPath)
+    }
     let terminal: { type: string; payload: Record<string, unknown> } | undefined
     const run = runJsonlSubprocess({
       provider: PROVIDER, bin: this.bin, args, cwd: spec.cwd, env: opts.env,
@@ -217,6 +225,7 @@ export class MuseWorker implements Worker {
           if (!versionAtLeast(version, MUSE_MIN_VERSION)) {
             throw new AgentError({ provider: PROVIDER, code: "provider_outdated", message: `Muse ${version || "(unknown version)"} is below minimum ${MUSE_MIN_VERSION}; upgrade the Muse CLI` })
           }
+          this.resolvedVersion = version
         }).catch((err: unknown) => { this.versionCheck = null; throw err })
     }
     return this.versionCheck

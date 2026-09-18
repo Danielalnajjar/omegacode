@@ -11,6 +11,21 @@ import { captureStdout, DEFAULT_STALL_TIMEOUT_MS, exitError, runJsonlSubprocess,
 
 const PROVIDER = "muse" as const
 export const MUSE_MIN_VERSION = "1.2.1"
+/**
+ * Muse's model HTTP stream dies after 180s of silence unless these are set.
+ * Max reasoning is silent longer than that. Values are seconds; Muse rejects 0.
+ */
+const STREAM_IDLE_TIMEOUT_ENV = "TBH_STREAM_IDLE_TIMEOUT_SECS"
+const STREAM_FIRST_EVENT_TIMEOUT_ENV = "TBH_STREAM_FIRST_EVENT_TIMEOUT_SECS"
+const STREAM_TIMEOUT_SECS = "3600"
+
+function withStreamTimeouts(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return {
+    ...env,
+    [STREAM_IDLE_TIMEOUT_ENV]: env[STREAM_IDLE_TIMEOUT_ENV] ?? STREAM_TIMEOUT_SECS,
+    [STREAM_FIRST_EVENT_TIMEOUT_ENV]: env[STREAM_FIRST_EVENT_TIMEOUT_ENV] ?? STREAM_TIMEOUT_SECS,
+  }
+}
 
 export interface MuseWorkerOpts {
   bin?: string
@@ -155,7 +170,7 @@ function privateConfigEnv(scratch: string, readOnly: boolean): NodeJS.ProcessEnv
   let settingsText = "{}"
   try { settingsText = readFileSync(join(source, "settings.json"), "utf8") } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      if (!readOnly) return env
+      if (!readOnly) return withStreamTimeouts(env)
     } else {
       const cause = err as NodeJS.ErrnoException
       throw new AgentError({ provider: PROVIDER, code: "invalid_config", message: `Muse settings.json could not be read: ${cause.code}: ${cause.message}` })
@@ -189,7 +204,7 @@ function privateConfigEnv(scratch: string, readOnly: boolean): NodeJS.ProcessEnv
   for (const entry of entries) {
     if (entry.name !== "settings.json") symlinkSync(join(source, entry.name), join(target, entry.name), entry.isDirectory() ? "junction" : "file")
   }
-  return { ...env, XDG_CONFIG_HOME: xdg }
+  return withStreamTimeouts({ ...env, XDG_CONFIG_HOME: xdg })
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

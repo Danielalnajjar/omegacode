@@ -16,11 +16,22 @@ import type { AgentSpec, Effort } from "../src/dsl/types.js"
 const configRoot = mkdtempSync(join(tmpdir(), "muse-worker-config-"))
 const priorData = process.env.XDG_DATA_HOME
 const priorXdg = process.env.XDG_CONFIG_HOME
-before(() => { process.env.XDG_CONFIG_HOME = configRoot; process.env.XDG_DATA_HOME = configRoot })
+const priorIdle = process.env.TBH_STREAM_IDLE_TIMEOUT_SECS
+const priorFirst = process.env.TBH_STREAM_FIRST_EVENT_TIMEOUT_SECS
+before(() => {
+  process.env.XDG_CONFIG_HOME = configRoot
+  process.env.XDG_DATA_HOME = configRoot
+  delete process.env.TBH_STREAM_IDLE_TIMEOUT_SECS
+  delete process.env.TBH_STREAM_FIRST_EVENT_TIMEOUT_SECS
+})
 after(() => {
   if (priorData === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = priorData
   if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME
   else process.env.XDG_CONFIG_HOME = priorXdg
+  if (priorIdle === undefined) delete process.env.TBH_STREAM_IDLE_TIMEOUT_SECS
+  else process.env.TBH_STREAM_IDLE_TIMEOUT_SECS = priorIdle
+  if (priorFirst === undefined) delete process.env.TBH_STREAM_FIRST_EVENT_TIMEOUT_SECS
+  else process.env.TBH_STREAM_FIRST_EVENT_TIMEOUT_SECS = priorFirst
   rmSync(configRoot, { recursive: true, force: true })
 })
 
@@ -132,6 +143,8 @@ test("Muse replays recorded read-only success without inventing usage", async ()
   assert.ok(context.events.some(e => e.kind === "phase" && e.phase.includes("muse-spark")))
   assert.ok(context.events.some(e => e.kind === "text"))
   const args = spawned[1]!.args
+  assert.equal(spawned[1]!.env?.TBH_STREAM_IDLE_TIMEOUT_SECS, "3600")
+  assert.equal(spawned[1]!.env?.TBH_STREAM_FIRST_EVENT_TIMEOUT_SECS, "3600")
   for (const flag of ["exec", "--json", "--no-foreign-personal-context", "--disable-web-tools", "--user-input-auto-resolve"]) assert.ok(args.includes(flag))
   for (const [flag, value] of [["--model", "muse-spark-1.3-contributor"], ["--reasoning-effort", "max"], ["--max-model-steps", "12"], ["--permission-profile", "omegacode-read-only"]]) assert.equal(args[args.indexOf(flag!) + 1], value)
   for (const flag of ["--disable-write", "--disable-shell", "--approval-mode", "--approval-judge", "--sandbox-network"]) assert.equal(args.includes(flag), false)

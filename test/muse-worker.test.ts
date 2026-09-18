@@ -286,12 +286,16 @@ test("Muse schema extraction turn on invalid first JSON", async () => {
     assert.match(prompt, /must be boolean/)
     assert.doesNotMatch(prompt, /corrective instructions/)
     assert.equal(call.args[call.args.indexOf("--reasoning-effort") + 1], "low")
-    assert.equal(call.args[call.args.indexOf("--max-model-steps") + 1], "8")
+    assert.equal(call.args[call.args.indexOf("--max-model-steps") + 1], "2")
+    assert.ok(call.args.includes("--disable-write"))
+    assert.ok(call.args.includes("--disable-shell"))
     p.pushLine(terminal('{"ok":true}')); p.end(0)
   }])
   const s = spec({
     instructions: "corrective instructions",
     effort: "max",
+    maxTurns: 2,
+    sandbox: "danger-full-access",
     schema: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } },
   })
   assert.deepEqual((await worker.runAgent(s, ctx())).structured, { ok: true })

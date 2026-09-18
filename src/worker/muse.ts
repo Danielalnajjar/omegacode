@@ -73,6 +73,7 @@ export class MuseWorker implements Worker {
     let run: ReturnType<typeof runJsonlSubprocess> | undefined
     let failed = false
     const workingSessionId = randomUUID()
+    let usage = emptyUsage()
     let usageSessionId = workingSessionId
     try {
       const env = privateConfigEnv(scratch, spec.sandbox === "read-only")
@@ -85,7 +86,7 @@ export class MuseWorker implements Worker {
       })
       run = working.run
       let text = working.text
-      let usage = sessionUsage(workingSessionId, ctx)
+      usage = sessionUsage(workingSessionId, ctx)
       let structured: unknown
       if (spec.schema) {
         structured = parseValidJson(text, spec.schema)
@@ -96,11 +97,14 @@ export class MuseWorker implements Worker {
           } catch { /* keep */ }
           const extractSessionId = randomUUID()
           usageSessionId = extractSessionId
+          const extractTurns = spec.maxTurns === undefined
+            ? EXTRACTION_MAX_TURNS
+            : Math.min(EXTRACTION_MAX_TURNS, spec.maxTurns)
           const extraction = await this.runExec(spec, {
             prompt: extractionPrompt(spec, text, errors),
             env, scratch, sessionId: extractSessionId, ctx,
-            effort: "low", maxTurns: EXTRACTION_MAX_TURNS, forwardProgress: false,
-            promptFile: "extract.txt",
+            effort: "low", maxTurns: extractTurns, forwardProgress: false,
+            promptFile: "extract.txt", denyTools: true,
             onSpawn: (started) => { run = started },
           })
           run = extraction.run
@@ -120,7 +124,10 @@ export class MuseWorker implements Worker {
       failed = true
       if (err instanceof AgentError && run) {
         await run.closed
-        throw new AgentError({ provider: err.provider, code: err.code, message: err.message, retryable: err.retryable, usage: sessionUsage(usageSessionId, ctx) })
+        const reported = usageSessionId === workingSessionId
+          ? sessionUsage(workingSessionId, ctx)
+          : addUsage(usage, sessionUsage(usageSessionId, ctx))
+        throw new AgentError({ provider: err.provider, code: err.code, message: err.message, retryable: err.retryable, usage: reported })
       }
       throw err
     } finally {
@@ -141,6 +148,7 @@ export class MuseWorker implements Worker {
     maxTurns?: number
     forwardProgress: boolean
     promptFile?: string
+    denyTools?: boolean
     onSpawn?: (run: ReturnType<typeof runJsonlSubprocess>) => void
   }): Promise<{ text: string; run: ReturnType<typeof runJsonlSubprocess> }> {
     const promptPath = join(opts.scratch, opts.promptFile ?? "prompt.txt")
@@ -152,6 +160,7 @@ export class MuseWorker implements Worker {
       ...(spec.sandbox === "read-only"
         ? ["--permission-profile", "omegacode-read-only"]
         : ["--approval-mode", "never", "--approval-judge", "off", "--disable-sandbox", "--disable-approval"]),
+      ...(opts.denyTools ? ["--disable-write", "--disable-shell"] : []),
     ]
     if (spec.model) args.push("--model", spec.model)
     if (opts.effort) args.push("--reasoning-effort", opts.effort)

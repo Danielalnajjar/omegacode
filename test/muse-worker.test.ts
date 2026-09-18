@@ -7,7 +7,7 @@ import { dirname, join } from "node:path"
 import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 
-import { MuseWorker, MUSE_MIN_VERSION, type MuseWorkerOpts } from "../src/worker/muse.js"
+import { MuseWorker, MUSE_DEFAULT_STALL_TIMEOUT_MS, MUSE_MIN_VERSION, type MuseWorkerOpts } from "../src/worker/muse.js"
 import { AgentError, AgentInterrupted, type WorkerProgress } from "../src/worker/index.js"
 import type { SpawnProcess } from "../src/worker/subprocess-jsonl.js"
 import type { AgentSpec, Effort } from "../src/dsl/types.js"
@@ -208,6 +208,11 @@ test("Muse abort before and during spawn", async () => {
   assert.ok(spawned[1]!.proc.kills.includes("SIGTERM"))
   await assert.rejects(worker.runAgent(spec(), ctx(ac.signal)), AgentInterrupted)
   assert.equal(spawned.length, 2)
+})
+
+// Regression: a one-hour Muse stream cap is useless if OmegaCode still kills at 30 minutes.
+test("Muse default stall matches the one-hour stream cap", () => {
+  assert.equal(MUSE_DEFAULT_STALL_TIMEOUT_MS, 3_600_000)
 })
 
 // Regression: the shared watchdog remains retryable and removes per-attempt files.

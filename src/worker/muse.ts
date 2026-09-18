@@ -7,17 +7,20 @@ import { join, resolve } from "node:path"
 import { emptyUsage, type AgentResult, type AgentSpec, type AgentUsage } from "../dsl/types.js"
 import { AgentError, AgentInterrupted, type Worker, type WorkerContext } from "./index.js"
 import { assertValidSchema, parseJsonLoose } from "./schema.js"
-import { captureStdout, DEFAULT_STALL_TIMEOUT_MS, exitError, runJsonlSubprocess, versionAtLeast, type SpawnProcess } from "./subprocess-jsonl.js"
+import { captureStdout, exitError, runJsonlSubprocess, versionAtLeast, type SpawnProcess } from "./subprocess-jsonl.js"
 
 const PROVIDER = "muse" as const
 export const MUSE_MIN_VERSION = "1.2.1"
 /**
  * Muse's model HTTP stream dies after 180s of silence unless these are set.
  * Max reasoning is silent longer than that. Values are seconds; Muse rejects 0.
+ * The OmegaCode stdout watchdog must be at least this long, or a silent think
+ * is killed locally before Muse's own stream idle cap can fire.
  */
 const STREAM_IDLE_TIMEOUT_ENV = "TBH_STREAM_IDLE_TIMEOUT_SECS"
 const STREAM_FIRST_EVENT_TIMEOUT_ENV = "TBH_STREAM_FIRST_EVENT_TIMEOUT_SECS"
 const STREAM_TIMEOUT_SECS = "3600"
+export const MUSE_DEFAULT_STALL_TIMEOUT_MS = Number(STREAM_TIMEOUT_SECS) * 1000
 
 function withStreamTimeouts(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return {
@@ -44,7 +47,7 @@ export class MuseWorker implements Worker {
   constructor(opts: MuseWorkerOpts = {}) {
     this.bin = opts.bin ?? "muse"
     this.spawnProcess = opts.spawnProcess
-    this.stallTimeoutMs = opts.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS
+    this.stallTimeoutMs = opts.stallTimeoutMs ?? MUSE_DEFAULT_STALL_TIMEOUT_MS
   }
 
   async runAgent(spec: AgentSpec, ctx: WorkerContext): Promise<AgentResult> {

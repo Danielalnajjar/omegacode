@@ -196,8 +196,8 @@ test("grok: GROK_BIN env drives a real spawn with prompt-file and policy flags",
   }
 })
 
-// Regression: Muse env/factory wiring and schema correction perform exactly one fresh corrective call.
-test("muse: MUSE_BIN drives runtime schema correction through a fake executable", posixOnly, async () => {
+// Regression: Muse env/factory wiring runs one low-effort extraction exec on a schema miss.
+test("muse: MUSE_BIN drives schema extraction through a fake executable", posixOnly, async () => {
   const dir = mkdtempSync(join(tmpdir(), "omega-muse-env-"))
   const prev = { OMEGACODE_HOME: process.env.OMEGACODE_HOME, MUSE_BIN: process.env.MUSE_BIN, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }
   try {
@@ -225,7 +225,8 @@ console.log(JSON.stringify({payload_type:'run.terminal.completed',payload:{termi
     const prompts = JSON.parse(readFileSync(record, "utf8"))
     assert.equal(prompts.length, 2)
     assert.notEqual(prompts[0].path, prompts[1].path)
-    assert.match(prompts[1].text, /previous response did not match/)
+    assert.match(prompts[1].text, /Earlier you produced this answer/)
+    assert.match(prompts[1].text, /must be boolean/)
   } finally {
     for (const [key, value] of Object.entries(prev)) restoreEnv(key, value)
     rmSync(dir, { recursive: true, force: true })

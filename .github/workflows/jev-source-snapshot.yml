@@ -8,21 +8,25 @@ permissions:
 jobs:
   snapshot:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
           persist-credentials: false
-      - name: Bundle committed source without checkout credentials
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install locked build and test dependencies
         shell: bash
         run: |
           set -euo pipefail
-          git bundle create "$RUNNER_TEMP/omegacode-source.bundle" refs/remotes/origin/main refs/remotes/origin/codex/jev-evaluation-recovery
-          git bundle verify "$RUNNER_TEMP/omegacode-source.bundle"
+          corepack enable
+          corepack prepare pnpm@11.8.0 --activate
+          pnpm install --frozen-lockfile
+          tar -czf "$RUNNER_TEMP/omegacode-dependencies.tar.gz" node_modules viewer/node_modules
       - uses: actions/upload-artifact@v4
         with:
-          name: jev-omegacode-source
-          path: ${{ runner.temp }}/omegacode-source.bundle
+          name: jev-omegacode-dependencies
+          path: ${{ runner.temp }}/omegacode-dependencies.tar.gz
           retention-days: 1
           compression-level: 0

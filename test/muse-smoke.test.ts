@@ -16,7 +16,7 @@ test("Muse smoke uses a fake binary only", { skip: process.platform === "win32" 
     writeFileSync(join(root, "README.md"), "# Smoke README\n")
     const bin = join(root, "fake-muse")
     writeFileSync(bin, `#!/usr/bin/env node
-if (process.argv.includes('--version')) { console.log('1.2.1'); process.exit(0) }
+if (process.argv.includes('--version')) { console.log('1.3.0'); process.exit(0) }
 const fs = require('node:fs'), path = require('node:path');
 const id = process.argv[process.argv.indexOf('--session-id') + 1];
 const logDir = path.join(${JSON.stringify(root)}, 'muse', 'sessions', '2001', '01', '01', id);
@@ -50,7 +50,7 @@ for (const outcome of ["absent", "failed", "zero-usage"]) {
       writeFileSync(join(root, "README.md"), "# Smoke README\n")
       const bin = join(root, "fake-muse")
       writeFileSync(bin, `#!/usr/bin/env node
-if (process.argv.includes('--version')) { console.log('1.2.1'); process.exit(0) }
+if (process.argv.includes('--version')) { console.log('1.3.0'); process.exit(0) }
 ${outcome !== 'absent' ? `console.log(JSON.stringify({payload_type:'tool.result',payload:{text:'denied',correlation_facts:{tool_name:'read_file',outcome:'${outcome === 'failed' ? 'failed' : 'success'}'}}}));` : ''}
 console.log(JSON.stringify({payload_type:'run.terminal.completed',payload:{terminal:'completed',text:'# Smoke README'}}));
 `)

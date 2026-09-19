@@ -205,7 +205,7 @@ test("muse: MUSE_BIN drives schema extraction through a fake executable", posixO
     const bin = join(dir, "muse-fake.cjs")
     writeFileSync(bin, `#!/usr/bin/env node
 const fs = require('node:fs');
-if (process.argv.includes('--version')) { console.log('1.2.1'); process.exit(0); }
+if (process.argv.includes('--version')) { console.log('1.3.0'); process.exit(0); }
 const record = ${JSON.stringify(record)};
 const prompts = fs.existsSync(record) ? JSON.parse(fs.readFileSync(record, 'utf8')) : [];
 const path = process.argv[process.argv.indexOf('--prompt-file') + 1];

@@ -22,7 +22,7 @@ interface.
 > (OpenCode CLI ≥ 1.16.2), `pi` (`@earendil-works/pi-coding-agent` ≥ 0.79.1), and `grok`
 > (Grok CLI ≥ 0.2.112) joined as spawn-per-call subprocess workers (`src/worker/opencode.ts`,
 > `src/worker/pi.ts`, `src/worker/grok.ts`, `src/worker/muse.ts`; shared transport in `src/worker/subprocess-jsonl.ts`).
-> Muse (CLI ≥ 1.2.1) uses exec with per-run MCP-free private settings and symlinked auth.
+> Muse (CLI ≥ 1.3.0) uses exec with per-run MCP-free private settings and symlinked auth.
 > It supports read-only and explicit full access, rejects workspace-write, and reports no usage/cost.
 > OpenCode and pi are **full-access-only**:
 > neither CLI can enforce a confined

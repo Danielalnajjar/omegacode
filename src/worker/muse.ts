@@ -10,9 +10,7 @@ import { assertValidSchema, parseJsonLoose, parseValidJson, validate } from "./s
 import { captureStdout, exitError, runJsonlSubprocess, versionAtLeast, type SpawnProcess } from "./subprocess-jsonl.js"
 
 const PROVIDER = "muse" as const
-export const MUSE_MIN_VERSION = "1.2.1"
-/** Native `muse exec --output-schema` exists from 1.3.0; 1.2.1 stays prompt-parse + extraction. */
-export const MUSE_OUTPUT_SCHEMA_VERSION = "1.3.0"
+export const MUSE_MIN_VERSION = "1.3.0"
 /**
  * Muse's model HTTP stream dies after 180s of silence unless these are set.
  * Max reasoning is silent longer than that. Values are seconds; Muse rejects 0.
@@ -168,7 +166,7 @@ export class MuseWorker implements Worker {
     if (spec.model) args.push("--model", spec.model)
     if (opts.effort) args.push("--reasoning-effort", opts.effort)
     if (opts.maxTurns !== undefined) args.push("--max-model-steps", String(opts.maxTurns))
-    if (spec.schema && versionAtLeast(this.resolvedVersion, MUSE_OUTPUT_SCHEMA_VERSION)) {
+    if (spec.schema) {
       const schemaPath = join(opts.scratch, "schema.json")
       writeFileSync(schemaPath, JSON.stringify(spec.schema), { mode: 0o600 })
       args.push("--output-schema", schemaPath)
@@ -294,7 +292,7 @@ function str(value: unknown): string | undefined { return typeof value === "stri
 
 /** Read only this attempt's logs; never include log bytes in diagnostics. */
 function sessionUsage(sessionId: string, ctx: WorkerContext): AgentUsage {
-  // Muse 1.2.1 resolves only the XDG data root for session logs; a MUSE_HOME override is ignored (measured).
+  // Muse resolves only the XDG data root for session logs; a MUSE_HOME override is ignored (measured).
   const data = process.env.XDG_DATA_HOME ? join(process.env.XDG_DATA_HOME, "muse") : join(homedir(), ".local", "share", "muse")
   const root = join(data, "sessions")
   let path = join(root, sessionId, "session.jsonl")

@@ -3,6 +3,7 @@
 // the Options the worker built. This is what asserts the canUseTool gate is actually WIRED into
 // the SDK call — checkTool's own classification semantics are covered in factory.test.ts.
 
+import { withRetry } from "../src/worker/errors.ts"
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { ClaudeWorker, type QueryFn } from "../src/worker/claude.ts"
@@ -811,4 +812,62 @@ test("the abort listener is removed once the turn settles (no leak onto a later 
   await worker.runAgent(spec(), ctx(ac.signal))
   ac.abort()
   assert.equal(calls[0]!.options.abortController?.signal.aborted, false, "a leaked listener aborted the finished turn's controller")
+})
+
+// Exercise the real retry owner with scripted SDK streams; no model calls.
+for (const scenario of [
+  { name: "SDK budget cap", messages: [], error: "Claude Code returned an error result: Exceeded maximum budget", attempts: 1 },
+  { name: "SDK cap text", messages: [], error: "Claude Code returned an error result: Reached maximum number of turns (45)", attempts: 1 },
+  { name: "result then throw", messages: [resultMsg({ subtype: "error_max_turns", errors: ["Reached maximum number of turns (45)"] })], error: "socket hung up", attempts: 1, usage: { inputTokens: 10, outputTokens: 4, costUsd: 0.01 } },
+  { name: "quota exhaustion beats 429", messages: [], error: "429 rate_limit: You've hit your usage limit; resets at 11pm", attempts: 1 },
+  { name: "subscription rejection beats generic rate limit", messages: [{ type: "rate_limit_event", rate_limit_info: { status: "rejected", rateLimitType: "five_hour" } }], error: "429 rate limit", attempts: 1 },
+  { name: "unknown process exit", messages: [], error: "Claude Code process exited with code 1", attempts: 1 },
+  { name: "success result usage survives throw", messages: [resultMsg()], error: "unrecognized failure", attempts: 1, usage: { inputTokens: 10, outputTokens: 4, costUsd: 0.01 } },
+  { name: "stream usage survives throw", messages: [{ type: "assistant", message: { id: "a1", usage: { input_tokens: 7, output_tokens: 3 }, content: [] } }], error: "unrecognized failure", attempts: 1, usage: { inputTokens: 7, outputTokens: 3, costUsd: 0 }, partial: true },
+  { name: "overload still retries and retains usage", messages: [resultMsg()], error: "529 overloaded_error", attempts: 4, usage: { inputTokens: 10, outputTokens: 4, costUsd: 0.01 } },
+  { name: "temporary rate limit still retries and retains usage", messages: [resultMsg()], error: "429 rate_limit_error: requests per minute exceeded", attempts: 4, usage: { inputTokens: 10, outputTokens: 4, costUsd: 0.01 } },
+]) {
+  test(`retry classification: ${scenario.name}`, async () => {
+    let invocations = 0
+    const worker = new ClaudeWorker({ queryFn: () => (async function* () {
+      invocations++
+      yield* scenario.messages as SDKMessage[]
+      throw new Error(scenario.error)
+    })() })
+    const context = ctx()
+    const retries: AgentError[] = []
+    await assert.rejects(withRetry(() => worker.runAgent(spec(), context), context.signal, {
+      baseMs: 0, onRetry: ({ error }) => { retries.push(error) },
+    }), (error: unknown) => {
+      assert.ok(error instanceof AgentError)
+      assert.equal(error.retryable, scenario.attempts > 1)
+      assert.ok(error.message.includes(scenario.error))
+      assert.deepEqual(error.usage, scenario.usage)
+      if (scenario.partial) assert.match(error.message, /lower bound; cost unknown/)
+      return true
+    })
+    assert.equal(invocations, scenario.attempts)
+    assert.equal(retries.length, scenario.attempts - 1)
+    for (const error of retries) assert.deepEqual(error.usage, scenario.usage)
+  })
+}
+
+for (const [errors, retryable] of [
+  [["429 rate_limit_error: requests per minute exceeded"], true],
+  [["429 rate_limit_error: subscription allowance exhausted"], false],
+] as const) {
+  test(`structured execution error classifies its detail: ${errors[0]}`, async () => {
+    const worker = new ClaudeWorker({ queryFn: scripted([resultMsg({ subtype: "error_during_execution", errors })]) })
+    await assert.rejects(worker.runAgent(spec(), ctx()), (error: unknown) => {
+      assert.ok(error instanceof AgentError)
+      assert.equal(error.retryable, retryable)
+      assert.ok(error.message.includes(errors[0]))
+      return true
+    })
+  })
+}
+
+test("success-subtype is_error result remains a failure", async () => {
+  const worker = new ClaudeWorker({ queryFn: scripted([resultMsg({ is_error: true, result: "You've hit your limit" })]) })
+  await assert.rejects(worker.runAgent(spec(), ctx()), (error: unknown) => error instanceof AgentError && !error.retryable && error.message.includes("You've hit your limit"))
 })

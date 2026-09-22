@@ -9,6 +9,7 @@ import assert from "node:assert/strict"
 import { ClaudeWorker, type QueryFn } from "../src/worker/claude.ts"
 import { AgentError, AgentInterrupted, type WorkerContext, type WorkerProgress } from "../src/worker/index.ts"
 import type { AgentSpec } from "../src/dsl/types.ts"
+import { USAGE_LIMIT_ERROR_PREFIXES } from "@anthropic-ai/claude-agent-sdk"
 import type { Options, PermissionResult, SDKMessage } from "@anthropic-ai/claude-agent-sdk"
 
 interface QueryCall {
@@ -884,3 +885,17 @@ test("no-result EOF labels assistant usage as partial", async () => {
     return true
   })
 })
+
+for (const prefix of USAGE_LIMIT_ERROR_PREFIXES) {
+  test(`SDK usage allowance marker is terminal even with 429: ${prefix}`, async () => {
+    let calls = 0
+    const worker = new ClaudeWorker({ queryFn: () => {
+      calls++
+      throw new Error(`Claude Code returned an error result: 429 ${prefix}`)
+    } })
+    const context = ctx()
+    await assert.rejects(withRetry(() => worker.runAgent(spec(), context), context.signal, { baseMs: 0 }),
+      (error: unknown) => error instanceof AgentError && !error.retryable && error.message.includes(prefix))
+    assert.equal(calls, 1)
+  })
+}

@@ -9,7 +9,7 @@
 import { readlinkSync, realpathSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
-import { query, type Options, type PermissionResult, type SDKMessage } from "@anthropic-ai/claude-agent-sdk"
+import { query, USAGE_LIMIT_ERROR_PREFIXES, type Options, type PermissionResult, type SDKMessage } from "@anthropic-ai/claude-agent-sdk"
 import { addUsage, emptyUsage, type AgentResult, type AgentSpec, type AgentUsage, type Effort, type Sandbox } from "../dsl/types.js"
 import type { PreparedAgentCall, Worker, WorkerContext } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
@@ -71,7 +71,8 @@ function toClaudeEffort(effort: Effort): ClaudeEffort {
 // evidence of a transient failure, not merely the absence of a known terminal one.
 function claudeFailure(code: string, message: string, usage?: AgentUsage, completed = false): AgentError {
   const text = `${code}: ${message}`
-  const terminal = /error_max_|maximum number of turns|max(?:imum)? (?:turns|budget)|budget.*(?:exceeded|reached)|quota|credits|billing|subscription|usage limit|(?:hit|reached|exceeded) your limit|resets? at|authentication|account_on_hold|agent(?: type)?\b.*(?:not found|unknown|unrecognized|does not exist|failed to (?:load|resolve))/i.test(text)
+  const usageLimited = USAGE_LIMIT_ERROR_PREFIXES.some((prefix) => text.includes(prefix))
+  const terminal = usageLimited || /error_max_|maximum number of turns|max(?:imum)? (?:turns|budget)|budget.*(?:exceeded|reached)|quota|credits|billing|subscription|usage limit|resets? at|authentication|account_on_hold|agent(?: type)?\b.*(?:not found|unknown|unrecognized|does not exist|failed to (?:load|resolve))/i.test(text)
   const transient = /\b(?:429|529|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN)\b|overload|rate[_ -]limit|connection error|socket (?:hang|hung) up|request timed out/i.test(text)
   return new AgentError({ provider: "claude-code", code, message, retryable: !completed && !terminal && transient, usage })
 }

@@ -24,6 +24,8 @@ import { parseWorkflow } from "./sandbox.js"
 import { TerminalRenderer } from "./progress.js"
 import { runInSandbox } from "./sandbox.js"
 import { isValidRunId } from "./run-store.js"
+import { resolveRunModes } from "./run-modes.js"
+import type { EvaluationAccounting } from "../evaluation-types.js"
 
 export interface RunOverrides {
   provider?: ProviderId
@@ -60,6 +62,7 @@ export interface RunOptions {
   runId?: string
   resumeRunId?: string
   fake?: boolean
+  typesafe?: boolean
   /** Suppress the terminal renderer (still writes events.jsonl). */
   quiet?: boolean
   /** Extra event listener (e.g. an embedded UI). */
@@ -77,6 +80,7 @@ export interface RunOutcome {
   result: unknown
   status: "completed" | "failed" | "interrupted"
   error?: string
+  evaluationUsage?: EvaluationAccounting
 }
 
 /** How often a live run refreshes its heartbeat file (see the deadman switch below). */
@@ -122,6 +126,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   } else if (opts.runId && Journal.exists(runId)) {
     throw new Error(`run "${runId}" already has a journal; use --resume ${runId} instead`)
   }
+  const modes = resolveRunModes(opts, loaded.meta, opts.resumeRunId !== undefined)
   const seed = loaded.meta?.seed ?? randomSeed()
   const baseTimeMs = loaded.meta?.createdAt ?? Date.now()
 
@@ -130,7 +135,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   opts.onStart?.(runId)
   const journal = new Journal(runId)
   if (!loaded.meta) {
-    journal.append({ type: "meta", runId, workflowFile: filePath, fileHash, args: opts.args ?? null, seed, createdAt: baseTimeMs, keyVersion: KEY_VERSION })
+    journal.append({ type: "meta", runId, workflowFile: filePath, fileHash, args: opts.args ?? null, seed, createdAt: baseTimeMs, keyVersion: KEY_VERSION, typesafe: modes.typesafe, fake: modes.fake })
   }
 
   const renderer = new TerminalRenderer({ enabled: !opts.quiet })
@@ -139,7 +144,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   const events = new FileEventSink(runId, { listeners })
 
   const factory = new DefaultWorkerFactory({
-    fake: opts.fake,
+    fake: modes.fake,
     codexBin: process.env.CODEX_BIN,
     opencodeBin: opts.overrides?.opencodeBin ?? process.env.OPENCODE_BIN,
     piBin: opts.overrides?.piBin ?? process.env.PI_BIN,
@@ -183,7 +188,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   let status: RunOutcome["status"] = "completed"
   let result: unknown
   let error: string | undefined
-  const runtime = new Runtime({ runId, defaults, factory, journal, loaded, events, args: opts.args, seed, baseTimeMs, signal: ac.signal, declaredPhases: parsed.meta.phases })
+  const runtime = new Runtime({ runId, typesafe: modes.typesafe && !modes.fake, defaults, factory, journal, loaded, events, args: opts.args, seed, baseTimeMs, signal: ac.signal, declaredPhases: parsed.meta.phases })
   try {
     // The abort signal MUST reach the sandbox (M13 wiring): the vm timeout bounds only synchronous
     // execution, so without it `await new Promise(() => {})` in a workflow body would hang this
@@ -198,9 +203,11 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     // Await any agent() the body launched without awaiting, so a late rejection can't crash the
     // process after we've declared "completed".
     await runtime.settle()
+    ac.signal.throwIfAborted()
     writeResult(runId, result ?? null)
   } catch (err) {
     status = ac.signal.aborted ? "interrupted" : "failed"
+    if (status === "interrupted") result = undefined
     error = err instanceof Error ? err.message : String(err)
   } finally {
     await runtime.settle()
@@ -213,7 +220,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     await events.close()
   }
 
-  return { runId, result, status, error }
+  return { runId, result, status, error, evaluationUsage: runtime.evaluationAccounting() }
 }
 
 function resolveCodexAppServerSocket(overrides: RunOverrides | undefined): string | undefined {

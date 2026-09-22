@@ -7,6 +7,18 @@
 // of the ones in ./types.ts; keep them in sync (a packaging test asserts the union members).
 
 declare global {
+  type OmegacodeEvaluationContent = string | Record<string, unknown> | unknown[]
+  type OmegacodeQuestion = { instructions: OmegacodeEvaluationContent } & (
+    | { type: "noul"; criteria?: { true?: string; false?: string } }
+    | { type: "choice"; criteria: Record<string, string | null> }
+    | { type: "score"; criteria: string[] }
+  )
+  type OmegacodeAnswer = { type: "noul"; noul: number }
+    | { type: "choice"; choice: string; probabilities: Record<string, number>; confidence: number }
+    | { type: "score"; score: number; legend: Record<string, string>; probabilities: Record<string, number>; confidence: number }
+  function evaluate(request: { state: OmegacodeEvaluationContent; questions: Record<string, OmegacodeQuestion>; model?: string }, opts?: { label?: string; key?: string }): Promise<{
+    model: string; answers: Record<string, OmegacodeAnswer>; usage: { input_tokens: number; output_tokens: number }
+  }>
   type OmegacodeProviderId = "codex" | "claude-code" | "opencode" | "pi" | "grok" | "muse"
 
   type OmegacodeSandbox = "read-only" | "workspace-write" | "danger-full-access"

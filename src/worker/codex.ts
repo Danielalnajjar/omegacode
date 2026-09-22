@@ -17,6 +17,7 @@ import { AgentError, AgentInterrupted } from "./index.js"
 import { resolveCodexExecutionProfile, type CodexExecutionProfileName } from "./codex-profile.js"
 import { toCodexOutputSchema, parseJsonLoose, parseValidJson } from "./schema.js"
 import { JsonRpcStdioClient, StdioTransportError, JsonRpcResponseError, type SpawnChild } from "./jsonrpc-stdio.js"
+import { providerEnv } from "./provider-env.js"
 import {
   encodeNotification,
   encodeRequest,
@@ -296,6 +297,7 @@ export function selectCodexFeatureOverrides(
 
 async function readCodexMcpInventory(bin: string): Promise<string> {
   const { stdout } = await exec(bin, ["mcp", "list", "--json"], {
+    env: providerEnv(),
     encoding: "utf8",
     timeout: MCP_INVENTORY_TIMEOUT_MS,
     maxBuffer: 4 * 1024 * 1024,
@@ -305,6 +307,7 @@ async function readCodexMcpInventory(bin: string): Promise<string> {
 
 async function readCodexFeatureInventory(bin: string): Promise<string> {
   const { stdout } = await exec(bin, ["features", "list"], {
+    env: providerEnv(),
     encoding: "utf8",
     timeout: FEATURE_INVENTORY_TIMEOUT_MS,
     maxBuffer: 4 * 1024 * 1024,

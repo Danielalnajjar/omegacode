@@ -11,6 +11,7 @@ import { AgentError, AgentInterrupted, type WorkerContext, type WorkerProgress }
 import type { AgentSpec } from "../src/dsl/types.ts"
 import { USAGE_LIMIT_ERROR_PREFIXES } from "@anthropic-ai/claude-agent-sdk"
 import type { Options, PermissionResult, SDKMessage } from "@anthropic-ai/claude-agent-sdk"
+import { setTestEnv } from "./test-env.ts"
 
 interface QueryCall {
   prompt: string
@@ -227,7 +228,8 @@ test("claudeAgent selects a user-level SDK agent without loading project or loca
   assert.deepEqual(calls[1]!.options.settingSources, [])
 })
 
-test("profile preparation binds a fresh call-local SDK environment while ordinary calls leave env unset", async () => {
+test("profile and ordinary SDK calls isolate host TypeSafe credentials", async t => {
+  setTestEnv(t, { ORDINARY: "kept", TYPESAFE_API_KEY: "test-only" })
   const calls: QueryCall[] = []
   let resolutions = 0
   const worker = new ClaudeWorker({
@@ -267,7 +269,7 @@ test("profile preparation binds a fresh call-local SDK environment while ordinar
   assert.equal(calls[0]!.options.pathToClaudeCodeExecutable, "/launchers/claude-a")
   assert.equal(calls[1]!.options.pathToClaudeCodeExecutable, "/launchers/claude-b")
   assert.notEqual(calls[0]!.options.env, calls[1]!.options.env)
-  assert.equal(calls[2]!.options.env, undefined)
+  assert.deepEqual(calls[2]!.options.env, { ORDINARY: "kept" })
   assert.equal(calls[2]!.options.pathToClaudeCodeExecutable, undefined)
 })
 

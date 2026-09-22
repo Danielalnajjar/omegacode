@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url"
 import { addUsage, emptyUsage, type AgentResult, type AgentSpec, type AgentUsage, type Effort, type Sandbox } from "../dsl/types.js"
 import type { Worker, WorkerContext, WorkerProgress } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
+import { providerEnv } from "./provider-env.js"
 import { assertValidSchema, parseJsonLoose, parseValidJson } from "./schema.js"
 import {
   captureStdout,
@@ -206,7 +207,7 @@ export class GrokWorker implements Worker {
   }
 
   private env(): NodeJS.ProcessEnv {
-    return { ...process.env, GROK_DISABLE_AUTOUPDATER: "1" }
+    return { ...providerEnv(), GROK_DISABLE_AUTOUPDATER: "1" }
   }
 
   private baseArgs(spec: AgentSpec, opts: { resume?: string; noTools?: boolean }): string[] {

@@ -6,6 +6,7 @@ import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { addUsage, emptyUsage, type AgentResult, type AgentSpec, type AgentUsage, type Effort } from "../dsl/types.js"
 import { AgentError, AgentInterrupted, type Worker, type WorkerContext } from "./index.js"
+import { providerEnv } from "./provider-env.js"
 import { assertValidSchema, parseJsonLoose, parseValidJson, validate } from "./schema.js"
 import { captureStdout, exitError, runJsonlSubprocess, versionAtLeast, type SpawnProcess } from "./subprocess-jsonl.js"
 
@@ -218,7 +219,7 @@ export class MuseWorker implements Worker {
 
   private ensureVersion(signal: AbortSignal): Promise<void> {
     if (!this.versionCheck) {
-      this.versionCheck = captureStdout({ provider: PROVIDER, bin: this.bin, args: ["--version"], signal, spawnProcess: this.spawnProcess })
+      this.versionCheck = captureStdout({ provider: PROVIDER, bin: this.bin, args: ["--version"], env: providerEnv(), signal, spawnProcess: this.spawnProcess })
         .then((version) => {
           if (!versionAtLeast(version, MUSE_MIN_VERSION)) {
             throw new AgentError({ provider: PROVIDER, code: "provider_outdated", message: `Muse ${version || "(unknown version)"} is below minimum ${MUSE_MIN_VERSION}; upgrade the Muse CLI` })
@@ -243,7 +244,7 @@ function extractionPrompt(spec: AgentSpec, workingText: string, errors: string):
 
 /** Only settings are copied; all other entries, including auth, remain source-owned symlinks. */
 function privateConfigEnv(scratch: string, readOnly: boolean): NodeJS.ProcessEnv {
-  const env = { ...process.env }
+  const env = providerEnv()
   const source = resolve(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "muse")
   let settingsText = "{}"
   try { settingsText = readFileSync(join(source, "settings.json"), "utf8") } catch (err) {

@@ -17,6 +17,7 @@ import {
   type JsonRpcError,
   type InboundMessage,
 } from "./codex-protocol.js"
+import { providerEnv } from "./provider-env.js"
 
 /** Raised for transport-level failures (process gone, write failed, timeout). */
 export class StdioTransportError extends Error {
@@ -84,7 +85,7 @@ export class JsonRpcStdioClient {
   constructor(opts: JsonRpcStdioOptions = {}) {
     const bin = opts.bin ?? "codex"
     const args = opts.args ?? ["app-server"]
-    this.spawnChild = opts.spawnChild ?? (() => spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"] }))
+    this.spawnChild = opts.spawnChild ?? (() => spawn(bin, args, { env: providerEnv(), stdio: ["pipe", "pipe", "pipe"] }))
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 0
     this.stderrLimit = opts.stderrLimit ?? DEFAULT_STDERR_LIMIT
     this.onServerRequest = opts.onServerRequest

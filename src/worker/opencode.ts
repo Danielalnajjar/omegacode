@@ -12,6 +12,7 @@
 import { addUsage, emptyUsage, type AgentResult, type AgentSpec, type AgentUsage } from "../dsl/types.js"
 import type { Worker, WorkerContext, WorkerProgress } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
+import { providerEnv } from "./provider-env.js"
 import { assertValidSchema, parseJsonLoose, parseValidJson } from "./schema.js"
 import {
   captureStdout,
@@ -180,7 +181,7 @@ export class OpencodeWorker implements Worker {
 
   private env(): NodeJS.ProcessEnv {
     // Never let a run trigger a self-update mid-flight.
-    return { ...process.env, OPENCODE_DISABLE_AUTOUPDATE: "1" }
+    return { ...providerEnv(), OPENCODE_DISABLE_AUTOUPDATE: "1" }
   }
 
   /** Run one `opencode run` subprocess to completion and map its JSONL events. */

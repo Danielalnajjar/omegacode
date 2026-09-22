@@ -5,9 +5,12 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, write
 import { dirname, join } from "node:path"
 import { homedir } from "node:os"
 import type { AgentStatus, AgentUsage, Effort, ProviderId } from "../dsl/types.js"
+import type { EvaluationReceipt, EvaluationAttempt, EvaluationResult } from "../evaluation-types.js"
 
 export interface JournalMeta {
   type: "meta"
+  typesafe?: boolean
+  fake?: boolean
   runId: string
   workflowFile: string
   fileHash: string
@@ -53,9 +56,15 @@ export interface JournalResult {
 }
 
 export type JournalEntry = JournalMeta | JournalStarted | JournalResult
+  | { type: "evaluation"; key: string; result: EvaluationReceipt }
+  | { type: "evaluation-attempt"; bytes: number }
+  | { type: "evaluation-usage"; attempt: number; model: string | null; usage: EvaluationResult["usage"] }
 
 export interface LoadedJournal {
   meta?: JournalMeta
+  evaluations?: Map<string, EvaluationReceipt>
+  evaluationAttempts?: { requests: number; bytes: number }
+  evaluationLedger?: EvaluationAttempt[]
   /** key -> result (last one wins on duplicates). Only `completed` results are replayable. */
   results: Map<string, JournalResult>
   /**
@@ -150,6 +159,25 @@ export class Journal {
         continue // skip unparseable / torn line
       }
       if (entry.type === "meta") out.meta = entry
+      else if (entry.type === "evaluation") (out.evaluations ??= new Map()).set(entry.key, entry.result)
+      else if (entry.type === "evaluation-attempt") {
+        if (!Number.isSafeInteger(entry.bytes) || entry.bytes < 0) throw new ResumePreconditionError("invalid evaluation admission journal")
+        const attempts = out.evaluationAttempts ??= { requests: 0, bytes: 0 }
+        if (!Number.isSafeInteger(attempts.bytes + entry.bytes)) throw new ResumePreconditionError("invalid evaluation admission journal")
+        attempts.requests++
+        attempts.bytes += entry.bytes
+        ;(out.evaluationLedger ??= []).push({ bytes: entry.bytes, model: null, usage: null })
+      }
+      else if (entry.type === "evaluation-usage") {
+        const admission = out.evaluationLedger?.[entry.attempt - 1]
+        if (!Number.isSafeInteger(entry.attempt) || !admission || admission.usage !== null ||
+          !(entry.model === null || (typeof entry.model === "string" && /^[a-zA-Z0-9._:/-]{1,256}$/.test(entry.model))) ||
+          !entry.usage || ![entry.usage.input_tokens, entry.usage.output_tokens].every(n => Number.isSafeInteger(n) && n >= 0)) {
+          throw new ResumePreconditionError("invalid evaluation usage journal")
+        }
+        admission.model = entry.model
+        admission.usage = { input_tokens: entry.usage.input_tokens, output_tokens: entry.usage.output_tokens }
+      }
       else if (entry.type === "result") out.results.set(entry.key, entry)
       if ((entry.type === "started" || entry.type === "result") && typeof entry.index === "number") {
         out.indexByKey.set(entry.key, entry.index)

@@ -1,4 +1,6 @@
 // Library surface (for embedding / tests). The CLI is the primary entry point.
+export type { EvaluationRequest, EvaluationOptions, EvaluationResult, EvaluationAttempt, EvaluationAccounting, Question, Answer } from "./evaluation-types.js"
+export { EvaluationError } from "./evaluation.js"
 
 export type {
   AgentOpts,

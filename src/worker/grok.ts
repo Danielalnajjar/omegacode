@@ -38,7 +38,7 @@ const GROK_AGENT_PROFILE_PATH = fileURLToPath(
 /** Minimum CLI whose flags and streaming-json event shapes this worker is verified against. */
 export const GROK_MIN_VERSION = "0.2.112"
 
-/** omegacode effort → grok-4.6 menu ids. none/minimal are not on that menu; max/ultra have no extra tier. */
+/** omegacode effort → grok-4.7 menu ids. none/minimal are not on that menu; max/ultra have no extra tier. */
 const EFFORT_TO_GROK: Record<Effort, string> = {
   none: "low",
   minimal: "low",

@@ -9,7 +9,7 @@
 import { readlinkSync, realpathSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
-import { query, type Options, type PermissionResult, type SDKMessage } from "@anthropic-ai/claude-agent-sdk"
+import { query, USAGE_LIMIT_ERROR_PREFIXES, type Options, type PermissionResult, type SDKMessage } from "@anthropic-ai/claude-agent-sdk"
 import { addUsage, emptyUsage, type AgentResult, type AgentSpec, type AgentUsage, type Effort, type Sandbox } from "../dsl/types.js"
 import type { PreparedAgentCall, Worker, WorkerContext } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
@@ -67,9 +67,15 @@ function toClaudeEffort(effort: Effort): ClaudeEffort {
   return effort
 }
 
-function isAgentResolutionError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false
-  return /\bagent(?: type)?\b.*\b(?:not found|unknown|unrecognized|does not exist|failed to (?:load|resolve))\b/i.test(error.message)
+// SDK 0.3.237 sdk.mjs:118 wraps result failures and process exits in plain Errors.
+// Unknown exceptions are terminal: replaying a paid, mutating turn requires positive
+// evidence of a transient failure, not merely the absence of a known terminal one.
+function claudeFailure(code: string, message: string, usage?: AgentUsage, completed = false): AgentError {
+  const text = `${code}: ${message}`
+  const usageLimited = USAGE_LIMIT_ERROR_PREFIXES.some((prefix) => text.includes(prefix))
+  const terminal = usageLimited || /error_max_|maximum number of turns|max(?:imum)? (?:turns|budget)|budget.*(?:exceeded|reached)|quota|credits|billing|subscription|usage limit|resets? at|authentication|account_on_hold|agent(?: type)?\b.*(?:not found|unknown|unrecognized|does not exist|failed to (?:load|resolve))/i.test(text)
+  const transient = /\b(?:429|529|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN)\b|overload|rate[_ -]limit|connection error|socket (?:hang|hung) up|request timed out/i.test(text)
+  return new AgentError({ provider: "claude-code", code, message, retryable: !completed && !terminal && transient, usage })
 }
 
 export class ClaudeWorker implements Worker {
@@ -135,6 +141,11 @@ export class ClaudeWorker implements Worker {
     const claudeCodeExecutable = this.opts.pathToClaudeCodeExecutable ?? env?.CLAUDE_CODE_EXECUTABLE
     if (claudeCodeExecutable) options.pathToClaudeCodeExecutable = claudeCodeExecutable
 
+    let primaryResult: Extract<SDKMessage, { type: "result" }> | undefined
+    let observedUsage: AgentUsage | undefined
+    let usageIsPartial = false
+    let terminalResult: Extract<SDKMessage, { type: "result" }> | undefined
+    let subscriptionRejected = false
     try {
       // The CLI normally ends the stream with a `result` message carrying the final text, usage,
       // and structured output. When background tasks (Monitor / Bash run_in_background) straddle
@@ -144,7 +155,6 @@ export class ClaudeWorker implements Worker {
       // text is watcher chatter, not the answer). So: prefer the last NON-notification result
       // (`origin.kind` discriminates), and capture the accepted StructuredOutput tool payload
       // from the stream as the recovery source — otherwise finished agents get marked failed.
-      let primaryResult: Extract<SDKMessage, { type: "result" }> | undefined
       let anyResult: Extract<SDKMessage, { type: "result" }> | undefined
       let lastText = ""
       let structuredFromTool: unknown
@@ -157,6 +167,13 @@ export class ClaudeWorker implements Worker {
         if (message.type === "result") {
           anyResult = message
           if (message.origin?.kind !== "task-notification") primaryResult = message
+          if (message === primaryResult || !primaryResult) {
+            observedUsage = usageFromResult(message)
+            usageIsPartial = false
+            terminalResult = message.subtype !== "success" || message.is_error ? message : undefined
+          }
+        } else if (message.type === "rate_limit_event") {
+          subscriptionRejected = message.rate_limit_info.status === "rejected"
         } else if (message.type === "assistant") {
           const m = message.message as { id?: unknown; usage?: unknown; content?: unknown }
           // Subagent (Task) messages relay through the same stream with parent_tool_use_id set —
@@ -168,6 +185,10 @@ export class ClaudeWorker implements Worker {
           if (topLevel && typeof m.id === "string" && m.id !== lastUsageId) {
             lastUsageId = m.id
             streamUsage = addUsage(streamUsage, usageFromResult({ usage: m.usage }))
+            if (!anyResult && m.usage != null) {
+              observedUsage = streamUsage
+              usageIsPartial = true
+            }
           }
           for (const block of asBlocks(m.content)) {
             if (block.type === "text" && typeof block.text === "string") {
@@ -220,14 +241,12 @@ export class ClaudeWorker implements Worker {
       if (!lastResult) {
         // Free-form agents have no completion marker (partial text from a truncated stream must
         // not pass as an answer), so without the StructuredOutput evidence the error stays hard.
-        throw new AgentError({ provider: "claude-code", code: "no_result", message: "claude query ended without a result" })
+        throw new AgentError({ provider: "claude-code", code: "no_result", message: `claude query ended without a result${usageIsPartial ? "; usage is a token lower bound; cost unknown" : ""}`, usage: observedUsage })
       }
       const usage = usageFromResult(lastResult)
-      if (lastResult.subtype !== "success") {
-        // error_max_turns is a terminal cap, not a transient fault — never retry it. Carry the
-        // usage on the error: failed turns still bill, so budget ceilings must see them.
-        const retryable = lastResult.subtype !== "error_max_turns" && /rate|overload|529|429/i.test(lastResult.subtype)
-        throw new AgentError({ provider: "claude-code", code: lastResult.subtype, message: `claude result: ${lastResult.subtype}`, retryable, usage })
+      if (lastResult.subtype !== "success" || lastResult.is_error) {
+        const detail = lastResult.subtype === "success" ? lastResult.result : lastResult.errors?.join("; ") ?? ""
+        throw claudeFailure(lastResult.subtype, `${subscriptionRejected ? "subscription allowance exhausted; " : ""}claude result: ${lastResult.subtype}: ${detail}`, usage)
       }
       return {
         text: lastResult.result,
@@ -238,15 +257,16 @@ export class ClaudeWorker implements Worker {
     } catch (err) {
       if (ctx.signal.aborted) throw new AgentInterrupted()
       if (err instanceof AgentError || err instanceof AgentInterrupted) throw err
-      throw new AgentError({
-        provider: "claude-code",
-        code: "sdk_error",
-        message: (err as Error).message,
-        // A native agent that the SDK cannot resolve is a hard configuration failure. Other SDK
-        // exceptions can still be transient even when an agent is selected, so keep their normal
-        // retry path. Neither case falls back to an ordinary Claude call.
-        retryable: !isAgentResolutionError(err),
-      })
+      const detail = err instanceof Error ? err.message : String(err)
+      const resultDetail = terminalResult
+        ? `claude result: ${terminalResult.subtype}: ${terminalResult.subtype === "success" ? terminalResult.result : terminalResult.errors?.join("; ") ?? ""}; ` : ""
+      const usageDetail = usageIsPartial ? "; usage is a token lower bound; cost unknown" : ""
+      throw claudeFailure(
+        terminalResult?.subtype ?? "sdk_error",
+        `${subscriptionRejected ? "subscription allowance exhausted; " : ""}${resultDetail}${detail}${usageDetail}`,
+        observedUsage,
+        primaryResult?.subtype === "success" && !primaryResult.is_error,
+      )
     } finally {
       ctx.signal.removeEventListener("abort", onAbort)
     }

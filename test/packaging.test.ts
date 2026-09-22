@@ -646,6 +646,50 @@ describe("verified packed global refresh", () => {
     }
   })
 
+  test("refresh restores Bun-broadened bin modes but still refuses tampered payloads", { skip: !bunAvailable }, () => {
+    const realBun = execFileSync("sh", ["-c", "command -v bun"], { encoding: "utf8" }).trim()
+    for (const tamper of [false, true]) {
+      const temp = mkdtempSync(join(tmpdir(), "omega-refresh-bin-mode-"))
+      try {
+        const prefix = join(temp, "active")
+        const wrappers = join(temp, "wrappers")
+        const modeLog = join(temp, "modes.jsonl")
+        const tarball = makeOmegaTarball(join(temp, "candidate"), "0.0.6", "verified")
+        mkdirSync(wrappers)
+        writeFileSync(join(wrappers, "bun"), `#!/usr/bin/env node
+const { spawnSync } = require("node:child_process")
+const { appendFileSync, chmodSync } = require("node:fs")
+const { join } = require("node:path")
+const result = spawnSync(${JSON.stringify(realBun)}, process.argv.slice(2), { stdio: "inherit", env: process.env })
+if (result.status !== 0) process.exit(result.status ?? 1)
+if (process.argv[2] === "add") {
+  const root = join(process.env.BUN_INSTALL, "install/global/node_modules/omegacode")
+  chmodSync(join(root, "dist/cli.js"), 0o777)
+  appendFileSync(${JSON.stringify(modeLog)}, "broadened\\n")
+  if (${JSON.stringify(tamper)}) appendFileSync(join(root, "package.json"), " ")
+}
+`, { mode: 0o755 })
+        const refresh = () => execFileSync("bash", [join(root, "scripts", "refresh-global.sh"), "--fast"], {
+          cwd: root,
+          env: { ...process.env, BASH_ENV: "", PATH: `${wrappers}:${process.env.PATH}`, BUN_INSTALL: prefix, OMEGACODE_REFRESH_TARBALL: tarball },
+          encoding: "utf8",
+          stdio: "pipe",
+        })
+        if (tamper) {
+          assert.throws(refresh, /installed package payload differs/)
+          assert.equal(existsSync(prefix), false, "tampered candidate reached active cutover")
+        } else {
+          refresh()
+          assert.equal(readFileSync(modeLog, "utf8").trim().split("\n").length, 2, "both isolated and active installs must exercise broadened modes")
+          assert.equal(statSync(join(prefix, "install/global/node_modules/omegacode/dist/cli.js")).mode & 0o777, 0o755)
+          assert.equal(execFileSync(join(prefix, "bin/omegacode"), { encoding: "utf8" }), "verified")
+        }
+      } finally {
+        rmSync(temp, { recursive: true, force: true })
+      }
+    }
+  })
+
   test("post-cutover failure restores the old global package and metadata byte-for-byte", { skip: !bunAvailable }, () => {
     const temp = mkdtempSync(join(tmpdir(), "omega-refresh-rollback-"))
     try {

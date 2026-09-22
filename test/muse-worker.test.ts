@@ -7,7 +7,7 @@ import { dirname, join } from "node:path"
 import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 
-import { MuseWorker, MUSE_MIN_VERSION, type MuseWorkerOpts } from "../src/worker/muse.js"
+import { MuseWorker, MUSE_DEFAULT_STALL_TIMEOUT_MS, MUSE_MIN_VERSION, type MuseWorkerOpts } from "../src/worker/muse.js"
 import { AgentError, AgentInterrupted, type WorkerProgress } from "../src/worker/index.js"
 import type { SpawnProcess } from "../src/worker/subprocess-jsonl.js"
 import type { AgentSpec, Effort } from "../src/dsl/types.js"
@@ -16,11 +16,22 @@ import type { AgentSpec, Effort } from "../src/dsl/types.js"
 const configRoot = mkdtempSync(join(tmpdir(), "muse-worker-config-"))
 const priorData = process.env.XDG_DATA_HOME
 const priorXdg = process.env.XDG_CONFIG_HOME
-before(() => { process.env.XDG_CONFIG_HOME = configRoot; process.env.XDG_DATA_HOME = configRoot })
+const priorIdle = process.env.TBH_STREAM_IDLE_TIMEOUT_SECS
+const priorFirst = process.env.TBH_STREAM_FIRST_EVENT_TIMEOUT_SECS
+before(() => {
+  process.env.XDG_CONFIG_HOME = configRoot
+  process.env.XDG_DATA_HOME = configRoot
+  delete process.env.TBH_STREAM_IDLE_TIMEOUT_SECS
+  delete process.env.TBH_STREAM_FIRST_EVENT_TIMEOUT_SECS
+})
 after(() => {
   if (priorData === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = priorData
   if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME
   else process.env.XDG_CONFIG_HOME = priorXdg
+  if (priorIdle === undefined) delete process.env.TBH_STREAM_IDLE_TIMEOUT_SECS
+  else process.env.TBH_STREAM_IDLE_TIMEOUT_SECS = priorIdle
+  if (priorFirst === undefined) delete process.env.TBH_STREAM_FIRST_EVENT_TIMEOUT_SECS
+  else process.env.TBH_STREAM_FIRST_EVENT_TIMEOUT_SECS = priorFirst
   rmSync(configRoot, { recursive: true, force: true })
 })
 
@@ -72,7 +83,7 @@ interface SpawnCall {
 type Script = (p: FakeProc, call: SpawnCall) => void
 
 const versionOk: Script = (p) => {
-  p.stdout.emit("data", "1.2.1 (1.2.1-R2847.1)\n")
+  p.stdout.emit("data", "1.3.0 (1.3.0-R3401.1)\n")
   p.end(0)
 }
 
@@ -132,6 +143,8 @@ test("Muse replays recorded read-only success without inventing usage", async ()
   assert.ok(context.events.some(e => e.kind === "phase" && e.phase.includes("muse-spark")))
   assert.ok(context.events.some(e => e.kind === "text"))
   const args = spawned[1]!.args
+  assert.equal(spawned[1]!.env?.TBH_STREAM_IDLE_TIMEOUT_SECS, "3600")
+  assert.equal(spawned[1]!.env?.TBH_STREAM_FIRST_EVENT_TIMEOUT_SECS, "3600")
   for (const flag of ["exec", "--json", "--no-foreign-personal-context", "--disable-web-tools", "--user-input-auto-resolve"]) assert.ok(args.includes(flag))
   for (const [flag, value] of [["--model", "muse-spark-1.3-contributor"], ["--reasoning-effort", "max"], ["--max-model-steps", "12"], ["--permission-profile", "omegacode-read-only"]]) assert.equal(args[args.indexOf(flag!) + 1], value)
   for (const flag of ["--disable-write", "--disable-shell", "--approval-mode", "--approval-judge", "--sandbox-network"]) assert.equal(args.includes(flag), false)
@@ -197,6 +210,11 @@ test("Muse abort before and during spawn", async () => {
   assert.equal(spawned.length, 2)
 })
 
+// Regression: a one-hour Muse stream cap is useless if OmegaCode still kills at 30 minutes.
+test("Muse default stall matches the one-hour stream cap", () => {
+  assert.equal(MUSE_DEFAULT_STALL_TIMEOUT_MS, 3_600_000)
+})
+
 // Regression: the shared watchdog remains retryable and removes per-attempt files.
 test("Muse stall", async () => {
   const { worker, spawned } = harness([versionOk, p => {
@@ -219,12 +237,12 @@ test("Muse missing binary", async () => {
 
 // Regression: unsupported sandbox and old version never reach an agent process.
 test("Muse preflight rejections", async () => {
-  const { worker, spawned } = harness([p => { p.stdout.emit("data", "1.2.0\n"); p.end(0) }])
+  const { worker, spawned } = harness([p => { p.stdout.emit("data", "1.2.1\n"); p.end(0) }])
   await assert.rejects(worker.runAgent(spec({ sandbox: "workspace-write" }), ctx()), rejects("unsupported_sandbox"))
   assert.equal(spawned.length, 0)
   await assert.rejects(worker.runAgent(spec(), ctx()), rejects("provider_outdated"))
   assert.equal(spawned.length, 1)
-  assert.equal(MUSE_MIN_VERSION, "1.2.1")
+  assert.equal(MUSE_MIN_VERSION, "1.3.0")
 })
 
 for (const effort of ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as Effort[]) {
@@ -242,17 +260,50 @@ for (const effort of ["none", "minimal", "low", "medium", "high", "xhigh", "max"
   })
 }
 
-// Regression: schema instructions and corrective instructions stay in one fresh prompt per attempt.
-test("Muse schema output uses runtime correction contract, never an extraction turn", async () => {
+// Regression: a schema-valid first terminal skips the extraction exec.
+test("Muse skips extraction when first JSON matches schema", async () => {
   const { worker, spawned } = harness([versionOk, (p, call) => {
     const prompt = readFileSync(call.args[call.args.indexOf("--prompt-file") + 1]!, "utf8")
     assert.match(prompt, /corrective instructions/)
     assert.match(prompt, /JSON Schema/)
+    const schemaFlag = call.args.indexOf("--output-schema")
+    assert.ok(schemaFlag >= 0)
+    assert.deepEqual(JSON.parse(readFileSync(call.args[schemaFlag + 1]!, "utf8")), { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } })
     p.pushLine(terminal('```json\n{"ok":true}\n```')); p.end(0)
-  }, p => { p.pushLine(terminal("not JSON")); p.end(0) }])
+  }])
   const s = spec({ instructions: "corrective instructions", schema: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } } })
   assert.deepEqual((await worker.runAgent(s, ctx())).structured, { ok: true })
-  assert.equal((await worker.runAgent(s, ctx())).structured, undefined)
+  assert.equal(spawned.length, 2)
+})
+
+// Regression: a schema miss runs a low-effort extraction exec instead of redoing the original task.
+test("Muse schema extraction turn on invalid first JSON", async () => {
+  const { worker, spawned } = harness([versionOk, (p, call) => {
+    const prompt = readFileSync(call.args[call.args.indexOf("--prompt-file") + 1]!, "utf8")
+    assert.match(prompt, /corrective instructions/)
+    assert.equal(call.args[call.args.indexOf("--reasoning-effort") + 1], "max")
+    assert.ok(call.args.includes("--output-schema"))
+    p.pushLine(terminal('{"ok":"yes"}')); p.end(0)
+  }, (p, call) => {
+    const prompt = readFileSync(call.args[call.args.indexOf("--prompt-file") + 1]!, "utf8")
+    assert.match(prompt, /Earlier you produced this answer/)
+    assert.match(prompt, /must be boolean/)
+    assert.doesNotMatch(prompt, /corrective instructions/)
+    assert.equal(call.args[call.args.indexOf("--reasoning-effort") + 1], "low")
+    assert.equal(call.args[call.args.indexOf("--max-model-steps") + 1], "2")
+    assert.ok(call.args.includes("--disable-write"))
+    assert.ok(call.args.includes("--disable-shell"))
+    assert.ok(call.args.includes("--output-schema"))
+    p.pushLine(terminal('{"ok":true}')); p.end(0)
+  }])
+  const s = spec({
+    instructions: "corrective instructions",
+    effort: "max",
+    maxTurns: 2,
+    sandbox: "danger-full-access",
+    schema: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } },
+  })
+  assert.deepEqual((await worker.runAgent(s, ctx())).structured, { ok: true })
   assert.equal(spawned.length, 3)
 })
 
@@ -465,7 +516,7 @@ test("Muse malformed settings diagnostic is content-free", async () => {
 test("Muse cancels preflight and retries version on the next attempt", async () => {
   const ac = new AbortController()
   const { worker, spawned } = harness([
-    p => { ac.abort(); p.stdout.emit("data", "1.2.1\n"); p.end(0) },
+    p => { ac.abort(); p.stdout.emit("data", "1.3.0\n"); p.end(0) },
     versionOk,
     p => { p.pushLine(terminal()); p.end(0) },
   ])
@@ -485,7 +536,7 @@ test("Muse scratch remains absent after a SIGTERM-resistant child closes", { ski
   let scratch = ""
   let closed = false
   const worker = new MuseWorker({ spawnProcess: (_bin, args, opts) => {
-    if (args.includes("--version")) return spawn(process.execPath, ["-e", 'console.log("1.2.1")'])
+    if (args.includes("--version")) return spawn(process.execPath, ["-e", 'console.log("1.3.0")'])
     scratch = dirname(opts.env!.XDG_CONFIG_HOME!)
     child = spawn(process.execPath, ["-e", `
       const fs = require('node:fs');

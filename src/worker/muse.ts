@@ -4,14 +4,34 @@ import { type Dirent, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync,
 import { isDeepStrictEqual } from "node:util"
 import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { emptyUsage, type AgentResult, type AgentSpec, type AgentUsage } from "../dsl/types.js"
+import { addUsage, emptyUsage, type AgentResult, type AgentSpec, type AgentUsage, type Effort } from "../dsl/types.js"
 import { AgentError, AgentInterrupted, type Worker, type WorkerContext } from "./index.js"
 import { providerEnv } from "./provider-env.js"
-import { assertValidSchema, parseJsonLoose } from "./schema.js"
-import { captureStdout, DEFAULT_STALL_TIMEOUT_MS, exitError, runJsonlSubprocess, versionAtLeast, type SpawnProcess } from "./subprocess-jsonl.js"
+import { assertValidSchema, parseJsonLoose, parseValidJson, validate } from "./schema.js"
+import { captureStdout, exitError, runJsonlSubprocess, versionAtLeast, type SpawnProcess } from "./subprocess-jsonl.js"
 
 const PROVIDER = "muse" as const
-export const MUSE_MIN_VERSION = "1.2.1"
+export const MUSE_MIN_VERSION = "1.3.0"
+/**
+ * Muse's model HTTP stream dies after 180s of silence unless these are set.
+ * Max reasoning is silent longer than that. Values are seconds; Muse rejects 0.
+ * The OmegaCode stdout watchdog must be at least this long, or a silent think
+ * is killed locally before Muse's own stream idle cap can fire.
+ */
+const STREAM_IDLE_TIMEOUT_ENV = "TBH_STREAM_IDLE_TIMEOUT_SECS"
+const STREAM_FIRST_EVENT_TIMEOUT_ENV = "TBH_STREAM_FIRST_EVENT_TIMEOUT_SECS"
+const STREAM_TIMEOUT_SECS = "3600"
+export const MUSE_DEFAULT_STALL_TIMEOUT_MS = Number(STREAM_TIMEOUT_SECS) * 1000
+/** Cheap rewrite of an already-produced answer; must not re-run the original max-effort task. */
+const EXTRACTION_MAX_TURNS = 8
+
+function withStreamTimeouts(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return {
+    ...env,
+    [STREAM_IDLE_TIMEOUT_ENV]: env[STREAM_IDLE_TIMEOUT_ENV] ?? STREAM_TIMEOUT_SECS,
+    [STREAM_FIRST_EVENT_TIMEOUT_ENV]: env[STREAM_FIRST_EVENT_TIMEOUT_ENV] ?? STREAM_TIMEOUT_SECS,
+  }
+}
 
 export interface MuseWorkerOpts {
   bin?: string
@@ -26,11 +46,12 @@ export class MuseWorker implements Worker {
   private readonly spawnProcess?: SpawnProcess
   private readonly stallTimeoutMs: number
   private versionCheck: Promise<void> | null = null
+  private resolvedVersion = ""
 
   constructor(opts: MuseWorkerOpts = {}) {
     this.bin = opts.bin ?? "muse"
     this.spawnProcess = opts.spawnProcess
-    this.stallTimeoutMs = opts.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS
+    this.stallTimeoutMs = opts.stallTimeoutMs ?? MUSE_DEFAULT_STALL_TIMEOUT_MS
   }
 
   async runAgent(spec: AgentSpec, ctx: WorkerContext): Promise<AgentResult> {
@@ -53,77 +74,62 @@ export class MuseWorker implements Worker {
     const scratch = mkdtempSync(join(tmpdir(), "omegacode-muse-"))
     let run: ReturnType<typeof runJsonlSubprocess> | undefined
     let failed = false
-    const sessionId = randomUUID()
+    const workingSessionId = randomUUID()
+    let usage = emptyUsage()
+    let usageSessionId = workingSessionId
     try {
       const env = privateConfigEnv(scratch, spec.sandbox === "read-only")
-      const promptPath = join(scratch, "prompt.txt")
       let prompt = spec.instructions ? `${spec.instructions}\n\n${spec.prompt}` : spec.prompt
       if (spec.schema) prompt += `\n\nReturn ONLY a JSON value conforming to this JSON Schema, without prose or code fences:\n${JSON.stringify(spec.schema)}`
-      writeFileSync(promptPath, prompt, { mode: 0o600 })
-      const args = [
-        "exec", "--json", "--prompt-file", promptPath, "--workspace", spec.cwd,
-        "--session-id", sessionId, "--no-foreign-personal-context", "--disable-web-tools",
-        "--user-input-auto-resolve",
-        ...(spec.sandbox === "read-only"
-          ? ["--permission-profile", "omegacode-read-only"]
-          : ["--approval-mode", "never", "--approval-judge", "off", "--disable-sandbox", "--disable-approval"]),
-      ]
-      if (spec.model) args.push("--model", spec.model)
-      // The Muse effort menu equals OmegaCode's.
-      if (spec.effort) args.push("--reasoning-effort", spec.effort)
-      if (spec.maxTurns !== undefined) args.push("--max-model-steps", String(spec.maxTurns))
-      let terminal: { type: string; payload: Record<string, unknown> } | undefined
-      run = runJsonlSubprocess({
-        provider: PROVIDER, bin: this.bin, args, cwd: spec.cwd, env,
-        signal: ctx.signal, spawnProcess: this.spawnProcess, stallTimeoutMs: this.stallTimeoutMs,
-        onValue: (value) => {
-          if (!isObject(value) || !isObject(value.payload)) return
-          const payload = value.payload
-          const type = value.payload_type
-          if (typeof type === "string" && type.startsWith("run.terminal.")) {
-            if (terminal && (terminal.type !== type || !isDeepStrictEqual(terminal.payload, payload))) {
-              throw new AgentError({ provider: PROVIDER, code: "turn_failed", message: "Muse emitted conflicting terminal records" })
-            }
-            terminal = { type, payload }
-          } else if (terminal) {
-            return
-          } else if (type === "run.output.delta" && typeof payload.text === "string") {
-            ctx.onProgress({ kind: "text", text: payload.text })
-          } else if (type === "tool.result") {
-            const facts = isObject(payload.correlation_facts) ? payload.correlation_facts : {}
-            ctx.onProgress({ kind: "tool-result", name: str(facts.tool_name), id: str(payload.call_id),
-              output: str(payload.text),
-              isError: facts.outcome !== undefined && facts.outcome !== "success" })
-          } else if (type === "run.model.configured" && typeof payload.model_id === "string") {
-            ctx.onProgress({ kind: "phase", phase: `model: ${payload.model_id}` })
-          }
-        },
+      const working = await this.runExec(spec, {
+        prompt, env, scratch, sessionId: workingSessionId, ctx,
+        effort: spec.effort, maxTurns: spec.maxTurns, forwardProgress: true,
+        onSpawn: (started) => { run = started },
       })
-      const exit = await run
-      if (ctx.signal.aborted) throw new AgentInterrupted()
-      if (terminal && (terminal.type !== "run.terminal.completed" || terminal.payload.terminal !== "completed")) {
-        throw new AgentError({ provider: PROVIDER, code: "turn_failed", message: str(terminal.payload.reason) || `Muse terminal: ${String(terminal.payload.terminal)}` })
-      }
-      if (exit.code !== 0) throw exitError(PROVIDER, this.bin, exit)
-      if (!terminal) throw new AgentError({ provider: PROVIDER, code: "turn_incomplete", message: "Muse exited 0 without a terminal event" })
-      if (typeof terminal.payload.text !== "string") {
-        throw new AgentError({ provider: PROVIDER, code: "turn_failed", message: "Muse completed terminal has no text payload" })
-      }
-      const text = terminal.payload.text
+      run = working.run
+      let text = working.text
+      usage = sessionUsage(workingSessionId, ctx)
       let structured: unknown
       if (spec.schema) {
-        try { structured = parseJsonLoose(text) } catch {
-          // finalizeResult raises the existing schema error and owns the single corrective attempt.
+        structured = parseValidJson(text, spec.schema)
+        if (structured === undefined) {
+          let errors = "not valid JSON"
+          try {
+            errors = validate(spec.schema, parseJsonLoose(text)).errors ?? errors
+          } catch { /* keep */ }
+          const extractSessionId = randomUUID()
+          usageSessionId = extractSessionId
+          const extractTurns = spec.maxTurns === undefined
+            ? EXTRACTION_MAX_TURNS
+            : Math.min(EXTRACTION_MAX_TURNS, spec.maxTurns)
+          const extraction = await this.runExec(spec, {
+            prompt: extractionPrompt(spec, text, errors),
+            env, scratch, sessionId: extractSessionId, ctx,
+            effort: "low", maxTurns: extractTurns, forwardProgress: false,
+            promptFile: "extract.txt", denyTools: true,
+            onSpawn: (started) => { run = started },
+          })
+          run = extraction.run
+          text = extraction.text
+          usage = addUsage(usage, sessionUsage(extractSessionId, ctx))
+          structured = parseValidJson(text, spec.schema)
+          if (structured === undefined) {
+            try { structured = parseJsonLoose(text) } catch {
+              // finalizeResult raises the existing schema error and owns the last-resort full retry.
+            }
+          }
         }
       }
-      const usage = sessionUsage(sessionId, ctx)
       ctx.onProgress({ kind: "usage", usage })
       return { text, structured, status: "completed", usage }
     } catch (err) {
       failed = true
       if (err instanceof AgentError && run) {
         await run.closed
-        throw new AgentError({ provider: err.provider, code: err.code, message: err.message, retryable: err.retryable, usage: sessionUsage(sessionId, ctx) })
+        const reported = usageSessionId === workingSessionId
+          ? sessionUsage(workingSessionId, ctx)
+          : addUsage(usage, sessionUsage(usageSessionId, ctx))
+        throw new AgentError({ provider: err.provider, code: err.code, message: err.message, retryable: err.retryable, usage: reported })
       }
       throw err
     } finally {
@@ -132,6 +138,81 @@ export class MuseWorker implements Worker {
         if (!failed) throw err
       }
     }
+  }
+
+  private async runExec(spec: AgentSpec, opts: {
+    prompt: string
+    env: NodeJS.ProcessEnv
+    scratch: string
+    sessionId: string
+    ctx: WorkerContext
+    effort?: Effort
+    maxTurns?: number
+    forwardProgress: boolean
+    promptFile?: string
+    denyTools?: boolean
+    onSpawn?: (run: ReturnType<typeof runJsonlSubprocess>) => void
+  }): Promise<{ text: string; run: ReturnType<typeof runJsonlSubprocess> }> {
+    const promptPath = join(opts.scratch, opts.promptFile ?? "prompt.txt")
+    writeFileSync(promptPath, opts.prompt, { mode: 0o600 })
+    const args = [
+      "exec", "--json", "--prompt-file", promptPath, "--workspace", spec.cwd,
+      "--session-id", opts.sessionId, "--no-foreign-personal-context", "--disable-web-tools",
+      "--user-input-auto-resolve",
+      ...(spec.sandbox === "read-only"
+        ? ["--permission-profile", "omegacode-read-only"]
+        : ["--approval-mode", "never", "--approval-judge", "off", "--disable-sandbox", "--disable-approval"]),
+      ...(opts.denyTools ? ["--disable-write", "--disable-shell"] : []),
+    ]
+    if (spec.model) args.push("--model", spec.model)
+    if (opts.effort) args.push("--reasoning-effort", opts.effort)
+    if (opts.maxTurns !== undefined) args.push("--max-model-steps", String(opts.maxTurns))
+    if (spec.schema) {
+      const schemaPath = join(opts.scratch, "schema.json")
+      writeFileSync(schemaPath, JSON.stringify(spec.schema), { mode: 0o600 })
+      args.push("--output-schema", schemaPath)
+    }
+    let terminal: { type: string; payload: Record<string, unknown> } | undefined
+    const run = runJsonlSubprocess({
+      provider: PROVIDER, bin: this.bin, args, cwd: spec.cwd, env: opts.env,
+      signal: opts.ctx.signal, spawnProcess: this.spawnProcess, stallTimeoutMs: this.stallTimeoutMs,
+      onValue: (value) => {
+        if (!isObject(value) || !isObject(value.payload)) return
+        const payload = value.payload
+        const type = value.payload_type
+        if (typeof type === "string" && type.startsWith("run.terminal.")) {
+          if (terminal && (terminal.type !== type || !isDeepStrictEqual(terminal.payload, payload))) {
+            throw new AgentError({ provider: PROVIDER, code: "turn_failed", message: "Muse emitted conflicting terminal records" })
+          }
+          terminal = { type, payload }
+        } else if (terminal) {
+          return
+        } else if (!opts.forwardProgress) {
+          return
+        } else if (type === "run.output.delta" && typeof payload.text === "string") {
+          opts.ctx.onProgress({ kind: "text", text: payload.text })
+        } else if (type === "tool.result") {
+          const facts = isObject(payload.correlation_facts) ? payload.correlation_facts : {}
+          opts.ctx.onProgress({ kind: "tool-result", name: str(facts.tool_name), id: str(payload.call_id),
+            output: str(payload.text),
+            isError: facts.outcome !== undefined && facts.outcome !== "success" })
+        } else if (type === "run.model.configured" && typeof payload.model_id === "string") {
+          opts.ctx.onProgress({ kind: "phase", phase: `model: ${payload.model_id}` })
+        }
+      },
+    })
+    opts.onSpawn?.(run)
+    const exit = await run
+    if (opts.ctx.signal.aborted) throw new AgentInterrupted()
+    if (terminal && (terminal.type !== "run.terminal.completed" || terminal.payload.terminal !== "completed")) {
+      throw new AgentError({ provider: PROVIDER, code: "turn_failed", message: str(terminal.payload.reason) || `Muse terminal: ${String(terminal.payload.terminal)}` })
+    }
+    if (exit.code !== 0) throw exitError(PROVIDER, this.bin, exit)
+    if (!terminal) throw new AgentError({ provider: PROVIDER, code: "turn_incomplete", message: "Muse exited 0 without a terminal event" })
+    if (typeof terminal.payload.text !== "string") {
+      throw new AgentError({ provider: PROVIDER, code: "turn_failed", message: "Muse completed terminal has no text payload" })
+    }
+    return { text: terminal.payload.text, run }
   }
 
   async shutdown(): Promise<void> {}
@@ -143,10 +224,22 @@ export class MuseWorker implements Worker {
           if (!versionAtLeast(version, MUSE_MIN_VERSION)) {
             throw new AgentError({ provider: PROVIDER, code: "provider_outdated", message: `Muse ${version || "(unknown version)"} is below minimum ${MUSE_MIN_VERSION}; upgrade the Muse CLI` })
           }
+          this.resolvedVersion = version
         }).catch((err: unknown) => { this.versionCheck = null; throw err })
     }
     return this.versionCheck
   }
+}
+
+function extractionPrompt(spec: AgentSpec, workingText: string, errors: string): string {
+  return (
+    `Earlier you produced this answer:\n\n${workingText}\n\n` +
+    `It did not match the JSON Schema (${errors}). ` +
+    "Return that same answer as a single JSON value that conforms to the following JSON Schema. " +
+    "Output ONLY the JSON — no prose, no explanation, no code fences. Do not call tools. " +
+    "Keep every finding and recommendation; only fix property names, enums, and required fields.\n\nSchema:\n" +
+    JSON.stringify(spec.schema)
+  )
 }
 
 /** Only settings are copied; all other entries, including auth, remain source-owned symlinks. */
@@ -156,7 +249,7 @@ function privateConfigEnv(scratch: string, readOnly: boolean): NodeJS.ProcessEnv
   let settingsText = "{}"
   try { settingsText = readFileSync(join(source, "settings.json"), "utf8") } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      if (!readOnly) return env
+      if (!readOnly) return withStreamTimeouts(env)
     } else {
       const cause = err as NodeJS.ErrnoException
       throw new AgentError({ provider: PROVIDER, code: "invalid_config", message: `Muse settings.json could not be read: ${cause.code}: ${cause.message}` })
@@ -190,7 +283,7 @@ function privateConfigEnv(scratch: string, readOnly: boolean): NodeJS.ProcessEnv
   for (const entry of entries) {
     if (entry.name !== "settings.json") symlinkSync(join(source, entry.name), join(target, entry.name), entry.isDirectory() ? "junction" : "file")
   }
-  return { ...env, XDG_CONFIG_HOME: xdg }
+  return withStreamTimeouts({ ...env, XDG_CONFIG_HOME: xdg })
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -200,7 +293,7 @@ function str(value: unknown): string | undefined { return typeof value === "stri
 
 /** Read only this attempt's logs; never include log bytes in diagnostics. */
 function sessionUsage(sessionId: string, ctx: WorkerContext): AgentUsage {
-  // Muse 1.2.1 resolves only the XDG data root for session logs; a MUSE_HOME override is ignored (measured).
+  // Muse resolves only the XDG data root for session logs; a MUSE_HOME override is ignored (measured).
   const data = process.env.XDG_DATA_HOME ? join(process.env.XDG_DATA_HOME, "muse") : join(homedir(), ".local", "share", "muse")
   const root = join(data, "sessions")
   let path = join(root, sessionId, "session.jsonl")

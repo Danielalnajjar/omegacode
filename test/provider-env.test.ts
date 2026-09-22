@@ -158,7 +158,7 @@ test("grok: GROK_BIN env drives a real spawn with prompt-file and policy flags",
     const wf = join(dir, "grok-env.workflow.js")
     writeFileSync(
       wf,
-      `export const meta = { name: "grok-env-smoke", description: "e2e env wiring", defaultProvider: "grok", defaultModel: "grok-4.6" }\n` +
+      `export const meta = { name: "grok-env-smoke", description: "e2e env wiring", defaultProvider: "grok", defaultModel: "grok-4.7" }\n` +
         `return await agent("hello from workflow", { effort: "high", instructions: "be terse", cwd: ${JSON.stringify(dir)} })\n`,
     )
     process.env.OMEGACODE_HOME = join(dir, "home")
@@ -183,7 +183,7 @@ test("grok: GROK_BIN env drives a real spawn with prompt-file and policy flags",
       "--agent",
       grokAgentProfile,
       "-m",
-      "grok-4.6",
+      "grok-4.7",
       "--reasoning-effort",
       "high",
       "--rules",
@@ -205,8 +205,8 @@ test("grok: GROK_BIN env drives a real spawn with prompt-file and policy flags",
   }
 })
 
-// Regression: Muse env/factory wiring and schema correction perform exactly one fresh corrective call.
-test("muse: MUSE_BIN drives runtime schema correction through a fake executable", posixOnly, async () => {
+// Regression: Muse env/factory wiring runs one low-effort extraction exec on a schema miss.
+test("muse: MUSE_BIN drives schema extraction through a fake executable", posixOnly, async () => {
   const dir = mkdtempSync(join(tmpdir(), "omega-muse-env-"))
   const prev = { OMEGACODE_HOME: process.env.OMEGACODE_HOME, MUSE_BIN: process.env.MUSE_BIN, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }
   try {
@@ -215,7 +215,7 @@ test("muse: MUSE_BIN drives runtime schema correction through a fake executable"
     writeFileSync(bin, `#!/usr/bin/env node
 const fs = require('node:fs');
 if (process.env.TYPESAFE_API_KEY) { console.error('credential leaked'); process.exit(91); }
-if (process.argv.includes('--version')) { console.log('1.2.1'); process.exit(0); }
+if (process.argv.includes('--version')) { console.log('1.3.0'); process.exit(0); }
 const record = ${JSON.stringify(record)};
 const prompts = fs.existsSync(record) ? JSON.parse(fs.readFileSync(record, 'utf8')) : [];
 const path = process.argv[process.argv.indexOf('--prompt-file') + 1];
@@ -235,7 +235,8 @@ console.log(JSON.stringify({payload_type:'run.terminal.completed',payload:{termi
     const prompts = JSON.parse(readFileSync(record, "utf8"))
     assert.equal(prompts.length, 2)
     assert.notEqual(prompts[0].path, prompts[1].path)
-    assert.match(prompts[1].text, /previous response did not match/)
+    assert.match(prompts[1].text, /Earlier you produced this answer/)
+    assert.match(prompts[1].text, /must be boolean/)
   } finally {
     for (const [key, value] of Object.entries(prev)) restoreEnv(key, value)
     rmSync(dir, { recursive: true, force: true })

@@ -150,7 +150,7 @@ test("grok: GROK_BIN env drives a real spawn with prompt-file and policy flags",
     const wf = join(dir, "grok-env.workflow.js")
     writeFileSync(
       wf,
-      `export const meta = { name: "grok-env-smoke", description: "e2e env wiring", defaultProvider: "grok", defaultModel: "grok-4.6" }\n` +
+      `export const meta = { name: "grok-env-smoke", description: "e2e env wiring", defaultProvider: "grok", defaultModel: "grok-4.7" }\n` +
         `return await agent("hello from workflow", { effort: "high", instructions: "be terse", cwd: ${JSON.stringify(dir)} })\n`,
     )
     process.env.OMEGACODE_HOME = join(dir, "home")
@@ -175,7 +175,7 @@ test("grok: GROK_BIN env drives a real spawn with prompt-file and policy flags",
       "--agent",
       grokAgentProfile,
       "-m",
-      "grok-4.6",
+      "grok-4.7",
       "--reasoning-effort",
       "high",
       "--rules",

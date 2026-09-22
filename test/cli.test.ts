@@ -471,7 +471,7 @@ describe("CLI end-to-end (--fake)", () => {
     chmodSync(grokStub, 0o755)
     const r = await runCli(["doctor"], { OMEGACODE_HOME: home, OPENCODE_BIN: ocStub, PI_BIN: piStub, GROK_BIN: grokStub, MUSE_BIN: museStub })
     assert.equal(r.code, 0, `stderr=${r.stderr}`)
-    assert.match(r.stdout, /muse\s+: 1\.2\.0 — OUTDATED \(< 1\.2\.1\)/)
+    assert.match(r.stdout, /muse\s+: 1\.2\.0 — OUTDATED \(< 1\.3\.0\)/)
     assert.match(r.stdout, /opencode\s+: 1\.15\.0 — OUTDATED \(< 1\.16\.2\)/)
     assert.match(r.stdout, /pi\s+: 0\.79\.1\n/)
     assert.doesNotMatch(r.stdout, /pi\s+: 0\.79\.1 — OUTDATED/)

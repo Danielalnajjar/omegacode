@@ -139,7 +139,7 @@ function flagAfter(args: string[], flag: string): string | undefined {
 test("happy path: argv shape, prompt file, event mapping, usage normalization", async () => {
   const h = harness([versionOk, happyRun])
   const c = ctx()
-  const result = await h.worker.runAgent(spec({ model: "grok-4.6", effort: "high" }), c)
+  const result = await h.worker.runAgent(spec({ model: "grok-4.7", effort: "high" }), c)
 
   assert.equal(h.spawned.length, 2)
   assert.deepEqual(h.spawned[0]!.args, ["--version"])
@@ -147,7 +147,7 @@ test("happy path: argv shape, prompt file, event mapping, usage normalization", 
   assert.equal(flagAfter(args, "--cwd"), "/tmp/project")
   assert.equal(flagAfter(args, "--sandbox"), "read-only")
   assert.equal(flagAfter(args, "--output-format"), "streaming-json")
-  assert.equal(flagAfter(args, "-m"), "grok-4.6")
+  assert.equal(flagAfter(args, "-m"), "grok-4.7")
   assert.equal(flagAfter(args, "--reasoning-effort"), "high")
   assert.ok(args.includes("--always-approve"))
   assert.ok(!args.includes("--permission-mode"))
@@ -171,6 +171,14 @@ test("happy path: argv shape, prompt file, event mapping, usage normalization", 
 
   const kinds = c.events.map((e) => e.kind)
   assert.deepEqual(kinds, ["reasoning", "tool", "tool-result", "text", "usage"])
+})
+
+test("forwards the grok-4.7-build-fast model id", async () => {
+  const h = harness([versionOk, happyRun])
+  await h.worker.runAgent(spec({ model: "grok-4.7-build-fast" }), ctx())
+
+  const args = h.spawned[1]!.args
+  assert.equal(flagAfter(args, "-m"), "grok-4.7-build-fast")
 })
 
 test("fresh spawn stamps the absolute shipped Grok fleet profile", async () => {
@@ -202,7 +210,7 @@ test("every sandbox maps OS confinement and always-approve", async () => {
   assert.ok(full.includes("--always-approve"))
 })
 
-test("effort maps onto grok-4.6 menu ids", async () => {
+test("effort maps onto grok-4.7 menu ids", async () => {
   const cases: Array<[Effort, string]> = [
     ["none", "low"],
     ["minimal", "low"],

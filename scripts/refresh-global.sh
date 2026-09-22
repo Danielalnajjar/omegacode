@@ -77,7 +77,31 @@ restore_snapshot() {
 }
 
 path_mode() {
-  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"
+  node -e 'process.stdout.write((require("node:fs").statSync(process.argv[1]).mode & 0o777).toString(8))' "$1"
+}
+
+# Bun on Linux broadens declared executable modes. Restore only Omega's declared
+# bin to the packed mode before the unchanged full-payload verifier runs.
+normalize_omega_bin_mode() {
+  node --input-type=module - "$tmp/extracted/package" "$1" <<'NODE'
+import { chmodSync, lstatSync, readFileSync } from "node:fs"
+import { join } from "node:path"
+const [expected, installed] = process.argv.slice(2)
+const pkg = JSON.parse(readFileSync(join(expected, "package.json"), "utf8"))
+if (pkg.name !== "omegacode" || Object.keys(pkg.bin || {}).length !== 1 || pkg.bin.omegacode !== "dist/cli.js") {
+  throw new Error("unexpected Omega bin declaration in packed artifact")
+}
+for (const root of [expected, installed]) {
+  for (const directory of [root, join(root, "dist")]) {
+    if (!lstatSync(directory).isDirectory()) throw new Error("Omega bin parent must be a real directory")
+  }
+  if (!lstatSync(join(root, pkg.bin.omegacode)).isFile()) throw new Error("Omega bin must be a regular file")
+}
+const source = join(expected, pkg.bin.omegacode)
+const target = join(installed, pkg.bin.omegacode)
+if (!readFileSync(source).equals(readFileSync(target))) throw new Error("Omega bin bytes differ from packed artifact")
+chmodSync(target, lstatSync(source).mode & 0o777)
+NODE
 }
 
 verify_restored_path() {
@@ -173,6 +197,7 @@ version="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1], 
 
 isolated="$tmp/bun"
 BUN_INSTALL="$isolated" bun add -g "$tarball" >/dev/null
+normalize_omega_bin_mode "$isolated/install/global/node_modules/omegacode"
 node scripts/verify-packed-install.mjs \
   "$tmp/extracted/package" \
   "$isolated/install/global/node_modules/omegacode" \
@@ -210,6 +235,7 @@ if [[ -f "$global_manifest" ]] && node -e '
   BUN_INSTALL="$active_prefix" bun remove -g omegacode >/dev/null
 fi
 BUN_INSTALL="$active_prefix" bun add -g "$stable_tarball" >/dev/null
+normalize_omega_bin_mode "$active_prefix/install/global/node_modules/omegacode"
 if [[ "${OMEGACODE_REFRESH_FAIL_AFTER_CUTOVER:-}" == "1" ]]; then
   echo "error: injected post-cutover refresh failure" >&2
   exit 70

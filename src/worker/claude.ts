@@ -69,11 +69,11 @@ function toClaudeEffort(effort: Effort): ClaudeEffort {
 // SDK 0.3.237 sdk.mjs:118 wraps result failures and process exits in plain Errors.
 // Unknown exceptions are terminal: replaying a paid, mutating turn requires positive
 // evidence of a transient failure, not merely the absence of a known terminal one.
-function claudeFailure(code: string, message: string, usage?: AgentUsage): AgentError {
+function claudeFailure(code: string, message: string, usage?: AgentUsage, completed = false): AgentError {
   const text = `${code}: ${message}`
   const terminal = /error_max_|maximum number of turns|max(?:imum)? (?:turns|budget)|budget.*(?:exceeded|reached)|quota|credits|billing|subscription|usage limit|(?:hit|reached|exceeded) your limit|resets? at|authentication|account_on_hold|agent(?: type)?\b.*(?:not found|unknown|unrecognized|does not exist|failed to (?:load|resolve))/i.test(text)
   const transient = /\b(?:429|529|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN)\b|overload|rate[_ -]limit|connection error|socket (?:hang|hung) up|request timed out/i.test(text)
-  return new AgentError({ provider: "claude-code", code, message, retryable: !terminal && transient, usage })
+  return new AgentError({ provider: "claude-code", code, message, retryable: !completed && !terminal && transient, usage })
 }
 
 export class ClaudeWorker implements Worker {
@@ -139,6 +139,7 @@ export class ClaudeWorker implements Worker {
     const claudeCodeExecutable = this.opts.pathToClaudeCodeExecutable ?? env?.CLAUDE_CODE_EXECUTABLE
     if (claudeCodeExecutable) options.pathToClaudeCodeExecutable = claudeCodeExecutable
 
+    let primaryResult: Extract<SDKMessage, { type: "result" }> | undefined
     let observedUsage: AgentUsage | undefined
     let usageIsPartial = false
     let terminalResult: Extract<SDKMessage, { type: "result" }> | undefined
@@ -152,7 +153,6 @@ export class ClaudeWorker implements Worker {
       // text is watcher chatter, not the answer). So: prefer the last NON-notification result
       // (`origin.kind` discriminates), and capture the accepted StructuredOutput tool payload
       // from the stream as the recovery source — otherwise finished agents get marked failed.
-      let primaryResult: Extract<SDKMessage, { type: "result" }> | undefined
       let anyResult: Extract<SDKMessage, { type: "result" }> | undefined
       let lastText = ""
       let structuredFromTool: unknown
@@ -164,10 +164,12 @@ export class ClaudeWorker implements Worker {
       for await (const message of runQuery({ prompt: spec.prompt, options })) {
         if (message.type === "result") {
           anyResult = message
-          observedUsage = usageFromResult(message)
-          usageIsPartial = false
-          if (message.subtype !== "success" || message.is_error) terminalResult = message
           if (message.origin?.kind !== "task-notification") primaryResult = message
+          if (message === primaryResult || !primaryResult) {
+            observedUsage = usageFromResult(message)
+            usageIsPartial = false
+            terminalResult = message.subtype !== "success" || message.is_error ? message : undefined
+          }
         } else if (message.type === "rate_limit_event") {
           subscriptionRejected = message.rate_limit_info.status === "rejected"
         } else if (message.type === "assistant") {
@@ -237,7 +239,7 @@ export class ClaudeWorker implements Worker {
       if (!lastResult) {
         // Free-form agents have no completion marker (partial text from a truncated stream must
         // not pass as an answer), so without the StructuredOutput evidence the error stays hard.
-        throw new AgentError({ provider: "claude-code", code: "no_result", message: "claude query ended without a result", usage: observedUsage })
+        throw new AgentError({ provider: "claude-code", code: "no_result", message: `claude query ended without a result${usageIsPartial ? "; usage is a token lower bound; cost unknown" : ""}`, usage: observedUsage })
       }
       const usage = usageFromResult(lastResult)
       if (lastResult.subtype !== "success" || lastResult.is_error) {
@@ -261,6 +263,7 @@ export class ClaudeWorker implements Worker {
         terminalResult?.subtype ?? "sdk_error",
         `${subscriptionRejected ? "subscription allowance exhausted; " : ""}${resultDetail}${detail}${usageDetail}`,
         observedUsage,
+        primaryResult?.subtype === "success" && !primaryResult.is_error,
       )
     } finally {
       ctx.signal.removeEventListener("abort", onAbort)

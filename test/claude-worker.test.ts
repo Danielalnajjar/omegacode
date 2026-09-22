@@ -822,10 +822,12 @@ for (const scenario of [
   { name: "quota exhaustion beats 429", messages: [], error: "429 rate_limit: You've hit your usage limit; resets at 11pm", attempts: 1 },
   { name: "subscription rejection beats generic rate limit", messages: [{ type: "rate_limit_event", rate_limit_info: { status: "rejected", rateLimitType: "five_hour" } }], error: "429 rate limit", attempts: 1 },
   { name: "unknown process exit", messages: [], error: "Claude Code process exited with code 1", attempts: 1 },
+  { name: "completed result cannot replay on transient close error", messages: [resultMsg()], error: "529 overloaded_error", attempts: 1, usage: { inputTokens: 10, outputTokens: 4, costUsd: 0.01 } },
+  { name: "notification cannot erase primary usage", messages: [resultMsg(), resultMsg({ origin: { kind: "task-notification" }, usage: { input_tokens: 0, output_tokens: 0 }, total_cost_usd: 0 })], error: "socket hung up", attempts: 1, usage: { inputTokens: 10, outputTokens: 4, costUsd: 0.01 } },
   { name: "success result usage survives throw", messages: [resultMsg()], error: "unrecognized failure", attempts: 1, usage: { inputTokens: 10, outputTokens: 4, costUsd: 0.01 } },
   { name: "stream usage survives throw", messages: [{ type: "assistant", message: { id: "a1", usage: { input_tokens: 7, output_tokens: 3 }, content: [] } }], error: "unrecognized failure", attempts: 1, usage: { inputTokens: 7, outputTokens: 3, costUsd: 0 }, partial: true },
-  { name: "overload still retries and retains usage", messages: [resultMsg()], error: "529 overloaded_error", attempts: 4, usage: { inputTokens: 10, outputTokens: 4, costUsd: 0.01 } },
-  { name: "temporary rate limit still retries and retains usage", messages: [resultMsg()], error: "429 rate_limit_error: requests per minute exceeded", attempts: 4, usage: { inputTokens: 10, outputTokens: 4, costUsd: 0.01 } },
+  { name: "overload still retries and retains usage", messages: [resultMsg({ subtype: "error_during_execution", errors: ["529 overloaded_error"] })], error: "529 overloaded_error", attempts: 4, usage: { inputTokens: 10, outputTokens: 4, costUsd: 0.01 } },
+  { name: "temporary rate limit still retries and retains usage", messages: [resultMsg({ subtype: "error_during_execution", errors: ["429 rate_limit_error"] })], error: "429 rate_limit_error: requests per minute exceeded", attempts: 4, usage: { inputTokens: 10, outputTokens: 4, costUsd: 0.01 } },
 ]) {
   test(`retry classification: ${scenario.name}`, async () => {
     let invocations = 0
@@ -870,4 +872,15 @@ for (const [errors, retryable] of [
 test("success-subtype is_error result remains a failure", async () => {
   const worker = new ClaudeWorker({ queryFn: scripted([resultMsg({ is_error: true, result: "You've hit your limit" })]) })
   await assert.rejects(worker.runAgent(spec(), ctx()), (error: unknown) => error instanceof AgentError && !error.retryable && error.message.includes("You've hit your limit"))
+})
+
+test("no-result EOF labels assistant usage as partial", async () => {
+  const worker = new ClaudeWorker({ queryFn: scripted([{ type: "assistant", message: { id: "a1", usage: { input_tokens: 7, output_tokens: 3 }, content: [] } }]) })
+  await assert.rejects(worker.runAgent(spec(), ctx()), (error: unknown) => {
+    assert.ok(error instanceof AgentError)
+    assert.equal(error.code, "no_result")
+    assert.equal(error.usage?.inputTokens, 7)
+    assert.match(error.message, /lower bound; cost unknown/)
+    return true
+  })
 })

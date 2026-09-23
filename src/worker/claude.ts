@@ -1,4 +1,3 @@
-import { loadClaudeIsolation, isolatedClaudeOptions } from "./claude-isolation.js"
 // ClaudeWorker — drives Claude Code via @anthropic-ai/claude-agent-sdk `query()`.
 // Structured output uses the SDK's native `outputFormat: { type: "json_schema" }`; sandbox maps to a
 // canUseTool gate by default. The explicit benchmark isolation configuration replaces this
@@ -15,6 +14,7 @@ import { query, USAGE_LIMIT_ERROR_PREFIXES, type Options, type PermissionResult,
 import { addUsage, emptyUsage, type AgentResult, type AgentSpec, type AgentUsage, type Effort, type Sandbox } from "../dsl/types.js"
 import type { PreparedAgentCall, Worker, WorkerContext } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
+import { isolatedClaudeOptions, loadClaudeIsolation } from "./claude-isolation.js"
 import { prepareClaudeProfile, resolveClaudeProfile, type ClaudeProfileResolver } from "./claude-profile.js"
 import { providerEnv } from "./provider-env.js"
 import { assertValidSchema, toClaudeOutputFormat } from "./schema.js"

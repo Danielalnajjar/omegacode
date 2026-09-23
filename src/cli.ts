@@ -1,6 +1,4 @@
 #!/usr/bin/env node
-import { proveClaudeIsolation } from "./worker/claude-preflight.js"
-import { proveGrokIsolation } from "./worker/grok-preflight.js"
 import { spawn } from "node:child_process"
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { get as httpGet } from "node:http"
@@ -15,6 +13,8 @@ import { expectedLogPath, isValidRunId, loadRunStatus, type RunStatusSnapshot } 
 import { WorkflowError } from "./runtime/primitives.js"
 import { startViewer } from "./server/serve.js"
 import { AgentError, AgentInterrupted } from "./worker/index.js"
+import { proveClaudeIsolation } from "./worker/claude-preflight.js"
+import { proveGrokIsolation } from "./worker/grok-preflight.js"
 import { DEFAULTS, PROVIDER_IDS, type Effort, type Sandbox } from "./dsl/types.js"
 import { postOtlpTraces, projectRunToOtlp } from "./otel/export.js"
 
@@ -227,7 +227,7 @@ function cmdCapabilities(flags: Flags): void {
   const capabilities = { schemaVersion: 1, codexPermissions: true, claudeIsolation: true, grokIsolation: true, typesafeEvaluate: true, providers: PROVIDER_IDS }
   console.log(flags.json === true
     ? JSON.stringify(capabilities)
-    : `OmegaCode capabilities (schema 1): codexPermissions, typesafeEvaluate; providers: ${PROVIDER_IDS.join(", ")}`)
+    : `OmegaCode capabilities (schema 1): codexPermissions, claudeIsolation, grokIsolation, typesafeEvaluate; providers: ${PROVIDER_IDS.join(", ")}`)
 }
 
 async function cmdServe(flags: Flags): Promise<void> {

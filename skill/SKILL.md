@@ -57,7 +57,7 @@ Agents are told their final text IS the return value (not a human-facing message
 
 Every agent() runs under a provider/model. **By default, do NOT set `provider` or `model` per agent** — each agent inherits the provider/model the workflow is being run with (`--provider` / `--model`, default `codex`), which is almost always what you want. Most workflows (including the canonical example and the patterns above) omit them entirely. Pin them only when the user explicitly asks for a specific provider/model, or you're confident a particular step needs a different one.
 
-**Provider and model are both-or-neither** — at every site (per-call opts, `meta.defaultProvider`/`defaultModel`, `--provider`/`--model`): set both, or omit both to inherit the run defaults. A lone `provider:` (or lone `model:`) is rejected before the agent spawns. This exists because a lone provider override used to inherit the run-default model — a model belonging to a *different* provider. When you pin a provider, name the model explicitly (e.g. `{ provider: "codex", model: "gpt-6-sol" }`, `{ provider: "claude-code", model: "claude-fable-5" }`). `omegacode doctor` shows which providers are installed/authed.
+**Provider and model are both-or-neither** — at every site (per-call opts, `meta.defaultProvider`/`defaultModel`, `--provider`/`--model`): set both, or omit both to inherit the run defaults. A lone `provider:` (or lone `model:`) is rejected before the agent spawns. This exists because a lone provider override used to inherit the run-default model — a model belonging to a *different* provider. When you pin a provider, name the model explicitly (e.g. `{ provider: "codex", model: "gpt-6-sol" }`, `{ provider: "claude-code", model: "claude-fable-5-1" }`). `omegacode doctor` shows which providers are installed/authed.
 
 The six providers:
 - **codex** (OpenAI, gpt-5.x) — the default. `opts.effort` tunes reasoning depth: `"none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"`. `"ultra"` is intentionally not exposed because OmegaCode already owns orchestration and must not trigger a nested automatic fleet. Requires the `codex` CLI authenticated (ChatGPT login); its built-in tools (incl. hosted image generation) come from that auth, and it ignores `OPENAI_API_KEY`. Native structured output via a free-form working turn then a schema-constrained extraction turn.
@@ -84,7 +84,7 @@ const verified = await pipeline(
   suspects,
   s => agent(`Is this a real bug? ${s.desc}`, { schema: VERDICT }),                          // run's provider
   (v, s) => agent(`Try to REFUTE that ${s.desc} is a bug; default to refuted if unsure.`,
-    { provider: "claude-code", model: "claude-fable-5", schema: VERDICT }).then(r => ({ ...s, real: v.real && !r.refuted })))
+    { provider: "claude-code", model: "claude-fable-5-1", schema: VERDICT }).then(r => ({ ...s, real: v.real && !r.refuted })))
 ```
 
 Scripts are plain JavaScript, NOT TypeScript — type annotations (`: string[]`), interfaces, and generics fail to parse. The script body runs in an async context — use await directly. Standard JS built-ins (JSON, Math, Array, etc.) are available — EXCEPT `Date.now()`/`Math.random()`/argless `new Date()`, which throw (they would break resume) and are rejected by a submit-time lint; use the injected `now()`/`random()` instead, or pass timestamps in via `args`. No filesystem, network, or relative import/require in the workflow body (the agents do the I/O; `evaluate()` is a host-side call made on the workflow's behalf).

@@ -18,7 +18,7 @@ const MAX_FINDINGS_PER_REVIEW = 15
 
 const REVIEWERS = [
   { provider: "codex", model: "gpt-6-sol", name: "Codex" },
-  { provider: "claude-code", model: "claude-fable-5", name: "Claude" },
+  { provider: "claude-code", model: "claude-fable-5-1", name: "Claude" },
 ]
 
 const target =

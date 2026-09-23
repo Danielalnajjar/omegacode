@@ -51,7 +51,7 @@ Explain concretely, citing files: what it does, its key files/exports, the impor
 and any notable design choices or gotchas.`,
       {
         provider: i % 2 === 0 ? "codex" : "claude-code",
-        model: i % 2 === 0 ? "gpt-6-sol" : "claude-fable-5",
+        model: i % 2 === 0 ? "gpt-6-sol" : "claude-fable-5-1",
         cwd: dir,
         sandbox: "read-only",
         label: `dive: ${area.name}`,
@@ -73,7 +73,7 @@ Below are deep-dive notes on each major area (JSON). Write a clear, well-structu
 Deep-dive notes:
 
 ${JSON.stringify(digs, null, 2)}`,
-  { provider: "claude-code", model: "claude-fable-5", cwd: dir, sandbox: "read-only", label: "architecture overview" },
+  { provider: "claude-code", model: "claude-fable-5-1", cwd: dir, sandbox: "read-only", label: "architecture overview" },
 )
 
 return overview

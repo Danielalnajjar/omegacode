@@ -64,7 +64,7 @@ const findings = await parallel(
 phase("Verify")
 return await pipeline(
   findings.filter(Boolean).flatMap((f) => f.issues),
-  (issue) => agent(`Try to refute: ${issue.desc}`, { provider: "claude-code", model: "claude-fable-5", schema: VERDICT }),
+  (issue) => agent(`Try to refute: ${issue.desc}`, { provider: "claude-code", model: "claude-fable-5-1", schema: VERDICT }),
 )
 ```
 

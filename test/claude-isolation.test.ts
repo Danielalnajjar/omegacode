@@ -90,12 +90,16 @@ test("configuration rejects noncanonical roots and cwd mismatch", { skip: proces
  writeFileSync(file,JSON.stringify({...config,scratch:"/"}))
  assert.throws(()=>loadClaudeIsolation(file),/canonical/)
 })
-test("configuration rejects read roots nested with workspace or scratch in either direction", { skip: process.platform !== "darwin" }, t => {
+test("configuration rejects read roots and inputs nested with workspace or scratch in either direction", { skip: process.platform !== "darwin" }, t => {
   const { root, config } = fixture(t)
   const file = join(root, "config.json")
   for (const readRoot of [join(config.workspace, "deps"), join(config.scratch, "deps"), root]) {
     writeFileSync(file, JSON.stringify({ ...config, readRoots: [readRoot] }))
-    assert.throws(() => loadClaudeIsolation(file), /Isolation readRoots must be separate from writable roots/)
+    assert.throws(() => loadClaudeIsolation(file), /Isolation readRoots and inputs must be separate from writable roots/)
+  }
+  for (const inputs of [join(config.workspace, "inputs"), config.workspace]) {
+    writeFileSync(file, JSON.stringify({ ...config, inputs }))
+    assert.throws(() => loadClaudeIsolation(file), /Isolation readRoots and inputs must be separate from writable roots/)
   }
 })
 

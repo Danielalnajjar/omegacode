@@ -10,6 +10,7 @@ export interface GrokIsolation {
   grokHome: string
   /** Fresh HOME inside scratch, so no user-level skills, rules, hooks or MCP servers are discovered. */
   home: string
+  /** Must not contain hard links to files outside the writable roots: path checks and Seatbelt cannot see a shared inode. */
   workspace: string
   inputs: string
   scratch: string
@@ -42,7 +43,7 @@ export function loadGrokIsolation(path: string, cwd?: string): GrokIsolation {
   }
   if (cwd && canonical(cwd) !== value.workspace) throw new Error("Isolation workspace differs from worker cwd")
   if ([value.workspace, value.inputs].some(root => inside(value.scratch, root) || inside(root, value.scratch))) throw new Error("Isolation scratch must be separate")
-  if (value.readRoots.some(readRoot => [value.workspace, value.scratch].some(writableRoot => inside(readRoot, writableRoot) || inside(writableRoot, readRoot)))) throw new Error("Isolation readRoots must be separate from writable roots")
+  if ([...value.readRoots, value.inputs].some(readRoot => [value.workspace, value.scratch].some(writableRoot => inside(readRoot, writableRoot) || inside(writableRoot, readRoot)))) throw new Error("Isolation readRoots and inputs must be separate from writable roots")
   if (!inside(value.home, value.scratch)) throw new Error("Isolated HOME must live in scratch")
   if ([value.workspace, value.inputs, value.scratch, ...value.readRoots].some(root => inside(root, value.grokHome) || inside(value.grokHome, root))) throw new Error("Grok home must be separate from tool-readable roots")
   return value

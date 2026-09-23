@@ -52,7 +52,7 @@ test("foreground and detached CLI preserve omitted versus explicit false mode fl
   // Child tests receive no inherited credentials or auth bundles. PATH and system
   // bootstrap paths are needed on Windows, but are never asserted as a full object.
   const env: NodeJS.ProcessEnv = { HOME: home, USERPROFILE: home, OMEGACODE_HOME: omegaHome }
-  for (const key of ["PATH", "Path", "SystemRoot", "SYSTEMROOT", "WINDIR", "TEMP", "TMP"]) {
+  for (const key of ["PATH", "Path", "SystemRoot", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TSX_DISABLE_CACHE"]) {
     if (process.env[key] !== undefined) env[key] = process.env[key]
   }
   const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url))

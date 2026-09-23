@@ -1,5 +1,6 @@
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
-import { basename, dirname, isAbsolute, join, relative } from "node:path"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { isAbsolute, join } from "node:path"
+import { canonical, inside, SYSTEM_ROOTS } from "./isolation-paths.js"
 
 export interface GrokIsolation {
   schemaVersion: "grok-isolation.v1"
@@ -24,7 +25,6 @@ export const GROK_REMOVED_TOOLS = [
   "scheduler_list", "monitor", "search_tool", "use_tool", "workflow", "enter_plan_mode", "exit_plan_mode",
   "ask_user_question", "image_gen", "image_edit", "image_to_video", "reference_to_video", "web_search", "web_fetch",
 ]
-const SYSTEM_ROOTS = ["/bin", "/usr/bin", "/usr/lib", "/System/Library", "/private/etc", "/dev"]
 // Homebrew tools and their dylibs, as in a normal developer shell. Its var/
 // tree holds service state and logs, so it stays unreadable.
 const HOMEBREW = "/opt/homebrew"
@@ -33,16 +33,6 @@ const HOMEBREW_STATE = "/opt/homebrew/var"
 // xcrun shims in /usr/bin. Those shims cannot run confined (xcodebuild needs
 // Mach services), so Homebrew goes first, which is what `brew shellenv` does.
 const SHELL_PROFILE = "# OmegaCode Grok isolation: Homebrew first, as `brew shellenv` does.\nexport PATH=\"/opt/homebrew/bin:/opt/homebrew/sbin:$PATH\"\n"
-const inside = (path: string, root: string) => path === root || (!relative(root, path).startsWith("..") && !isAbsolute(relative(root, path)))
-function canonical(path: string): string {
-  try { return realpathSync(path) } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-    const parent = dirname(path)
-    if (parent === path) throw error
-    return join(canonical(parent), basename(path))
-  }
-}
-
 export function loadGrokIsolation(path: string, cwd?: string): GrokIsolation {
   const value = JSON.parse(readFileSync(path, "utf8")) as GrokIsolation
   if (value.schemaVersion !== "grok-isolation.v1" || typeof value.writable !== "boolean" ||
@@ -52,6 +42,7 @@ export function loadGrokIsolation(path: string, cwd?: string): GrokIsolation {
   }
   if (cwd && canonical(cwd) !== value.workspace) throw new Error("Isolation workspace differs from worker cwd")
   if ([value.workspace, value.inputs].some(root => inside(value.scratch, root) || inside(root, value.scratch))) throw new Error("Isolation scratch must be separate")
+  if (value.readRoots.some(readRoot => [value.workspace, value.scratch].some(writableRoot => inside(readRoot, writableRoot) || inside(writableRoot, readRoot)))) throw new Error("Isolation readRoots must be separate from writable roots")
   if (!inside(value.home, value.scratch)) throw new Error("Isolated HOME must live in scratch")
   if ([value.workspace, value.inputs, value.scratch, ...value.readRoots].some(root => inside(root, value.grokHome) || inside(value.grokHome, root))) throw new Error("Grok home must be separate from tool-readable roots")
   return value
@@ -75,6 +66,7 @@ export function grokSeatbeltProfile(config: GrokIsolation, agentProfile: string)
     "(version 1)", "(allow default)",
     `(deny network* ${tool})`, `(deny mach-lookup ${tool})`,
     `(deny process-info* (require-all ${tool} (require-not (target self))))`,
+    `(deny signal (require-all ${tool} (require-not (target same-sandbox))))`,
     `(deny process-exec (require-all (literal ${q(config.grokExecutable)}) (require-not (process-path "/usr/bin/sandbox-exec"))))`,
     `(deny file-read* (require-all ${tool} ${except(toolRead)}))`,
     `(deny file-read* (require-all ${tool} (subpath ${q(HOMEBREW_STATE)})))`,

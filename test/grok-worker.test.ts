@@ -502,7 +502,7 @@ function isolationFixture(t: { after(fn: () => void): void }): { root: string; f
   return { root, file, workspace: join(root, "workspace") }
 }
 
-test("isolation launches grok through Seatbelt with a constructed env, --sandbox off and shell-only tools", async (t) => {
+test("isolation launches grok through Seatbelt with a constructed env, --sandbox off and shell-only tools", { skip: process.platform !== "darwin" }, async (t) => {
   const { root, file, workspace } = isolationFixture(t)
   process.env.GROK_ISOLATION_TEST_POISON = "must-not-inherit"
   t.after(() => { delete process.env.GROK_ISOLATION_TEST_POISON })
@@ -540,7 +540,7 @@ test("a shell result with a non-zero exit code is recorded as an error", async (
   assert.deepEqual(results.map((e) => [e.id, e.isError]), [["ok", false], ["bad", true]])
 })
 
-test("isolated schema extraction keeps only the inert todo_write tool", async (t) => {
+test("isolated schema extraction keeps only the inert todo_write tool", { skip: process.platform !== "darwin" }, async (t) => {
   const { file, workspace } = isolationFixture(t)
   const extraction: Script = (p) => {
     p.pushLine({ type: "text", data: "{\"answer\":\"ok\"}" })
@@ -556,7 +556,7 @@ test("isolated schema extraction keeps only the inert todo_write tool", async (t
   assert.equal(args.filter(arg => arg === "--tools").length, 1)
 })
 
-test("isolation refuses a worker cwd outside the configured workspace before spawning", async (t) => {
+test("isolation refuses a worker cwd outside the configured workspace before spawning", { skip: process.platform !== "darwin" }, async (t) => {
   const { file } = isolationFixture(t)
   const h = harness([], { isolationFile: file })
   await assert.rejects(h.worker.runAgent(spec({ cwd: "/tmp" }), ctx()), /workspace differs/)

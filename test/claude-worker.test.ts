@@ -6,7 +6,11 @@
 import { withRetry } from "../src/worker/errors.ts"
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { ClaudeWorker, type QueryFn } from "../src/worker/claude.ts"
+import { ISOLATED_TOOLS } from "../src/worker/claude-isolation.ts"
 import { AgentError, AgentInterrupted, type WorkerContext, type WorkerProgress } from "../src/worker/index.ts"
 import type { AgentSpec } from "../src/dsl/types.ts"
 import { USAGE_LIMIT_ERROR_PREFIXES } from "@anthropic-ai/claude-agent-sdk"
@@ -377,6 +381,25 @@ test("schema spec: outputFormat is sent and structured_output comes back on the 
   const r2 = await w2.runAgent(spec(), ctx())
   assert.equal(r2.structured, undefined)
   assert.equal(calls2[0]!.options.outputFormat, undefined)
+})
+
+test("isolated Claude run passes the isolated tools and permits SDK StructuredOutput", { skip: process.platform !== "darwin" }, async t => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "claude-worker-isolation-")))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  for (const name of ["workspace", "inputs", "scratch"]) mkdirSync(join(root, name))
+  const workspace = join(root, "workspace")
+  const file = join(root, "isolation.json")
+  writeFileSync(file, JSON.stringify({ schemaVersion: "claude-isolation.v1", workspace, inputs: join(root, "inputs"), scratch: join(root, "scratch"),
+    readRoots: [], blockedRoots: [root], writable: true }))
+  setTestEnv(t, { ...process.env, OMEGACODE_CLAUDE_ISOLATION_CONFIG: file })
+  const calls: QueryCall[] = []
+  const worker = new ClaudeWorker({ queryFn: scripted([resultMsg({ structured_output: { answer: 42 } })], calls) })
+  await worker.runAgent(spec({ cwd: workspace, schema: SCHEMA }), ctx())
+  const options = calls[0]!.options
+  const gate = options.canUseTool as Gate
+  assert.equal((await gate("StructuredOutput", { answer: 42 })).behavior, "allow")
+  assert.equal((await gate("WebFetch", { url: "https://example.com" })).behavior, "deny")
+  assert.deepEqual(options.tools, ISOLATED_TOOLS)
 })
 
 // ===========================================================================

@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import {mkdtempSync,mkdirSync,writeFileSync,symlinkSync,rmSync,realpathSync} from "node:fs"
 import {tmpdir} from "node:os"
 import {join} from "node:path"
-import {execFileSync} from "node:child_process"
+import { execFileSync, spawn } from "node:child_process"
 import {isolatedToolPermission,isolatedClaudeOptions,loadClaudeIsolation,type ClaudeIsolation} from "../src/worker/claude-isolation.js"
 function fixture(t:test.TestContext){
  const root=realpathSync(mkdtempSync(join(tmpdir(),"claude-isolation-test-")))
@@ -31,6 +31,20 @@ test("file tools deny private roots, traversal, and symlink escapes",t=>{
   assert.equal(gate(tool,{file_path:join(config.scratch,"new")}).behavior,"allow")
   assert.equal(gate(tool,{file_path:"new"}).behavior,"allow")
  }
+})
+test("dangling symlinks resolve to their target for writes and do not block safe searches", t => {
+  const { root, config, gate } = fixture(t)
+  symlinkSync(join(root, "missing-outside"), join(config.workspace, "outside-link"))
+  for (const tool of ["Write", "Edit"]) assert.equal(gate(tool, { file_path: "outside-link" }).behavior, "deny")
+  const target = join(config.workspace, "missing-inside")
+  symlinkSync(target, join(config.workspace, "inside-link"))
+  const write = gate("Write", { file_path: "inside-link" })
+  assert.equal(write.behavior, "allow")
+  if (write.behavior !== "allow") throw new Error("unreachable")
+  assert.equal(write.updatedInput?.file_path, target)
+  // Remove the escaping link; the remaining dangling link is inside the approved tree.
+  rmSync(join(config.workspace, "outside-link"))
+  for (const tool of ["Grep", "Glob"]) assert.equal(gate(tool, { path: config.workspace, pattern: "*" }).behavior, "allow")
 })
 test("all tool calls must pass callback; host surfaces and delegation unavailable",t=>{
  const {config,gate}=fixture(t)
@@ -62,8 +76,12 @@ test("sandboxed Bash cannot read private data or write outside workspace, includ
  symlinkSync(privateFile,join(config.workspace,"escape"))
  assert.throws(()=>shell("cat escape"),/Operation not permitted|Permission denied/)
  shell("printf ok > result")
+  const outside = spawn("/bin/sleep", ["5"])
+  t.after(() => outside.kill())
+  assert.throws(() => shell(`kill -0 ${outside.pid}`), /Operation not permitted|Permission denied/)
+  shell("sleep 5 & kill $!")
 })
-test("configuration rejects noncanonical roots and cwd mismatch",t=>{
+test("configuration rejects noncanonical roots and cwd mismatch", { skip: process.platform !== "darwin" }, t => {
  const {root,config}=fixture(t)
  const file=join(root,"config.json")
  writeFileSync(file,JSON.stringify(config))
@@ -71,6 +89,14 @@ test("configuration rejects noncanonical roots and cwd mismatch",t=>{
  assert.throws(()=>loadClaudeIsolation(file,config.inputs),/differs/)
  writeFileSync(file,JSON.stringify({...config,scratch:"/"}))
  assert.throws(()=>loadClaudeIsolation(file),/canonical/)
+})
+test("configuration rejects read roots nested with workspace or scratch in either direction", { skip: process.platform !== "darwin" }, t => {
+  const { root, config } = fixture(t)
+  const file = join(root, "config.json")
+  for (const readRoot of [join(config.workspace, "deps"), join(config.scratch, "deps"), root]) {
+    writeFileSync(file, JSON.stringify({ ...config, readRoots: [readRoot] }))
+    assert.throws(() => loadClaudeIsolation(file), /Isolation readRoots must be separate from writable roots/)
+  }
 })
 
 test("Bash cannot reach a listener that the unsandboxed parent can reach",{skip:process.platform!=="darwin"},async t=>{

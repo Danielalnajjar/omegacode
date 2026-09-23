@@ -1,7 +1,7 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { execFile, execFileSync, spawnSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { execFile, execFileSync, spawn, spawnSync } from "node:child_process"
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { createServer } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -22,7 +22,7 @@ function fixture(t: test.TestContext, over: Partial<GrokIsolation> = {}) {
   return { root, config, file }
 }
 
-test("loader requires canonical roots, HOME in scratch and a Grok home outside tool roots", t => {
+test("loader requires canonical roots, HOME in scratch and a Grok home outside tool roots", { skip: process.platform !== "darwin" }, t => {
   const { root, config, file } = fixture(t)
   assert.deepEqual(loadGrokIsolation(file, config.workspace), config)
   assert.throws(() => loadGrokIsolation(file, root), /workspace differs/)
@@ -32,6 +32,13 @@ test("loader requires canonical roots, HOME in scratch and a Grok home outside t
   bad({ readRoots: [join(root, "grok-home")] }, /separate from tool-readable roots/)
   symlinkSync(join(root, "workspace"), join(root, "workspace-link"))
   bad({ workspace: join(root, "workspace-link") }, /canonical/)
+})
+test("loader rejects read roots nested with workspace or scratch in either direction", { skip: process.platform !== "darwin" }, t => {
+  const { root, config, file } = fixture(t)
+  for (const readRoot of [join(config.workspace, "deps"), join(config.scratch, "deps"), root]) {
+    writeFileSync(file, JSON.stringify({ ...config, readRoots: [readRoot] }))
+    assert.throws(() => loadGrokIsolation(file), /Isolation readRoots must be separate from writable roots/)
+  }
 })
 
 test("tool arguments allow only the shell, and the extraction turn only todo_write", () => {
@@ -47,7 +54,7 @@ test("tool arguments allow only the shell, and the extraction turn only todo_wri
   }
 })
 
-test("inventory assessment accepts only built-in agents and empty host surfaces", () => {
+test("inventory assessment accepts only built-in agents and empty host surfaces", { skip: process.platform !== "darwin" }, () => {
   const clean = { projectInstructions: [], hooks: [], skills: [], plugins: [], marketplaces: [], mcpServers: [], lspServers: [], configSources: { layers: [] }, permissions: { sources: [] },
     agents: ["general-purpose", "explore", "plan"].map(name => ({ name, source: { type: "builtin" } })) }
   assert.deepEqual(assessGrokInventory(clean), [])
@@ -98,12 +105,18 @@ test("Seatbelt gives the provider parent network and its home while its children
     assert.match(result.stderr, /Operation not permitted|Permission denied/, command)
   }
   assert.equal((await child(`touch new && touch ${join(config.scratch, "new")}`)).status, 0)
+  const outside = spawn("/bin/sleep", ["5"])
+  t.after(() => outside.kill())
+  assert.notEqual((await child(`kill -0 ${outside.pid}`)).status, 0)
+  assert.equal((await child("sleep 5 & kill $!")).status, 0)
   assert.notEqual((await child(`/usr/bin/nc -z -w 1 127.0.0.1 ${port}`)).status, 0)
   assert.match((await child(`${PARENT} -s http://127.0.0.1:${port}/`)).stderr, /Operation not permitted/)
   assert.equal(connections, 1)
   // Homebrew tools run, as in a developer shell; Homebrew's service state does not.
-  assert.equal((await child("/opt/homebrew/bin/rg --version >/dev/null && ls /opt/homebrew/bin >/dev/null")).status, 0)
-  assert.match((await child("ls /opt/homebrew/var")).stderr, /Operation not permitted/)
+  if (existsSync("/opt/homebrew/bin/rg")) {
+    assert.equal((await child("/opt/homebrew/bin/rg --version >/dev/null && ls /opt/homebrew/bin >/dev/null")).status, 0)
+    assert.match((await child("ls /opt/homebrew/var")).stderr, /Operation not permitted/)
+  }
   writeFileSync(join(config.workspace, "readonly"), "")
   const readOnly = grokSeatbeltProfile({ ...config, writable: false }, "/dev/null")
   assert.notEqual(spawnSync("/usr/bin/sandbox-exec", ["-p", readOnly, "/usr/bin/touch", join(config.workspace, "readonly")]).status, 0)

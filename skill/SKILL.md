@@ -213,14 +213,17 @@ Rules:
 - Ask every independent question about the same state in ONE call, speculative ones included. Questions run in parallel and cannot see each other's answers. Make a second call only when an answer decides what evidence to build next.
 - Confidence gates action; code owns the thresholds. Act on high confidence, flag or confirm at medium, fall back to an agent or a person at low. Pick thresholds per consequence, not one number. Confidence is distribution concentration, not correctness.
 - `model` defaults to `jev-latest`. Pin a versioned id (e.g. `jev-1.13.0`) when answers must stay comparable across runs; a pinned model that the service resolves differently fails with `model_mismatch` rather than mixing revisions.
-- Permission is per run: fresh runs are OFF even when the host has `TYPESAFE_API_KEY`; pass `--typesafe` to enable. `--fake` cannot evaluate. Resume inherits the recorded permission when the flag is omitted and rejects an explicit contradiction. Only the host reads the key — workers and workflow code never see it; never put credentials in state, args, logs, or return values.
+- Permission is per run: fresh runs are OFF even when the host has `TYPESAFE_API_KEY`; pass `--typesafe` to enable. `--fake` cannot evaluate. Resume inherits the recorded permission when the flag is omitted and rejects an explicit contradiction. Only the host reads the key; workflow code never sees it, and OmegaCode strips it from the environments of the SDK and the workers it spawns. The one exception is a Codex app-server it did not start: with `--codex-app-server-socket` / `OMEGACODE_CODEX_APP_SERVER_SOCKET` the daemon's environment cannot be sanitized, so its owner must start it without `TYPESAFE_API_KEY`. Never put credentials in state, args, logs, or return values.
 - Replay: the exact request (state, questions, model) plus `opts.key` binds the recorded answer on `--resume`, like `agent()` results. Changing `opts.label` alone does not re-evaluate. Use a fresh run for a new trial.
-- Failures throw an error whose `message` is `evaluation: <code>` and whose `.code` is one of `disabled`, `missing_key`, `invalid_data`, `invalid_request`, `network_budget`, `deadline`, `request_cap`, `transfer_budget`, `call_cap`, `model_mismatch`, `http_401`, `http_403`, `http_422`, `http_429`, `http_529`, `http_error`, `request_failed`. Catch those and take the baseline path (usually the agent you hoped to skip). Re-throw anything else: a parent cancellation must propagate, never become a fallback.
+- Failures throw an error whose `message` is `evaluation: <code>` and whose `.code` names the cause. Operational codes mean Jev could not be used this run and the workflow should take its baseline path (usually the agent you hoped to skip): `disabled`, `missing_key`, `network_budget`, `deadline`, `request_cap`, `transfer_budget`, `call_cap`, `model_mismatch`, `http_401`, `http_403`, `http_422`, `http_429`, `http_529`, `http_error`, `request_failed`. Validation codes mean the workflow built a bad request and must be fixed, not hidden: `invalid_data`, `invalid_request`, `invalid_options`. Catch only the operational codes by name; re-throw everything else so validation bugs surface and a parent cancellation propagates instead of becoming a fallback.
 - Per-run guards: 256 `evaluate()` calls, 1024 HTTP requests, 16 MiB sent, 30 s per call, 4 requests in flight. Usage is reported separately from agent tokens as `evaluationUsage` in foreground `run --json`; it is not counted by `budget.*`.
 
 Cascade pattern — screen cheaply, spend agents only where Jev is not confident:
 
 ```js
+const JEV_UNAVAILABLE = new Set(['disabled', 'missing_key', 'network_budget', 'deadline', 'request_cap', 'transfer_budget',
+  'call_cap', 'model_mismatch', 'http_401', 'http_403', 'http_422', 'http_429', 'http_529', 'http_error', 'request_failed'])
+
 phase('Screen')
 let uncertain = findings                                    // baseline: every finding gets an agent
 try {
@@ -234,7 +237,7 @@ try {
   }, { key: 'screen' })
   uncertain = findings.filter((_, i) => answers[`f${i}`].choice !== 'supported' || answers[`f${i}`].confidence < 0.9)
 } catch (err) {
-  if (!String(err?.message).startsWith('evaluation: ')) throw err       // cancellation and programmer errors propagate
+  if (!JEV_UNAVAILABLE.has(err?.code)) throw err                    // validation bugs and cancellation propagate
   log(`Jev unavailable (${err.code}); verifying every finding with agents`)
 }
 

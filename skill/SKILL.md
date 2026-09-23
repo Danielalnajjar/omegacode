@@ -217,7 +217,7 @@ Rules:
 - `model` defaults to `jev-latest`. Pin a versioned id (e.g. `jev-1.13.0`) when answers must stay comparable across runs; a pinned model that the service resolves differently fails with `model_mismatch` rather than mixing revisions.
 - Permission is per run: fresh runs are OFF even when the host has `TYPESAFE_API_KEY`; pass `--typesafe` to enable. `--fake` cannot evaluate. Resume inherits the recorded permission when the flag is omitted and rejects an explicit contradiction. Only the host reads the key; workflow code never sees it, and OmegaCode strips it from the environments of the SDK and the workers it spawns. The one exception is a Codex app-server it did not start: with `--codex-app-server-socket` / `OMEGACODE_CODEX_APP_SERVER_SOCKET` the daemon's environment cannot be sanitized, so its owner must start it without `TYPESAFE_API_KEY`. Never put credentials in state, args, logs, or return values.
 - Replay: the exact request (state, questions, model) plus `opts.key` binds the recorded answer on `--resume`, like `agent()` results. Changing `opts.label` alone does not re-evaluate. Use a fresh run for a new trial.
-- Failures throw an error whose `message` is `evaluation: <code>` and whose `.code` names the cause. Operational codes mean Jev could not be used this run and the workflow should take its baseline path (usually the agent you hoped to skip): `disabled`, `missing_key`, `network_budget`, `deadline`, `request_cap`, `transfer_budget`, `call_cap`, `model_mismatch`, `http_401`, `http_403`, `http_422`, `http_429`, `http_529`, `http_error`, `request_failed`. Validation codes mean the workflow built a bad request and must be fixed, not hidden: `invalid_data`, `invalid_request`, `invalid_options`. Catch only the operational codes by name; re-throw everything else so validation bugs surface and a parent cancellation propagates instead of becoming a fallback.
+- Failures throw an error whose `message` is `evaluation: <code>` and whose `.code` names the cause. Operational codes mean Jev could not be used this run and the workflow should take its baseline path (usually the agent you hoped to skip): `disabled`, `missing_key`, `network_budget`, `deadline`, `request_cap`, `transfer_budget`, `call_cap`, `model_mismatch`, `http_401`, `http_403`, `http_422`, `http_429`, `http_529`, `http_error`, `request_failed`. Validation codes mean the workflow built a bad request and must be fixed, not hidden: `invalid_data`, `invalid_request`, `invalid_options`. Catch only the operational codes by name; re-throw everything else so validation bugs surface and a parent cancellation propagates instead of becoming a fallback. When several calls are in flight, settle them all (`Promise.allSettled`) before deciding, and fall back only for the items whose call failed; `Promise.all` would abandon the other calls mid-flight and re-do their items with agents.
 - Per-run guards: 256 `evaluate()` calls, 1024 HTTP requests, 16 MiB sent, 30 s per call, 4 requests in flight. Usage is reported separately from agent tokens as `evaluationUsage` in foreground `run --json`; it is not counted by `budget.*`.
 
 Cascade pattern — screen cheaply, spend agents only where Jev is not confident:
@@ -229,24 +229,24 @@ const CHUNK = 8                                             // keep each state w
 const chunks = Array.from({ length: Math.ceil(findings.length / CHUNK) }, (_, c) => findings.slice(c * CHUNK, (c + 1) * CHUNK))
 
 phase('Screen')
-let uncertain = findings                                    // baseline: every finding gets an agent
-try {
-  const screened = await Promise.all(chunks.map((chunk, c) => evaluate({
-    state: { findings: chunk.map(f => ({ claim: f.desc, evidence: f.snippet })) },     // exact snippets, not files
-    questions: Object.fromEntries(chunk.map((_, i) => [`f${i}`, {
-      type: 'choice',
-      instructions: `Does \`findings[${i}].evidence\` establish \`findings[${i}].claim\`? Judge only the supplied text.`,
-      criteria: { supported: 'The evidence shows the claim is true.', contradicted: 'The evidence shows the claim is false.', unknown: 'The evidence is insufficient to decide.' },
-    }])),
-  }, { key: `screen:${c}` })))
-  uncertain = chunks.flatMap((chunk, c) => chunk.filter((_, i) => {
-    const a = screened[c].answers[`f${i}`]
+const settled = await Promise.allSettled(chunks.map((chunk, c) => evaluate({
+  state: { findings: chunk.map(f => ({ claim: f.desc, evidence: f.snippet })) },     // exact snippets, not files
+  questions: Object.fromEntries(chunk.map((_, i) => [`f${i}`, {
+    type: 'choice',
+    instructions: `Does \`findings[${i}].evidence\` establish \`findings[${i}].claim\`? Judge only the supplied text.`,
+    criteria: { supported: 'The evidence shows the claim is true.', contradicted: 'The evidence shows the claim is false.', unknown: 'The evidence is insufficient to decide.' },
+  }])),
+}, { key: `screen:${c}` })))
+const fatal = settled.find(r => r.status === 'rejected' && !JEV_UNAVAILABLE.has(r.reason?.code))
+if (fatal) throw fatal.reason                                       // validation bugs and cancellation propagate
+const uncertain = chunks.flatMap((chunk, c) => {
+  const r = settled[c]
+  if (r.status === 'rejected') { log(`Jev unavailable for chunk ${c} (${r.reason.code}); verifying it with agents`); return chunk }   // baseline for this chunk only
+  return chunk.filter((_, i) => {
+    const a = r.value.answers[`f${i}`]
     return a.choice !== 'supported' || a.confidence < 0.9                // placeholder threshold: tune against your own data
-  }))
-} catch (err) {
-  if (!JEV_UNAVAILABLE.has(err?.code)) throw err                    // validation bugs and cancellation propagate
-  log(`Jev unavailable (${err.code}); verifying every finding with agents`)
-}
+  })
+})
 
 phase('Verify')
 const verified = (await parallel(uncertain.map(f => () =>

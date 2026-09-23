@@ -13,6 +13,8 @@ import { expectedLogPath, isValidRunId, loadRunStatus, type RunStatusSnapshot } 
 import { WorkflowError } from "./runtime/primitives.js"
 import { startViewer } from "./server/serve.js"
 import { AgentError, AgentInterrupted } from "./worker/index.js"
+import { proveClaudeIsolation } from "./worker/claude-preflight.js"
+import { proveGrokIsolation } from "./worker/grok-preflight.js"
 import { DEFAULTS, PROVIDER_IDS, type Effort, type Sandbox } from "./dsl/types.js"
 import { postOtlpTraces, projectRunToOtlp } from "./otel/export.js"
 
@@ -185,6 +187,22 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       return cmdSave(flags)
     case "validate":
       return cmdValidate(flags)
+    case "claude-preflight": {
+      const config = str(flags.config), profile = str(flags["profile-id"])
+      if (!config || !profile) throw new UsageError("claude-preflight requires --config and --profile-id")
+      const receipt = await proveClaudeIsolation(config, profile)
+      console.log(JSON.stringify(receipt))
+      if (!receipt.passed) process.exitCode = 1
+      return
+    }
+    case "grok-preflight": {
+      const config = str(flags.config)
+      if (!config) throw new UsageError("grok-preflight requires --config")
+      const receipt = await proveGrokIsolation(config)
+      console.log(JSON.stringify(receipt))
+      if (!receipt.passed) process.exitCode = 1
+      return
+    }
     case "capabilities":
       return cmdCapabilities(flags)
     case "doctor":
@@ -206,10 +224,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 
 /** Static integration contract: no provider process, auth, or model call. */
 function cmdCapabilities(flags: Flags): void {
-  const capabilities = { schemaVersion: 1, codexPermissions: true, typesafeEvaluate: true, providers: PROVIDER_IDS }
+  const capabilities = { schemaVersion: 1, codexPermissions: true, claudeIsolation: true, grokIsolation: true, typesafeEvaluate: true, providers: PROVIDER_IDS }
   console.log(flags.json === true
     ? JSON.stringify(capabilities)
-    : `OmegaCode capabilities (schema 1): codexPermissions, typesafeEvaluate; providers: ${PROVIDER_IDS.join(", ")}`)
+    : `OmegaCode capabilities (schema 1): codexPermissions, claudeIsolation, grokIsolation, typesafeEvaluate; providers: ${PROVIDER_IDS.join(", ")}`)
 }
 
 async function cmdServe(flags: Flags): Promise<void> {

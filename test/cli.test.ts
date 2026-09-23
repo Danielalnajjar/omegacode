@@ -927,7 +927,7 @@ test("capabilities reports named-permission support without provider or auth pro
       encoding: "utf8",
       env: { ...process.env, OMEGACODE_HOME: join(home, "untouched"), CODEX_HOME: join(home, "no-codex-home"), OMEGACODE_CODEX_BIN: join(home, "no-codex-bin") },
     })
-    assert.deepEqual(JSON.parse(output), { schemaVersion: 1, codexPermissions: true, typesafeEvaluate: true, providers: [...PROVIDER_IDS] })
+    assert.deepEqual(JSON.parse(output), { schemaVersion: 1, codexPermissions: true, claudeIsolation: true, grokIsolation: true, typesafeEvaluate: true, providers: [...PROVIDER_IDS] })
     assert.equal(existsSync(join(home, "untouched")), false)
     assert.equal(existsSync(join(home, "no-codex-home")), false)
   } finally { rmSync(home, { recursive: true, force: true }) }

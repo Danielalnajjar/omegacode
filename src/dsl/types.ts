@@ -96,6 +96,8 @@ export interface AgentUsage {
   cacheReadInputTokens?: number
   /** Cache-creation input tokens, already included in inputTokens. Omitted when unreported. */
   cacheCreationInputTokens?: number
+  /** Reasoning tokens, already included in outputTokens. Omitted when unreported. */
+  reasoningOutputTokens?: number
 }
 
 export function emptyUsage(): AgentUsage {
@@ -105,12 +107,14 @@ export function emptyUsage(): AgentUsage {
 export function addUsage(a: AgentUsage, b: AgentUsage): AgentUsage {
   const cacheReadInputTokens = addOptional(a.cacheReadInputTokens, b.cacheReadInputTokens)
   const cacheCreationInputTokens = addOptional(a.cacheCreationInputTokens, b.cacheCreationInputTokens)
+  const reasoningOutputTokens = addOptional(a.reasoningOutputTokens, b.reasoningOutputTokens)
   return {
     inputTokens: a.inputTokens + b.inputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
     costUsd: a.costUsd + b.costUsd,
     ...(cacheReadInputTokens === undefined ? {} : { cacheReadInputTokens }),
     ...(cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens }),
+    ...(reasoningOutputTokens === undefined ? {} : { reasoningOutputTokens }),
   }
 }
 

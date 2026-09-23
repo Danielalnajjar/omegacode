@@ -11,6 +11,10 @@
 // be "never". Nested Grok subagents are disabled — OmegaCode owns orchestration.
 //
 // Verified against grok 0.2.112+ (prompt-file, streaming-json, sandbox profiles, resume, --agent).
+//
+// Benchmark isolation (OMEGACODE_GROK_ISOLATION_CONFIG) replaces the sandbox mapping: grok runs
+// under an outer Seatbelt profile with a constructed environment, --sandbox off (macOS refuses a
+// nested profile), and only the shell-backed tools. See grok-isolation.ts.
 
 import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -19,6 +23,7 @@ import { fileURLToPath } from "node:url"
 import { addUsage, emptyUsage, type AgentResult, type AgentSpec, type AgentUsage, type Effort, type Sandbox } from "../dsl/types.js"
 import type { Worker, WorkerContext, WorkerProgress } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
+import { GROK_EXTRACTION_TOOLS, isolatedGrokLaunch, isolatedGrokToolArgs, loadGrokIsolation, prepareGrokShellHome, type GrokIsolation } from "./grok-isolation.js"
 import { providerEnv } from "./provider-env.js"
 import { assertValidSchema, parseJsonLoose, parseValidJson } from "./schema.js"
 import {
@@ -31,7 +36,7 @@ import {
 } from "./subprocess-jsonl.js"
 
 const PROVIDER = "grok" as const
-const GROK_AGENT_PROFILE_PATH = fileURLToPath(
+export const GROK_AGENT_PROFILE_PATH = fileURLToPath(
   new URL("./agents/fleet-omegacode-grok-worker.md", import.meta.url),
 )
 
@@ -64,6 +69,8 @@ export interface GrokWorkerOpts {
   agentProfileIsFile?: (path: string) => boolean
   /** No-output stall watchdog (ms). 0 disables. */
   stallTimeoutMs?: number
+  /** Benchmark isolation config file; defaults to OMEGACODE_GROK_ISOLATION_CONFIG. */
+  isolationFile?: string
 }
 
 interface TurnOutcome {
@@ -72,12 +79,20 @@ interface TurnOutcome {
   sessionId?: string
 }
 
+interface Launch {
+  bin: string
+  prefix: string[]
+  env: NodeJS.ProcessEnv
+  isolation?: GrokIsolation
+}
+
 export class GrokWorker implements Worker {
   readonly id = PROVIDER
   private readonly bin: string
   private readonly spawnProcess?: SpawnProcess
   private readonly agentProfileIsFile: (path: string) => boolean
   private readonly stallTimeoutMs: number
+  private readonly isolationFile?: string
   private agentProfileChecked = false
   private versionCheck: Promise<void> | null = null
 
@@ -92,6 +107,7 @@ export class GrokWorker implements Worker {
       }
     })
     this.stallTimeoutMs = opts.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS
+    this.isolationFile = opts.isolationFile ?? process.env.OMEGACODE_GROK_ISOLATION_CONFIG
   }
 
   async runAgent(spec: AgentSpec, ctx: WorkerContext): Promise<AgentResult> {
@@ -118,9 +134,10 @@ export class GrokWorker implements Worker {
       })
     }
     this.ensureAgentProfile()
-    await this.ensureVersion()
+    const launch = this.launch(spec)
+    await this.ensureVersion(launch)
 
-    const working = await this.runTurn(spec, spec.prompt, ctx, { forwardProgress: true })
+    const working = await this.runTurn(spec, spec.prompt, ctx, launch, { forwardProgress: true })
     if (!spec.schema) return { text: working.text, status: "completed", usage: working.usage }
 
     const workingStructured = parseValidJson(working.text, spec.schema)
@@ -130,7 +147,7 @@ export class GrokWorker implements Worker {
 
     let extraction: TurnOutcome
     try {
-      extraction = await this.runTurn(spec, extractionPrompt(spec, working), ctx, {
+      extraction = await this.runTurn(spec, extractionPrompt(spec, working), ctx, launch, {
         forwardProgress: false,
         resume: working.sessionId,
         noTools: true,
@@ -165,9 +182,16 @@ export class GrokWorker implements Worker {
     // Spawn-per-call: nothing persistent to tear down.
   }
 
-  private ensureVersion(): Promise<void> {
+  private launch(spec: AgentSpec): Launch {
+    if (!this.isolationFile) return { bin: this.bin, prefix: [], env: this.env() }
+    const isolation = loadGrokIsolation(this.isolationFile, spec.cwd)
+    prepareGrokShellHome(isolation)
+    return { ...isolatedGrokLaunch(isolation, GROK_AGENT_PROFILE_PATH), isolation }
+  }
+
+  private ensureVersion(launch: Launch): Promise<void> {
     if (!this.versionCheck) {
-      this.versionCheck = this.checkVersion().catch((err: unknown) => {
+      this.versionCheck = this.checkVersion(launch).catch((err: unknown) => {
         this.versionCheck = null
         throw err
       })
@@ -188,12 +212,12 @@ export class GrokWorker implements Worker {
     this.agentProfileChecked = true
   }
 
-  private async checkVersion(): Promise<void> {
+  private async checkVersion(launch: Launch): Promise<void> {
     const out = await captureStdout({
       provider: PROVIDER,
-      bin: this.bin,
-      args: ["--version"],
-      env: this.env(),
+      bin: launch.bin,
+      args: [...launch.prefix, "--version"],
+      env: launch.env,
       spawnProcess: this.spawnProcess,
     })
     if (!versionAtLeast(out, GROK_MIN_VERSION)) {
@@ -210,8 +234,8 @@ export class GrokWorker implements Worker {
     return { ...providerEnv(), GROK_DISABLE_AUTOUPDATER: "1" }
   }
 
-  private baseArgs(spec: AgentSpec, opts: { resume?: string; noTools?: boolean }): string[] {
-    const sandbox = SANDBOX_TO_GROK[spec.sandbox]
+  private baseArgs(spec: AgentSpec, launch: Launch, opts: { resume?: string; noTools?: boolean }): string[] {
+    const sandbox = launch.isolation ? "off" : SANDBOX_TO_GROK[spec.sandbox]
     const args = [
       "--cwd",
       spec.cwd,
@@ -229,7 +253,9 @@ export class GrokWorker implements Worker {
     if (spec.effort) args.push("--reasoning-effort", EFFORT_TO_GROK[spec.effort])
     if (spec.instructions) args.push("--rules", spec.instructions)
     if (spec.maxTurns !== undefined) args.push("--max-turns", String(spec.maxTurns))
-    if (opts.noTools) args.push("--tools", "", "--deny", "MCPTool")
+    if (launch.isolation) args.push(...isolatedGrokToolArgs(opts.noTools === true))
+    // An empty --tools value means unrestricted, so the extraction turn names an inert allowlist.
+    if (opts.noTools) args.push(...(launch.isolation ? [] : ["--tools", GROK_EXTRACTION_TOOLS.join(",")]), "--deny", "MCPTool")
     // Headless Omega cannot answer Grok permission prompts. Plan mode waits
     // ~30s then cancels the turn. Keep the OS sandbox; never prompt.
     args.push("--always-approve")
@@ -240,12 +266,13 @@ export class GrokWorker implements Worker {
     spec: AgentSpec,
     prompt: string,
     ctx: WorkerContext,
+    launch: Launch,
     opts: { forwardProgress: boolean; resume?: string; noTools?: boolean },
   ): Promise<TurnOutcome> {
     const scratch = mkdtempSync(join(tmpdir(), "omegacode-grok-"))
     const promptPath = join(scratch, "prompt.txt")
     writeFileSync(promptPath, prompt, "utf8")
-    const args = [...this.baseArgs(spec, opts), "--prompt-file", promptPath]
+    const args = [...launch.prefix, ...this.baseArgs(spec, launch, opts), "--prompt-file", promptPath]
 
     let text = ""
     let usage = emptyUsage()
@@ -262,10 +289,10 @@ export class GrokWorker implements Worker {
     try {
       const exit = await runJsonlSubprocess({
         provider: PROVIDER,
-        bin: this.bin,
+        bin: launch.bin,
         args,
         cwd: spec.cwd,
-        env: this.env(),
+        env: launch.env,
         signal: ctx.signal,
         stallTimeoutMs: this.stallTimeoutMs,
         spawnProcess: this.spawnProcess,
@@ -303,7 +330,8 @@ export class GrokWorker implements Worker {
                 id: strOf(value.toolCallId),
                 name: strOf(value.toolName),
                 output: stringifyUnknown(value.rawOutput) ?? strOf(value.message),
-                isError: status !== "completed",
+                // Grok reports a failed shell command as a completed call with its exit code.
+                isError: status !== "completed" || nonZeroExit(value.rawOutput),
               })
               return
             }
@@ -446,6 +474,7 @@ function usageFromGrok(value: Record<string, unknown>): AgentUsage | undefined {
   if (!raw) return undefined
   const cacheRead = numOf(raw.cache_read_input_tokens)
   const cacheCreate = numOf(raw.cache_creation_input_tokens)
+  const reasoning = numOf(raw.reasoning_tokens)
   const input = (numOf(raw.input_tokens) ?? 0) + (cacheRead ?? 0) + (cacheCreate ?? 0)
   // Grok reports reasoning_tokens as a subset of output_tokens.
   const output = numOf(raw.output_tokens) ?? 0
@@ -456,7 +485,12 @@ function usageFromGrok(value: Record<string, unknown>): AgentUsage | undefined {
     costUsd: cost,
     ...(cacheRead === undefined ? {} : { cacheReadInputTokens: cacheRead }),
     ...(cacheCreate === undefined ? {} : { cacheCreationInputTokens: cacheCreate }),
+    ...(reasoning === undefined ? {} : { reasoningOutputTokens: reasoning }),
   }
+}
+
+function nonZeroExit(raw: unknown): boolean {
+  return isObject(raw) && typeof raw.exit_code === "number" && raw.exit_code !== 0
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {

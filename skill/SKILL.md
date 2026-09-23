@@ -49,6 +49,7 @@ Script body hooks:
 - args: any — the value passed via `--args '<json>'` / `--args-file <f>`, verbatim (undefined if not provided). Use this to parameterize a workflow — e.g. pass a research question, target path, or config object.
 - budget: {total: number|null, spent(): number, remaining(): number} — the run's output-token target, set with `--budget N`. `budget.total` is null if no target was set. `budget.spent()` returns output tokens spent this run. `budget.remaining()` returns `max(0, total - spent())`, or `Infinity` if no target. The target is a HARD ceiling, not advisory: once `spent()` reaches `total`, further `agent()` calls throw. Use for dynamic loops: `while (budget.total && budget.remaining() > 50_000) { ... }`, or static scaling: `const FLEET = budget.total ? Math.floor(budget.total / 100_000) : 5`.
 - now(): number / random(): number — journal-seeded deterministic time/RNG. Use these instead of `Date.now()`/`Math.random()` (which throw — see below).
+- evaluate(request: {state: string | object | array, questions: Record<string, Question>, model?: string}, opts?: {label?: string, key?: string}): Promise<{model: string, answers: Record<string, Answer>, usage: {input_tokens: number, output_tokens: number}}> — ask TypeSafe's Jev model fast, typed questions about supplied text. No agent is spawned; the host makes the HTTP call. Off unless the run passes `--typesafe` (throws `evaluation: disabled` otherwise; `--fake` cannot evaluate). See the Jev evaluations section for question types, limits, and the cascade pattern.
 
 Agents are told their final text IS the return value (not a human-facing message), so they return raw data. For structured output, use the schema option — validation happens at the worker layer and the agent retries once on a mismatch.
 
@@ -198,6 +199,52 @@ These patterns aren't exhaustive — compose novel harnesses when the task calls
 
 Use a workflow for multi-step orchestration where control flow should be deterministic (loops, conditionals, fan-out) rather than model-driven.
 
+## Jev evaluations (evaluate)
+
+`evaluate()` calls TypeSafe's Jev, a System One model: it reads text and returns typed answers with probabilities in ~100 ms, at a small fraction of one agent turn. It does not write code, reply, or reason. Code owns the workflow; Jev supplies narrow semantic judgments. Use it to decide cheaply *which* items deserve an agent, what context an agent should see, or whether an agent's output is safe to act on — not to replace the agent.
+
+`questions` is a record of id → question. Ids are for your code and are not sent to the model, so put the complete meaning in `instructions` and reference state by path (e.g. `state.findings[0].evidence`). `state` is a string, object, or array of text; prefer named fields.
+- `{type: 'noul', instructions, criteria?: {true?, false?}}` → `{noul}`: probability that a condition holds. Use one per label when several may apply; 0.5 means undecided, not medium.
+- `{type: 'choice', instructions, criteria: {option: description}}` → `{choice, probabilities, confidence}`: one of a defined set. Include a no-match option (`unknown`, `none`) when nothing may fit — the model cannot pick an omitted value.
+- `{type: 'score', instructions, criteria: [level0, level1, …]}` (2–10 levels) → `{score, legend, probabilities, confidence}`: degree along an ordered dimension; each level must describe a concrete situation.
+
+Rules:
+- Text only, small state. Each HTTP request is capped at 24 KiB and 32 questions. Larger question sets are split automatically with the state repeated per request; a single question plus its state must fit or the call throws `evaluation: network_budget`. There is no silent clipping — prepare exact snippets in code, never whole files.
+- Ask every independent question about the same state in ONE call, speculative ones included. Questions run in parallel and cannot see each other's answers. Make a second call only when an answer decides what evidence to build next.
+- Confidence gates action; code owns the thresholds. Act on high confidence, flag or confirm at medium, fall back to an agent or a person at low. Pick thresholds per consequence, not one number. Confidence is distribution concentration, not correctness.
+- `model` defaults to `jev-latest`. Pin a versioned id (e.g. `jev-1.13.0`) when answers must stay comparable across runs; a pinned model that the service resolves differently fails with `model_mismatch` rather than mixing revisions.
+- Permission is per run: fresh runs are OFF even when the host has `TYPESAFE_API_KEY`; pass `--typesafe` to enable. `--fake` cannot evaluate. Resume inherits the recorded permission when the flag is omitted and rejects an explicit contradiction. Only the host reads the key — workers and workflow code never see it; never put credentials in state, args, logs, or return values.
+- Replay: the exact request (state, questions, model) plus `opts.key` binds the recorded answer on `--resume`, like `agent()` results. Changing `opts.label` alone does not re-evaluate. Use a fresh run for a new trial.
+- Failures throw an error whose `message` is `evaluation: <code>` and whose `.code` is one of `disabled`, `missing_key`, `invalid_data`, `invalid_request`, `network_budget`, `deadline`, `request_cap`, `transfer_budget`, `call_cap`, `model_mismatch`, `http_401`, `http_403`, `http_422`, `http_429`, `http_529`, `http_error`, `request_failed`. Catch those and take the baseline path (usually the agent you hoped to skip). Re-throw anything else: a parent cancellation must propagate, never become a fallback.
+- Per-run guards: 256 `evaluate()` calls, 1024 HTTP requests, 16 MiB sent, 30 s per call, 4 requests in flight. Usage is reported separately from agent tokens as `evaluationUsage` in foreground `run --json`; it is not counted by `budget.*`.
+
+Cascade pattern — screen cheaply, spend agents only where Jev is not confident:
+
+```js
+phase('Screen')
+let uncertain = findings                                    // baseline: every finding gets an agent
+try {
+  const { answers } = await evaluate({
+    state: { findings: findings.map(f => ({ claim: f.desc, evidence: f.snippet })) },   // exact snippets, not files
+    questions: Object.fromEntries(findings.map((_, i) => [`f${i}`, {
+      type: 'choice',
+      instructions: `Does state.findings[${i}].evidence establish state.findings[${i}].claim? Judge only the supplied text.`,
+      criteria: { supported: 'The evidence shows the claim is true.', contradicted: 'The evidence shows the claim is false.', unknown: 'The evidence is insufficient to decide.' },
+    }])),
+  }, { key: 'screen' })
+  uncertain = findings.filter((_, i) => answers[`f${i}`].choice !== 'supported' || answers[`f${i}`].confidence < 0.9)
+} catch (err) {
+  if (!String(err?.message).startsWith('evaluation: ')) throw err       // cancellation and programmer errors propagate
+  log(`Jev unavailable (${err.code}); verifying every finding with agents`)
+}
+
+phase('Verify')
+const verified = (await parallel(uncertain.map(f => () =>
+  agent(`Try to REFUTE that ${f.desc} is a bug; default to refuted if unsure.`, { schema: VERDICT })))).filter(Boolean)
+```
+
+The same shape covers the other cheap decisions: rank retrieved snippets with one Score per snippet and pass only the top ones to an agent; ask a few Nouls about an agent's output against the task before a mutating step and stop at low confidence; classify thousands of log lines or traces in a handful of calls and hand agents only the interesting bucket.
+
 ## Resume
 
 Every run has a runId (printed on completion). To resume after a script edit or interruption, re-run with `--resume <runId>` — the longest unchanged prefix of agent() calls returns cached results instantly; the first edited/new call and everything after it runs live. Same file + same args → 100% cache hit. `Date.now()`/`Math.random()`/`new Date()` are unavailable in scripts (they would break this) — use `now()`/`random()`, or pass timestamps via `args`. Pin a call with `opts.key` to keep its cached result across reorders/edits.
@@ -213,7 +260,7 @@ omegacode run <file.workflow.js | name> [--args '<json>' | --args-file <f>]
                                        [--codex-thread-start-concurrency <N>]
                                        [--codex-app-server-socket <path>]
                                        [--codex-no-app-server-proxy]
-                                       [--resume <runId>] [--fake] [--json] [--detach] [--open]
+                                       [--resume <runId>] [--fake] [--typesafe] [--json] [--detach] [--open]
 omegacode status <runId> [--json]             Read native status from events.jsonl + heartbeat
 omegacode wait <runId> [--json] [--poll-ms N] [--timeout-ms N] [--stale-debounce-ms N]   Wait for terminal native status
 omegacode serve [--port 4123] [--host h]      Live read-only web viewer of all runs
@@ -225,7 +272,7 @@ omegacode doctor                              Check provider availability, versi
 omegacode install-skill [--claude] [--agents] Install this skill into agent skill dirs
 ```
 
-`--fake` runs with a fake worker (no real agents) for a fast smoke test. Foreground `run --json` prints terminal `{runId, status, url, result, error}` JSON after completion. `run --detach --json` prints launch JSON immediately (`runId`, `runDir`, `logPath`, `url`, `statusCommand`, `waitCommand`); use `omegacode wait <runId> --json` for terminal detached JSON and `omegacode status <runId> --json` for native lifecycle state. The viewer (`serve` / `run --open`, and auto-started by `run`) reads `~/.omegacode/runs` and shows a run list, a live phase/agent tree, and a per-agent chat-feed drilldown; it streams via SSE and never executes anything.
+`--fake` runs with a fake worker (no real agents) for a fast smoke test. `--typesafe` allows `evaluate()` calls (see Jev evaluations); without it every `evaluate()` throws `evaluation: disabled`, and `--fake` never evaluates. Foreground `run --json` prints terminal `{runId, status, url, result, error}` JSON after completion. `run --detach --json` prints launch JSON immediately (`runId`, `runDir`, `logPath`, `url`, `statusCommand`, `waitCommand`); use `omegacode wait <runId> --json` for terminal detached JSON and `omegacode status <runId> --json` for native lifecycle state. The viewer (`serve` / `run --open`, and auto-started by `run`) reads `~/.omegacode/runs` and shows a run list, a live phase/agent tree, and a per-agent chat-feed drilldown; it streams via SSE and never executes anything.
 
 For high-fanout Codex runs, OmegaCode starts a fresh lean app-server per OmegaCode run by default. This keeps simultaneous runs in different worktrees isolated. CodeDB, plugins, apps, and native multi-agent capability remain enabled. Before launch, OmegaCode inventories the active Codex configuration and disables only configured, enabled stdio instances of selected user-local MCPs that are unnecessary for worker fanout (`onepassword`, `node_repl`, `paos-recall-mcp`). An absent, disabled, or HTTP server is left alone. If inventory cannot be read safely, launch fails before the app-server starts; use `--codex-enable-local-mcps` or `OMEGACODE_CODEX_DISABLE_LOCAL_MCPS=0` only when a workflow genuinely needs the selected local MCPs inside worker agents. Thread creation is separately gated at 16 concurrent starts by default, so `--concurrency 100` can still sustain 100 model turns without a 100-thread initialization stampede; tune only with `--codex-thread-start-concurrency <N>`. Use `--codex-app-server-socket <path>` or `OMEGACODE_CODEX_APP_SERVER_SOCKET=<path>` only when intentionally sharing an existing app-server daemon across runs; `--codex-no-app-server-proxy` or `OMEGACODE_CODEX_NO_APP_SERVER_PROXY=1` forces a fresh stdio app-server even when env selects a proxy socket.
 

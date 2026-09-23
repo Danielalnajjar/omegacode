@@ -896,7 +896,7 @@ function printHelp(): void {
   console.log(`omegacode — run JS workflow files that orchestrate coding agents
 
 A workflow is a .js file: \`export const meta = {...}\` then a body using the injected
-DSL — agent() / parallel() / pipeline() / phase() / log() / now() / random() / budget / args.
+DSL — agent() / parallel() / pipeline() / evaluate() / phase() / log() / now() / random() / budget / args.
 Each agent() spawns a real provider agent; choose the provider per call or inherit the run default.
 
 Usage:
@@ -915,7 +915,7 @@ Usage:
       --resume <runId>                     replay unchanged prefix, re-run the rest
       --fake                               run with a fake worker (no real agents)
       --typesafe                           allow host-only Jev evaluations (disabled under --fake)
-      --json                               print {runId,status,url,result,error} as JSON (viewer still starts)
+      --json                               print {runId,status,url,result,error,evaluationUsage} as JSON (viewer still starts)
       --detach                             launch in the background; with --json print immediate launch JSON
       --start-json                         print {"type":"run.started",runId,runDir,url} on stderr at launch
       --open                               also open the browser to this run

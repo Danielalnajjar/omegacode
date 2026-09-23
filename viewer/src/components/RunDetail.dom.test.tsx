@@ -56,7 +56,7 @@ describe("Claude profile display", () => {
       index: 0,
       state: "running",
       provider: "claude-code",
-      model: "claude-opus-5",
+      model: "opus",
       claudeProfileLabel: "Work Max",
     })]))
     expect(screen.getByText(/Work Max/)).toBeTruthy()

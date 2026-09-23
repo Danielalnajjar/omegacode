@@ -81,18 +81,18 @@ test("provider-native options each invalidate the cache key", () => {
 
 test("codex execution profiles invalidate keys without changing unprofiled journal hashes", () => {
   const b = branchKey(ROOT_KEY, "root", 0)
-  const unprofiled = keyedSpec({ provider: "codex", model: "gpt-5.6-sol" }, undefined)
+  const unprofiled = keyedSpec({ provider: "codex", model: "codex-model-1" }, undefined)
   const explicitlyUnprofiled = keyedSpec({
     provider: "codex",
-    model: "gpt-5.6-sol",
+    model: "codex-model-1",
     codexExecutionProfile: undefined,
   }, undefined)
   const profiled = keyedSpec({
     provider: "codex",
-    model: "gpt-5.6-sol",
+    model: "codex-model-1",
     codexExecutionProfile: "workflow-plan-v1",
   }, undefined)
-  const golden = "a9e6957b93f465f36680b65b2718dc4e482c2144d8d86f269b5ad74b77bd1805"
+  const golden = "4348dec1525e28fc8d4aba38b952f51f5dfba753f48a7e655a30f20d145e3a25"
 
   assert.equal(chainKey(b, 0, "p", unprofiled), golden)
   assert.equal(chainKey(b, 0, "p", explicitlyUnprofiled), golden)
@@ -212,9 +212,9 @@ test("determinismLint handles escaped quotes inside strings", () => {
 
 test("named permissions preserve absent-option keys and distinguish profiles", () => {
   const b = branchKey(ROOT_KEY, "root", 0)
-  const base = { provider: "codex", model: "gpt-5.6-sol" }
+  const base = { provider: "codex", model: "codex-model-1" }
   const key = (permissions?: string) => chainKey(b, 0, "p", keyedSpec({ ...base, codexPermissions: permissions }, undefined))
-  assert.equal(key(), "a9e6957b93f465f36680b65b2718dc4e482c2144d8d86f269b5ad74b77bd1805")
+  assert.equal(key(), "4348dec1525e28fc8d4aba38b952f51f5dfba753f48a7e655a30f20d145e3a25")
   assert.notEqual(key("research"), key())
   assert.notEqual(key("research"), key("writer"))
 })

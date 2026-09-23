@@ -164,6 +164,7 @@ function portFlag(flags: Flags): number {
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const flags = parseArgs(argv)
   const cmd = (flags._ as string[])[0]
+  if (flags.help === true) return printHelp()
 
   switch (cmd) {
     case "run":
@@ -402,7 +403,8 @@ function dirSize(dir: string): number {
 async function cmdRun(flags: Flags): Promise<void> {
   const file = (flags._ as string[])[1]
   if (!file) {
-    console.error("usage: omegacode run <file.workflow.js | name> [--args <json>] [--provider codex|claude-code|opencode|pi|grok|muse] [--fake] [--json] [--start-json]")
+    console.error("omegacode run: missing workflow file or name")
+    printHelp()
     process.exitCode = 1
     return
   }
@@ -415,6 +417,10 @@ async function cmdRun(flags: Flags): Promise<void> {
   if (provider) overrides.provider = provider
   const model = str(flags.model)
   if (model) overrides.model = model
+  if ((overrides.provider === undefined) !== (overrides.model === undefined)) {
+    const given = overrides.provider !== undefined ? `--provider ${overrides.provider} was given without --model` : `--model ${overrides.model} was given without --provider`
+    throw new UsageError(`${given}; set --provider and --model together, or omit both to use the workflow defaults. Run \`omegacode run --help\` for all flags.`)
+  }
   const effort = enumFlag(flags, "effort", EFFORTS)
   if (effort) overrides.effort = effort
   const sandbox = enumFlag(flags, "sandbox", SANDBOXES)

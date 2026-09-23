@@ -277,7 +277,8 @@ test("schema-invalid main-turn JSON falls through to extraction and preserves th
     invalidMain,
     (p, call) => {
       assert.equal(flagAfter(call.args, "--resume"), "ses_1")
-      assert.equal(flagAfter(call.args, "--tools"), "")
+      assert.equal(flagAfter(call.args, "--tools"), "todo_write")
+      assert.equal(call.args.filter(arg => arg === "--tools").length, 1)
       assert.equal(flagAfter(call.args, "--deny"), "MCPTool")
       assert.ok(!call.args.includes("--json-schema"))
       const promptPath = flagAfter(call.args, "--prompt-file")

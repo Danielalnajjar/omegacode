@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url"
 import { addUsage, emptyUsage, type AgentResult, type AgentSpec, type AgentUsage, type Effort, type Sandbox } from "../dsl/types.js"
 import type { Worker, WorkerContext, WorkerProgress } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
-import { isolatedGrokLaunch, isolatedGrokToolArgs, loadGrokIsolation, prepareGrokShellHome, type GrokIsolation } from "./grok-isolation.js"
+import { GROK_EXTRACTION_TOOLS, isolatedGrokLaunch, isolatedGrokToolArgs, loadGrokIsolation, prepareGrokShellHome, type GrokIsolation } from "./grok-isolation.js"
 import { providerEnv } from "./provider-env.js"
 import { assertValidSchema, parseJsonLoose, parseValidJson } from "./schema.js"
 import {
@@ -254,7 +254,8 @@ export class GrokWorker implements Worker {
     if (spec.instructions) args.push("--rules", spec.instructions)
     if (spec.maxTurns !== undefined) args.push("--max-turns", String(spec.maxTurns))
     if (launch.isolation) args.push(...isolatedGrokToolArgs(opts.noTools === true))
-    if (opts.noTools) args.push(...(launch.isolation ? [] : ["--tools", ""]), "--deny", "MCPTool")
+    // An empty --tools value means unrestricted, so the extraction turn names an inert allowlist.
+    if (opts.noTools) args.push(...(launch.isolation ? [] : ["--tools", GROK_EXTRACTION_TOOLS.join(",")]), "--deny", "MCPTool")
     // Headless Omega cannot answer Grok permission prompts. Plan mode waits
     // ~30s then cancels the turn. Keep the OS sandbox; never prompt.
     args.push("--always-approve")

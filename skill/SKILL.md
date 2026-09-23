@@ -201,17 +201,19 @@ Use a workflow for multi-step orchestration where control flow should be determi
 
 ## Jev evaluations (evaluate)
 
-`evaluate()` calls TypeSafe's Jev, a System One model: it reads text and returns typed answers with probabilities in ~100 ms, at a small fraction of one agent turn. It does not write code, reply, or reason. Code owns the workflow; Jev supplies narrow semantic judgments. Use it to decide cheaply *which* items deserve an agent, what context an agent should see, or whether an agent's output is safe to act on — not to replace the agent.
+`evaluate()` calls TypeSafe's Jev, a System One model: it reads text and returns typed answers with probabilities in ~100 ms, at a small fraction of one agent turn. It does not write code, reply, or reason. Code owns the workflow; Jev supplies the narrow semantic judgments code cannot make. When the evidence is already in hand and the answer is a label or a number, use it instead of an `agent()` call. Keep agents for anything that needs retrieval, tool use, or generation: deciding whether a finding is a real bug usually means reading callers, checking contracts, or running a test, so that stays with an agent, while whether the *supplied* snippet supports the finding's claim is a Jev question, and Jev answers `unknown` when the context is missing. Typical uses: decide which items deserve an agent, which context an agent should see, or whether an agent's output is safe to act on.
 
-`questions` is a record of id → question. Ids are for your code and are not sent to the model, so put the complete meaning in `instructions` and reference state by path (e.g. `state.findings[0].evidence`). `state` is a string, object, or array of text; prefer named fields.
+`questions` is a record of id → question. Ids are for your code and are not sent to the model, so put the complete meaning in `instructions`. `state` is a string, object, or array of text; prefer an object with named fields and include only what the current questions need. Point a question at part of the state with a backticked dot-and-index path relative to the state root, written exactly as `` Does `findings[0].evidence` establish `findings[0].claim`? `` — no `state.` prefix, backticks included. `instructions` and `criteria` values may be strings, objects, or arrays: keep the question in one field and put context, examples, or values that come from code in named fields beside it instead of splicing them into a string.
 - `{type: 'noul', instructions, criteria?: {true?, false?}}` → `{noul}`: probability that a condition holds. Use one per label when several may apply; 0.5 means undecided, not medium.
 - `{type: 'choice', instructions, criteria: {option: description}}` → `{choice, probabilities, confidence}`: one of a defined set. Include a no-match option (`unknown`, `none`) when nothing may fit — the model cannot pick an omitted value.
 - `{type: 'score', instructions, criteria: [level0, level1, …]}` (2–10 levels) → `{score, legend, probabilities, confidence}`: degree along an ordered dimension; each level must describe a concrete situation.
 
 Rules:
-- Text only, small state. Each HTTP request is capped at 24 KiB and 32 questions. Larger question sets are split automatically with the state repeated per request; a single question plus its state must fit or the call throws `evaluation: network_budget`. There is no silent clipping — prepare exact snippets in code, never whole files.
+- Ask the most explicit, narrow, atomic question you can — a judgment a knowledgeable person makes in a second given the right context. Split a broad judgment ("is this a real bug?") into one question per property (is the trigger present in the evidence, does the caller contract forbid it, does a supplied test assert the opposite) and combine the answers in code. Broad questions hide several judgments behind one answer; atomic ones can be inspected, tuned, and reused.
+- Text only, small state. Each HTTP request is capped at 24 KiB and 32 questions. Larger question sets split automatically with the state repeated per request, but the state itself is never split: one question plus the whole state must fit or the call throws `evaluation: network_budget`. There is no silent clipping. Prepare exact snippets in code, never whole files, and when judging many items chunk them into several `evaluate()` calls issued together with `Promise.all`, each carrying only its own chunk.
 - Ask every independent question about the same state in ONE call, speculative ones included. Questions run in parallel and cannot see each other's answers. Make a second call only when an answer decides what evidence to build next.
-- Confidence gates action; code owns the thresholds. Act on high confidence, flag or confirm at medium, fall back to an agent or a person at low. Pick thresholds per consequence, not one number. Confidence is distribution concentration, not correctness.
+- Confidence gates action; code owns the thresholds. Act on high confidence, flag or confirm at medium, fall back to an agent or a person at low. Pick thresholds per consequence, not one number; start high and lower them as you see how the model does on your own data. Confidence is distribution concentration, not correctness.
+- Keep the raw answers and apply thresholds or weights in code. On `--resume` the recorded answers replay, so changing a threshold re-runs nothing.
 - `model` defaults to `jev-latest`. Pin a versioned id (e.g. `jev-1.13.0`) when answers must stay comparable across runs; a pinned model that the service resolves differently fails with `model_mismatch` rather than mixing revisions.
 - Permission is per run: fresh runs are OFF even when the host has `TYPESAFE_API_KEY`; pass `--typesafe` to enable. `--fake` cannot evaluate. Resume inherits the recorded permission when the flag is omitted and rejects an explicit contradiction. Only the host reads the key; workflow code never sees it, and OmegaCode strips it from the environments of the SDK and the workers it spawns. The one exception is a Codex app-server it did not start: with `--codex-app-server-socket` / `OMEGACODE_CODEX_APP_SERVER_SOCKET` the daemon's environment cannot be sanitized, so its owner must start it without `TYPESAFE_API_KEY`. Never put credentials in state, args, logs, or return values.
 - Replay: the exact request (state, questions, model) plus `opts.key` binds the recorded answer on `--resume`, like `agent()` results. Changing `opts.label` alone does not re-evaluate. Use a fresh run for a new trial.
@@ -223,19 +225,24 @@ Cascade pattern — screen cheaply, spend agents only where Jev is not confident
 ```js
 const JEV_UNAVAILABLE = new Set(['disabled', 'missing_key', 'network_budget', 'deadline', 'request_cap', 'transfer_budget',
   'call_cap', 'model_mismatch', 'http_401', 'http_403', 'http_422', 'http_429', 'http_529', 'http_error', 'request_failed'])
+const CHUNK = 8                                             // keep each state well under the 24 KiB cap; size to your snippets
+const chunks = Array.from({ length: Math.ceil(findings.length / CHUNK) }, (_, c) => findings.slice(c * CHUNK, (c + 1) * CHUNK))
 
 phase('Screen')
 let uncertain = findings                                    // baseline: every finding gets an agent
 try {
-  const { answers } = await evaluate({
-    state: { findings: findings.map(f => ({ claim: f.desc, evidence: f.snippet })) },   // exact snippets, not files
-    questions: Object.fromEntries(findings.map((_, i) => [`f${i}`, {
+  const screened = await Promise.all(chunks.map((chunk, c) => evaluate({
+    state: { findings: chunk.map(f => ({ claim: f.desc, evidence: f.snippet })) },     // exact snippets, not files
+    questions: Object.fromEntries(chunk.map((_, i) => [`f${i}`, {
       type: 'choice',
-      instructions: `Does state.findings[${i}].evidence establish state.findings[${i}].claim? Judge only the supplied text.`,
+      instructions: `Does \`findings[${i}].evidence\` establish \`findings[${i}].claim\`? Judge only the supplied text.`,
       criteria: { supported: 'The evidence shows the claim is true.', contradicted: 'The evidence shows the claim is false.', unknown: 'The evidence is insufficient to decide.' },
     }])),
-  }, { key: 'screen' })
-  uncertain = findings.filter((_, i) => answers[`f${i}`].choice !== 'supported' || answers[`f${i}`].confidence < 0.9)
+  }, { key: `screen:${c}` })))
+  uncertain = chunks.flatMap((chunk, c) => chunk.filter((_, i) => {
+    const a = screened[c].answers[`f${i}`]
+    return a.choice !== 'supported' || a.confidence < 0.9                // placeholder threshold: tune against your own data
+  }))
 } catch (err) {
   if (!JEV_UNAVAILABLE.has(err?.code)) throw err                    // validation bugs and cancellation propagate
   log(`Jev unavailable (${err.code}); verifying every finding with agents`)
@@ -246,7 +253,7 @@ const verified = (await parallel(uncertain.map(f => () =>
   agent(`Try to REFUTE that ${f.desc} is a bug; default to refuted if unsure.`, { schema: VERDICT })))).filter(Boolean)
 ```
 
-The same shape covers the other cheap decisions: rank retrieved snippets with one Score per snippet and pass only the top ones to an agent; ask a few Nouls about an agent's output against the task before a mutating step and stop at low confidence; classify thousands of log lines or traces in a handful of calls and hand agents only the interesting bucket.
+The same shape covers the other cheap decisions: pick which specialist prompt or agent handles an item with one Choice; rank retrieved snippets with one Score per snippet and pass only the top ones to an agent; have code find candidate values or spans and let a Choice select the intended one instead of asking an agent to generate it; ask a few Nouls about an agent's output against the task before a mutating step and stop at low confidence; classify thousands of log lines or traces in a handful of calls and hand agents only the interesting bucket.
 
 ## Resume
 

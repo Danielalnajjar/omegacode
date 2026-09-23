@@ -71,6 +71,14 @@ The six providers:
 
 codex, claude-code, and grok honor every `sandbox` mode (read-only by default); **opencode and pi are full-access-only** — every call on them needs an explicit `sandbox: "danger-full-access"` (per call or via `--sandbox`), a deliberate fail-closed choice because neither CLI can honestly enforce confinement. All providers honor `cwd`; `worktree: true` isolates parallel file edits regardless of provider. Outdated opencode/pi/grok/muse binaries are refused at runtime (`provider_outdated`); `omegacode doctor` flags them up front.
 
+**Dynamic Opus** covers Opus work launched by a Fable lead inside BB when the owner has not named a subscription, or by any lead when the owner says dynamic Opus.
+
+For a direct OmegaCode workflow, run `bb subscription resolve-omega --auto --job opus --json` while authoring, before writing the Opus calls, and write the returned `.profileId` as the `claudeProfile` value on every Claude Opus `agent()` call, as for a named account. If the run defaults are Claude Opus, `agent(prompt, { claudeProfile: "<profileId>" })` is enough; otherwise set `provider: "claude-code"` and an Opus `model` together on each call. Do not pass the id through `--args` or `--args-file`: run args are journaled verbatim, while `claudeProfile` is kept out of journals and transcripts. A `--resume` reruns the same file and keeps its pick; resolve again only when authoring a new workflow. `claudeProfile` binds the stable profile id to the direct Claude SDK call; never persist a label, email, or config path, and never substitute a BB ACP provider route. A subscription the owner names always wins.
+
+Exit 4 means route the work to Codex instead. Exit 3, or any other nonzero exit, means tell the owner "I can't check the subscriptions right now: <message>" and then route the work to Codex. Routing to Codex here means writing those calls without `provider: "claude-code"`, an Opus `model`, or `claudeProfile`. Never answer a picker failure by choosing a profile yourself with `--reference` or `--profile-id`.
+
+Governed Omega skills own their profile bindings and failure handling; follow those skills when launching their workflows rather than replacing their binding with this direct `agent()` recipe.
+
 The default case — omit provider, so fan-out and synthesis run on whatever provider the workflow was invoked with:
 ```js
 const findings = await parallel(AREAS.map(area => () =>

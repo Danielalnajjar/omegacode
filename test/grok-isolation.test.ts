@@ -33,11 +33,15 @@ test("loader requires canonical roots, HOME in scratch and a Grok home outside t
   symlinkSync(join(root, "workspace"), join(root, "workspace-link"))
   bad({ workspace: join(root, "workspace-link") }, /canonical/)
 })
-test("loader rejects read roots nested with workspace or scratch in either direction", { skip: process.platform !== "darwin" }, t => {
+test("loader rejects read roots and inputs nested with workspace or scratch in either direction", { skip: process.platform !== "darwin" }, t => {
   const { root, config, file } = fixture(t)
   for (const readRoot of [join(config.workspace, "deps"), join(config.scratch, "deps"), root]) {
     writeFileSync(file, JSON.stringify({ ...config, readRoots: [readRoot] }))
-    assert.throws(() => loadGrokIsolation(file), /Isolation readRoots must be separate from writable roots/)
+    assert.throws(() => loadGrokIsolation(file), /Isolation readRoots and inputs must be separate from writable roots/)
+  }
+  for (const inputs of [join(config.workspace, "inputs"), config.workspace]) {
+    writeFileSync(file, JSON.stringify({ ...config, inputs }))
+    assert.throws(() => loadGrokIsolation(file), /Isolation readRoots and inputs must be separate from writable roots/)
   }
 })
 

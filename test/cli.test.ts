@@ -445,13 +445,24 @@ describe("CLI end-to-end (--fake)", () => {
   })
 
   test("a lone --provider (or lone --model) is rejected — both-or-neither at the CLI site", async () => {
-    const p = await runCli(["run", wf, "--provider", "claude-code", "--fake", "--no-serve"], { OMEGACODE_HOME: home })
+    const p = await runCli(["run", wf, "--provider", "muse", "--fake", "--no-serve"], { OMEGACODE_HOME: home })
     assert.equal(p.code, 1)
-    assert.match(p.stderr, /provider "claude-code" without model — provider and model must be specified together/)
+    assert.match(p.stderr, /--provider muse was given without --model; set --provider and --model together, or omit both to use the workflow defaults\. Run `omegacode run --help` for all flags\./)
     assert.doesNotMatch(p.stderr, /at \w+ \(/) // user-facing, no stack frames
     const m = await runCli(["run", wf, "--model", "gpt-5.5", "--fake", "--no-serve"], { OMEGACODE_HOME: home })
     assert.equal(m.code, 1)
-    assert.match(m.stderr, /model "gpt-5.5" without provider — provider and model must be specified together/)
+    assert.match(m.stderr, /--model gpt-5\.5 was given without --provider; set --provider and --model together/)
+  })
+
+  test("run --help prints the full help, including every run flag, and does not run the workflow", async () => {
+    for (const argv of [["run", "--help"], ["run", wf, "--help", "--fake", "--no-serve"]]) {
+      const r = await runCli(argv, { OMEGACODE_HOME: home })
+      assert.equal(r.code, 0, `stderr=${r.stderr}`)
+      assert.ok(r.stdout.startsWith("omegacode — run JS workflow files"), r.stdout)
+      for (const flag of ["--args", "--args-file", "--provider", "--model", "--effort", "--sandbox", "--cwd", "--concurrency", "--budget", "--resume", "--fake", "--json", "--detach", "--start-json", "--open", "--no-serve"]) {
+        assert.match(r.stdout, new RegExp(`${flag}\\b`), `help is missing ${flag}`)
+      }
+    }
   })
 
   test("doctor resolves bins via env overrides and flags below-minimum versions as OUTDATED", { skip: process.platform === "win32" }, async () => {
@@ -893,10 +904,11 @@ describe("CLI misc commands", () => {
     assert.match(r.stderr, /Unknown command: frobnicate/)
   })
 
-  test("run with no file prints usage and exits 1", async () => {
+  test("run with no file prints the full help and exits 1", async () => {
     const r = await runCli(["run"])
     assert.equal(r.code, 1)
-    assert.match(r.stderr, /usage: omegacode run/)
+    assert.match(r.stderr, /omegacode run: missing workflow file or name/)
+    assert.match(r.stdout, /--args-file <f>/)
   })
 })
 

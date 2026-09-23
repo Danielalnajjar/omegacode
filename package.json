@@ -53,7 +53,7 @@
     "prepublishOnly": "pnpm run build",
     "typecheck": "tsc --noEmit",
     "dev": "tsx src/cli.ts",
-    "test": "node --test --import tsx ./test/*.test.ts",
+    "test": "node --test --import ./test/register.mjs ./test/*.test.ts",
     "start": "node dist/cli.js",
     "viewer:dev": "pnpm --filter viewer dev",
     "viewer:build": "pnpm --filter viewer build",

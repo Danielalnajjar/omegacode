@@ -1,8 +1,9 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { EventEmitter } from "node:events"
-import { readFileSync } from "node:fs"
-import { isAbsolute } from "node:path"
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { isAbsolute, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { GrokWorker, GROK_MIN_VERSION, type GrokWorkerOpts } from "../src/worker/grok.js"
@@ -167,6 +168,7 @@ test("happy path: argv shape, prompt file, event mapping, usage normalization", 
     costUsd: 0.01,
     cacheReadInputTokens: 10,
     cacheCreationInputTokens: 2,
+    reasoningOutputTokens: 5,
   })
 
   const kinds = c.events.map((e) => e.kind)
@@ -487,4 +489,75 @@ test("abort before spawn is AgentInterrupted", async () => {
   const ac = new AbortController()
   ac.abort()
   await assert.rejects(() => h.worker.runAgent(spec(), ctx(ac.signal)), (err: unknown) => err instanceof AgentInterrupted)
+})
+
+function isolationFixture(t: { after(fn: () => void): void }): { root: string; file: string; workspace: string } {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "grok-worker-isolation-")))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  for (const name of ["workspace", "inputs", "scratch/home", "grok-home", "private"]) mkdirSync(join(root, name), { recursive: true })
+  const file = join(root, "private", "grok-isolation.json")
+  writeFileSync(file, JSON.stringify({ schemaVersion: "grok-isolation.v1", grokExecutable: "/usr/bin/true", grokHome: join(root, "grok-home"), home: join(root, "scratch/home"),
+    workspace: join(root, "workspace"), inputs: join(root, "inputs"), scratch: join(root, "scratch"), readRoots: [], blockedRoots: [join(root, "private")], writable: true }))
+  return { root, file, workspace: join(root, "workspace") }
+}
+
+test("isolation launches grok through Seatbelt with a constructed env, --sandbox off and shell-only tools", async (t) => {
+  const { root, file, workspace } = isolationFixture(t)
+  process.env.GROK_ISOLATION_TEST_POISON = "must-not-inherit"
+  t.after(() => { delete process.env.GROK_ISOLATION_TEST_POISON })
+  const h = harness([versionOk, happyRun], { isolationFile: file })
+  await h.worker.runAgent(spec({ cwd: workspace, sandbox: "workspace-write", model: "grok-4.7-build-fast", effort: "xhigh" }), ctx())
+  for (const call of h.spawned) {
+    assert.equal(call.bin, "/usr/bin/sandbox-exec")
+    assert.equal(call.args[0], "-p")
+    assert.equal(call.args[2], "/usr/bin/true")
+    assert.deepEqual(call.env, { PATH: "/usr/bin:/bin", HOME: join(root, "scratch/home"), TMPDIR: join(root, "scratch"), GROK_HOME: join(root, "grok-home"),
+      SHELL: "/bin/bash", LANG: "en_US.UTF-8", GROK_DISABLE_AUTOUPDATER: "1", ...(process.env.USER ? { USER: process.env.USER, LOGNAME: process.env.USER } : {}) })
+  }
+  assert.deepEqual(h.spawned[0]!.args.slice(3), ["--version"])
+  const args = h.spawned[1]!.args
+  assert.equal(flagAfter(args, "--sandbox"), "off")
+  assert.equal(flagAfter(args, "--tools"), "run_terminal_command,todo_write")
+  for (const tool of ["read_file", "search_replace", "write", "spawn_subagent", "web_fetch", "use_tool"]) assert.ok(flagAfter(args, "--disallowed-tools")!.split(",").includes(tool), tool)
+  for (const flag of ["--no-memory", "--disable-web-search", "--no-subagents", "--always-approve"]) assert.ok(args.includes(flag), flag)
+  assert.match(readFileSync(join(root, "scratch/home", ".bash_profile"), "utf8"), /^export PATH="\/opt\/homebrew\/bin:\/opt\/homebrew\/sbin:\$PATH"$/m)
+})
+
+test("a shell result with a non-zero exit code is recorded as an error", async () => {
+  const shellRun: Script = (p) => {
+    for (const [id, code] of [["ok", 0], ["bad", 7]] as const) {
+      p.pushLine({ type: "tool_call", toolCallId: id, toolName: "run_terminal_command", rawInput: { command: "x" } })
+      p.pushLine({ type: "tool_call_update", toolCallId: id, status: "completed", rawOutput: { output_for_prompt: `exit: ${code}\n`, exit_code: code } })
+    }
+    p.pushLine({ type: "text", data: "done" })
+    p.pushLine({ type: "end", stopReason: "end_turn", sessionId: "ses_1", usage: { input_tokens: 1, output_tokens: 1 } })
+    p.end(0)
+  }
+  const c = ctx()
+  await harness([versionOk, shellRun]).worker.runAgent(spec(), c)
+  const results = c.events.filter((e) => e.kind === "tool-result") as Array<{ id: string; isError?: boolean }>
+  assert.deepEqual(results.map((e) => [e.id, e.isError]), [["ok", false], ["bad", true]])
+})
+
+test("isolated schema extraction keeps only the inert todo_write tool", async (t) => {
+  const { file, workspace } = isolationFixture(t)
+  const extraction: Script = (p) => {
+    p.pushLine({ type: "text", data: "{\"answer\":\"ok\"}" })
+    p.pushLine({ type: "end", stopReason: "end_turn", sessionId: "ses_1", usage: { input_tokens: 1, output_tokens: 1 } })
+    p.end(0)
+  }
+  const h = harness([versionOk, happyRun, extraction], { isolationFile: file })
+  const result = await h.worker.runAgent(spec({ cwd: workspace, schema: { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] } }), ctx())
+  assert.deepEqual(result.structured, { answer: "ok" })
+  const args = h.spawned[2]!.args
+  assert.equal(flagAfter(args, "--tools"), "todo_write")
+  assert.ok(flagAfter(args, "--disallowed-tools")!.split(",").includes("run_terminal_command"))
+  assert.equal(args.filter(arg => arg === "--tools").length, 1)
+})
+
+test("isolation refuses a worker cwd outside the configured workspace before spawning", async (t) => {
+  const { file } = isolationFixture(t)
+  const h = harness([], { isolationFile: file })
+  await assert.rejects(h.worker.runAgent(spec({ cwd: "/tmp" }), ctx()), /workspace differs/)
+  assert.equal(h.spawned.length, 0)
 })

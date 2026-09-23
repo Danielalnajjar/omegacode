@@ -1,6 +1,8 @@
+import { loadClaudeIsolation, isolatedClaudeOptions } from "./claude-isolation.js"
 // ClaudeWorker — drives Claude Code via @anthropic-ai/claude-agent-sdk `query()`.
 // Structured output uses the SDK's native `outputFormat: { type: "json_schema" }`; sandbox maps to a
-// canUseTool gate. Claude has no OS-level sandbox like codex, so the gate is the only enforcement:
+// canUseTool gate by default. The explicit benchmark isolation configuration replaces this
+// with mandatory tool gating and an OS-confined Bash child. Without that opt-in:
 //   read-only           → no write tools; Bash limited to a read-only allowlist.
 //   workspace-write      → write tools allowed only for paths inside spec.cwd; Bash allowed.
 //   danger-full-access   → everything allowed.
@@ -134,6 +136,8 @@ export class ClaudeWorker implements Worker {
         return Promise.resolve({ behavior: "allow", updatedInput: input })
       },
     }
+    const isolationFile = env?.OMEGACODE_CLAUDE_ISOLATION_CONFIG ?? process.env.OMEGACODE_CLAUDE_ISOLATION_CONFIG
+    if (isolationFile) Object.assign(options, isolatedClaudeOptions(loadClaudeIsolation(isolationFile, spec.cwd)))
     // codex-only "none"/"minimal" map to the SDK's lowest; the rest match the SDK effort levels.
     if (spec.effort) options.effort = toClaudeEffort(spec.effort)
     if (spec.schema) options.outputFormat = toClaudeOutputFormat(spec.schema)

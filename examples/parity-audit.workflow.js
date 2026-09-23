@@ -48,11 +48,11 @@ DIMENSION: `
 const dimensions = [
   { key: "DSL primitives & authoring", provider: "codex", model: "gpt-6-sol",
     focus: "the agent()/parallel()/pipeline()/phase()/log()/budget/args/workflow() primitives + the meta block + injected-globals authoring shape. Compare the full primitive set, signatures, and semantics (e.g. parallel barrier + null-mapping, pipeline stage args, budget, nested workflow())." },
-  { key: "Resume, journal & determinism", provider: "claude-code", model: "claude-fable-5",
+  { key: "Resume, journal & determinism", provider: "claude-code", model: "claude-fable-5-1",
     focus: "the chained-key journal, longest-unchanged-prefix replay, edit-and-resume, started-hit-respawn, and the determinism enforcement that blocks nondeterministic time/RNG calls (the runtime shims + the static submit-time lint)." },
   { key: "Sandbox & execution model", provider: "codex", model: "gpt-6-sol",
     focus: "the hardened node:vm (codeGeneration off, frozen intrinsics, import/require blocked), meta pure-literal parsing, live-coroutine execution, and the 30s sync timeout." },
-  { key: "Structured output, caps & budget", provider: "claude-code", model: "claude-fable-5",
+  { key: "Structured output, caps & budget", provider: "claude-code", model: "claude-fable-5-1",
     focus: "schema/StructuredOutput vs native outputSchema/outputFormat; the concurrency cap, 1000-agent lifetime cap, 4096 fan-out cap; and the token budget/ceiling." },
   { key: "Tool surface, named workflows & UI", provider: "codex", model: "gpt-6-sol",
     focus: "Claude Code's Workflow tool input (script/name/scriptPath/args/resumeFromRunId), saved/named workflows + the registry, the /workflows UI + progress tree, the approval gate, worktree isolation, and how all of that maps (or doesn't) to omegacode' CLI + viewer." },
@@ -84,7 +84,7 @@ Write a crisp Markdown report:
 3. An "Extras" section: where omegacode exceeds Claude Code.
 4. A short prioritized punch-list to reach 100% parity.
 Be decisive and concrete. Findings JSON:\n\n${JSON.stringify(real, null, 2)}`,
-  { provider: "claude-code", model: "claude-fable-5", sandbox: "read-only" },
+  { provider: "claude-code", model: "claude-fable-5-1", sandbox: "read-only" },
 )
 
 return report

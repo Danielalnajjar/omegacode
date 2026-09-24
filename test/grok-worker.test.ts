@@ -502,7 +502,7 @@ function isolationFixture(t: { after(fn: () => void): void }): { root: string; f
   return { root, file, workspace: join(root, "workspace") }
 }
 
-test("isolation launches grok through Seatbelt with a constructed env, --sandbox off and shell-only tools", { skip: process.platform !== "darwin" }, async (t) => {
+test("isolation launches grok through Seatbelt with a constructed env, --sandbox off and production's tools", { skip: process.platform !== "darwin" }, async (t) => {
   const { root, file, workspace } = isolationFixture(t)
   process.env.GROK_ISOLATION_TEST_POISON = "must-not-inherit"
   t.after(() => { delete process.env.GROK_ISOLATION_TEST_POISON })
@@ -518,9 +518,13 @@ test("isolation launches grok through Seatbelt with a constructed env, --sandbox
   assert.deepEqual(h.spawned[0]!.args.slice(3), ["--version"])
   const args = h.spawned[1]!.args
   assert.equal(flagAfter(args, "--sandbox"), "off")
-  assert.equal(flagAfter(args, "--tools"), "run_terminal_command,todo_write")
-  for (const tool of ["read_file", "search_replace", "write", "spawn_subagent", "web_fetch", "use_tool"]) assert.ok(flagAfter(args, "--disallowed-tools")!.split(",").includes(tool), tool)
-  for (const flag of ["--no-memory", "--disable-web-search", "--no-subagents", "--always-approve"]) assert.ok(args.includes(flag), flag)
+  // Apart from the sandbox and memory, the isolated worker gets exactly the flags of a production worker.
+  const production = harness([versionOk, happyRun])
+  await production.worker.runAgent(spec({ cwd: workspace, sandbox: "workspace-write", model: "grok-4.7-build-fast", effort: "xhigh" }), ctx())
+  const comparable = (list: string[]) => list.map((arg, i) => list[i - 1] === "--sandbox" || list[i - 1] === "--prompt-file" ? "<value>" : arg).filter(arg => arg !== "--no-memory")
+  assert.deepEqual(comparable(args.slice(3)), comparable(production.spawned[1]!.args))
+  assert.ok(args.includes("--no-memory"))
+  for (const flag of ["--tools", "--disallowed-tools", "--disable-web-search"]) assert.ok(!args.includes(flag), flag)
   assert.match(readFileSync(join(root, "scratch/home", ".bash_profile"), "utf8"), /^export PATH="\/opt\/homebrew\/bin:\/opt\/homebrew\/sbin:\$PATH"$/m)
 })
 
@@ -540,7 +544,7 @@ test("a shell result with a non-zero exit code is recorded as an error", async (
   assert.deepEqual(results.map((e) => [e.id, e.isError]), [["ok", false], ["bad", true]])
 })
 
-test("isolated schema extraction keeps only the inert todo_write tool", { skip: process.platform !== "darwin" }, async (t) => {
+test("isolated schema extraction uses the production todo_write allowlist", { skip: process.platform !== "darwin" }, async (t) => {
   const { file, workspace } = isolationFixture(t)
   const extraction: Script = (p) => {
     p.pushLine({ type: "text", data: "{\"answer\":\"ok\"}" })
@@ -552,8 +556,9 @@ test("isolated schema extraction keeps only the inert todo_write tool", { skip: 
   assert.deepEqual(result.structured, { answer: "ok" })
   const args = h.spawned[2]!.args
   assert.equal(flagAfter(args, "--tools"), "todo_write")
-  assert.ok(flagAfter(args, "--disallowed-tools")!.split(",").includes("run_terminal_command"))
+  assert.equal(flagAfter(args, "--deny"), "MCPTool")
   assert.equal(args.filter(arg => arg === "--tools").length, 1)
+  assert.ok(!args.includes("--disallowed-tools"))
 })
 
 test("isolation refuses a worker cwd outside the configured workspace before spawning", { skip: process.platform !== "darwin" }, async (t) => {

@@ -6,7 +6,7 @@ export interface GrokIsolation {
   schemaVersion: "grok-isolation.v1"
   /** Canonical grok binary. Seatbelt identifies the API parent by this exact process path. */
   grokExecutable: string
-  /** Signed-in Grok state. Readable and writable by the grok process only, never by its tools. */
+  /** Signed-in Grok state. Readable and writable by the grok process (its in-process file tools included), never by the shell. */
   grokHome: string
   /** Fresh HOME inside scratch, so no user-level skills, rules, hooks or MCP servers are discovered. */
   home: string
@@ -19,13 +19,9 @@ export interface GrokIsolation {
   writable: boolean
 }
 
-/** Every file operation goes through the confined shell; Grok's in-process file tools are removed. */
-export const GROK_ISOLATED_TOOLS = ["run_terminal_command", "todo_write"]
-export const GROK_REMOVED_TOOLS = [
-  "get_command_or_subagent_output", "kill_command_or_subagent", "wait_commands_or_subagents", "read_file", "search_replace", "list_dir", "grep", "write", "spawn_subagent", "scheduler_create", "scheduler_delete",
-  "scheduler_list", "monitor", "search_tool", "use_tool", "workflow", "enter_plan_mode", "exit_plan_mode",
-  "ask_user_question", "image_gen", "image_edit", "image_to_video", "reference_to_video", "web_search", "web_fetch",
-]
+/** The isolated launch keeps production's tools. Only cross-session memory is switched off, so
+ *  units that share one benchmark home cannot see each other's sessions. */
+export const GROK_ISOLATED_FLAGS = ["--no-memory"]
 // Homebrew tools and their dylibs, as in a normal developer shell. Its var/
 // tree holds service state and logs, so it stays unreadable.
 const HOMEBREW = "/opt/homebrew"
@@ -52,7 +48,9 @@ export function loadGrokIsolation(path: string, cwd?: string): GrokIsolation {
 // One profile, two subjects. The grok process keeps provider network and its
 // home; every other process (the shell tool and its descendants) gets the
 // allowlisted filesystem, no network, no Mach services and cannot exec grok.
-// Nested Seatbelt is refused by macOS, so Grok's own --sandbox stays off.
+// Nested Seatbelt is refused by macOS, so Grok's own --sandbox stays off, and
+// the write confinement it would give the in-process file tools moves here:
+// the grok process writes only its home, scratch and a writable workspace.
 export function grokSeatbeltProfile(config: GrokIsolation, agentProfile: string): string {
   const q = JSON.stringify
   const grok = `(process-path ${q(config.grokExecutable)})`
@@ -76,7 +74,7 @@ export function grokSeatbeltProfile(config: GrokIsolation, agentProfile: string)
     `(deny file-read* (require-all ${grok} (require-any ${subpaths(config.blockedRoots)}) ${except(grokRead)} (require-not (literal ${q(config.grokExecutable)})) (require-not (literal ${q(agentProfile)}))))`,
     "(allow file-read-metadata)", "(allow file-read* (literal \"/\"))",
     `(deny file-write* (require-all ${tool} (require-not (literal "/dev/null")) ${except(toolWrite)}))`,
-    `(deny file-write* (require-all ${grok} (require-any ${subpaths(config.blockedRoots)}) ${except(grokWrite)}))`,
+    `(deny file-write* (require-all ${grok} (require-not (literal "/dev/null")) ${except(grokWrite)}))`,
   ].join("\n")
 }
 
@@ -97,14 +95,4 @@ export function isolatedGrokEnv(config: GrokIsolation): NodeJS.ProcessEnv {
 
 export function isolatedGrokLaunch(config: GrokIsolation, agentProfile: string): { bin: string; prefix: string[]; env: NodeJS.ProcessEnv } {
   return { bin: "/usr/bin/sandbox-exec", prefix: ["-p", grokSeatbeltProfile(config, agentProfile), config.grokExecutable], env: isolatedGrokEnv(config) }
-}
-
-/** Grok applies --disallowed-tools only beside a non-empty --tools allowlist; `--tools ""` means
- *  unrestricted and re-adds the shell and spawn_subagent. The tool-less extraction turn therefore
- *  keeps only the inert todo_write. */
-export const GROK_EXTRACTION_TOOLS = ["todo_write"]
-export function isolatedGrokToolArgs(noTools: boolean): string[] {
-  const allowed = noTools ? GROK_EXTRACTION_TOOLS : GROK_ISOLATED_TOOLS
-  return ["--no-memory", "--disable-web-search", "--tools", allowed.join(","),
-    "--disallowed-tools", [...GROK_REMOVED_TOOLS, ...GROK_ISOLATED_TOOLS.filter(tool => !allowed.includes(tool))].join(",")]
 }

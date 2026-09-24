@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, 
 import { createServer } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { GROK_EXTRACTION_TOOLS, GROK_ISOLATED_TOOLS, grokSeatbeltProfile, isolatedGrokToolArgs, loadGrokIsolation, type GrokIsolation } from "../src/worker/grok-isolation.js"
+import { grokSeatbeltProfile, loadGrokIsolation, type GrokIsolation } from "../src/worker/grok-isolation.js"
 import { assessGrokInventory } from "../src/worker/grok-preflight.js"
 
 // /usr/bin/curl stands in for the grok binary: the profile keys the provider
@@ -42,19 +42,6 @@ test("loader rejects read roots and inputs nested with workspace or scratch in e
   for (const inputs of [join(config.workspace, "inputs"), config.workspace]) {
     writeFileSync(file, JSON.stringify({ ...config, inputs }))
     assert.throws(() => loadGrokIsolation(file), /Isolation readRoots and inputs must be separate from writable roots/)
-  }
-})
-
-test("tool arguments allow only the shell, and the extraction turn only todo_write", () => {
-  assert.deepEqual(GROK_ISOLATED_TOOLS, ["run_terminal_command", "todo_write"])
-  const main = isolatedGrokToolArgs(false), extraction = isolatedGrokToolArgs(true)
-  const after = (args: string[], flag: string) => args[args.indexOf(flag) + 1]!
-  assert.equal(after(main, "--tools"), GROK_ISOLATED_TOOLS.join(","))
-  assert.equal(after(extraction, "--tools"), GROK_EXTRACTION_TOOLS.join(","))
-  assert.ok(after(extraction, "--disallowed-tools").split(",").includes("run_terminal_command"))
-  for (const args of [main, extraction]) {
-    for (const tool of ["read_file", "search_replace", "write", "list_dir", "grep", "spawn_subagent", "wait_commands_or_subagents", "web_search", "web_fetch", "use_tool", "search_tool", "workflow"]) assert.ok(after(args, "--disallowed-tools").split(",").includes(tool), tool)
-    assert.ok(args.includes("--no-memory") && args.includes("--disable-web-search"))
   }
 })
 
@@ -99,6 +86,12 @@ test("Seatbelt gives the provider parent network and its home while its children
   assert.equal((await parent("-s", `file://${join(config.grokHome, "bundled", "skills", "SKILL.md")}`)).status, 37)
   assert.notEqual((await parent("-s", "-m", "3", `http://127.0.0.1:${port}/`)).status, 7)
   assert.equal(connections, 1)
+  // The parent's in-process file tools write only its home, scratch and a writable workspace (curl exit 23 is a write failure).
+  const unblocked = realpathSync(mkdtempSync(join(tmpdir(), "grok-isolation-unblocked-")))
+  t.after(() => rmSync(unblocked, { recursive: true, force: true }))
+  const source = `file://${join(config.workspace, "source")}`
+  for (const target of [join(config.grokHome, "state"), join(config.scratch, "parent"), join(config.workspace, "parent")]) assert.equal((await parent("-s", "-o", target, source)).status, 0, target)
+  for (const target of [join(root, "parent-outside"), join(unblocked, "parent"), join(config.readRoots[0]!, "parent")]) assert.equal((await parent("-s", "-o", target, source)).status, 23, target)
 
   assert.equal((await child("cat source")).stdout, "source")
   assert.equal((await child(`cat ${join(config.readRoots[0]!, "dep")}`)).stdout, "dep")
@@ -124,5 +117,6 @@ test("Seatbelt gives the provider parent network and its home while its children
   writeFileSync(join(config.workspace, "readonly"), "")
   const readOnly = grokSeatbeltProfile({ ...config, writable: false }, "/dev/null")
   assert.notEqual(spawnSync("/usr/bin/sandbox-exec", ["-p", readOnly, "/usr/bin/touch", join(config.workspace, "readonly")]).status, 0)
+  assert.equal(spawnSync("/usr/bin/sandbox-exec", ["-p", readOnly, PARENT, "-s", "-o", join(config.workspace, "readonly"), `file://${join(config.workspace, "source")}`]).status, 23)
   assert.equal(execFileSync("/bin/cat", [join(config.workspace, "source")], { encoding: "utf8" }), "source")
 })

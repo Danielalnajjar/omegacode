@@ -4,12 +4,14 @@ import { existsSync } from "node:fs"
 import { mkdir, readFile, readdir, realpath, rm, rmdir, symlink, writeFile } from "node:fs/promises"
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http"
 import { createConnection, createServer } from "node:net"
-import { dirname, join } from "node:path"
+import { basename, dirname, join } from "node:path"
 import { GrokWorker, GROK_AGENT_PROFILE_PATH as AGENT_PROFILE } from "./grok.js"
-import { GROK_EXTRACTION_TOOLS, GROK_ISOLATED_TOOLS, isolatedGrokLaunch, loadGrokIsolation, type GrokIsolation } from "./grok-isolation.js"
+import { isolatedGrokLaunch, loadGrokIsolation, type GrokIsolation } from "./grok-isolation.js"
 
 const PROBE_MODEL = "benchmark-probe"
 const BUILTIN_AGENTS = ["general-purpose", "explore", "plan"]
+// Grok's in-process file tools, which production offers and the benchmark must not strip.
+const FILE_TOOLS = ["read_file", "write", "search_replace", "list_dir", "grep", "run_terminal_command"]
 // Grok writes this user layer into its home on first sign-in; it registers the
 // official marketplace and installs nothing (plugins and marketplaces stay empty).
 const GROK_INIT_CONFIG = ["[marketplace]", "default_skills_installs_purged = true", "official_marketplace_auto_installed = true",
@@ -75,7 +77,7 @@ function scriptedModel(steps: Step[]) {
       const side = (names.length === 1 && names[0] === "session_title") || JSON.stringify(lastMessage ?? "").includes("dashboard line")
       let reply: { tool?: string; args?: Record<string, unknown>; text?: string }
       if (side) { sideTools.push(names); reply = { text: "probe" } }
-      // The schema-extraction turn resumes the session with every tool removed.
+      // The schema-extraction turn resumes the session with only inert tools.
       else if (JSON.stringify(lastMessage ?? "").includes("Output ONLY the JSON")) { extractionTools.push(names); reply = { text: JSON.stringify({ probe: "complete" }) } }
       else {
         offeredTools.push(names)
@@ -213,8 +215,22 @@ export async function proveGrokIsolation(configFile: string) {
     steps.push({ label: "exit-visibility", tool: "run_terminal_command", args: { command: "echo exit-visibility-marker; exit 7", description: "exit-visibility" } })
     shell("network-local-listener-denied", `/usr/bin/nc -z -v -w 2 127.0.0.1 ${port}`, false)
     shell("network-internet-denied", "/usr/bin/curl -sS -m 5 -o /dev/null https://api.x.ai/", false)
-    const refused = ["read_file", "search_replace", "write", "list_dir", "grep", "spawn_subagent", "web_search", "web_fetch", "use_tool", "search_tool"]
-    for (const tool of refused) steps.push({ label: `${tool}-refused`, tool, args: tool === "spawn_subagent" ? { prompt: "probe", description: "probe" } : { target_file: privateFile, file_path: privateFile, target_directory: dirname(privateFile), path: privateFile, pattern: "private", query: "probe", url: "http://127.0.0.1:1/", content: "x", old_string: "private", new_string: "x" } })
+    // In-process file tools run as the grok process, so the profile's grok subject bounds them.
+    const nativeOutside = join(dirname(configFile), `.native-outside-${randomUUID()}`); files.push(nativeOutside)
+    const nativeUnblocked = join("/private/tmp", `.grok-preflight-native-${randomUUID()}`); files.push(nativeUnblocked)
+    const nativeInside = join(config.workspace, `.native-inside-${randomUUID()}`); files.push(nativeInside)
+    const nativeScratch = join(config.scratch, `.native-scratch-${randomUUID()}`); files.push(nativeScratch)
+    const native = (label: string, tool: string, args: Record<string, unknown>) => steps.push({ label, tool, args })
+    native("native-workspace-read", "read_file", { target_file: source })
+    native("native-input-read", "read_file", { target_file: input })
+    native("native-private-read-denied", "read_file", { target_file: privateFile })
+    native("native-symlink-escape-denied", "read_file", { target_file: symlinkPath })
+    native("native-private-list-denied", "list_dir", { target_directory: dirname(privateFile) })
+    native("native-private-grep-denied", "grep", { pattern: "private-denied-marker", path: privateFile })
+    native("native-outside-write-denied", "write", { file_path: nativeOutside, content: "x" })
+    native("native-unblocked-write-denied", "write", { file_path: nativeUnblocked, content: "x" })
+    native("native-workspace-write-policy", "write", { file_path: nativeInside, content: "x" })
+    native("native-scratch-write", "write", { file_path: nativeScratch, content: "x" })
 
     await mkdir(probeHome, { mode: 0o700 })
     model = scriptedModel(steps)
@@ -263,15 +279,22 @@ export async function proveGrokIsolation(configFile: string) {
     const visible = model.results.get("exit-visibility") ?? ""
     const recorded = progress.filter(event => event.kind === "tool-result" && event.output?.includes("exit-visibility-marker"))
     assert("nonzero-exit-visible", /exit: 7|"exit_code":7/.test(visible) && recorded.length > 0 && recorded.every(event => event.isError === true), null, visible + JSON.stringify(recorded).slice(0, 500))
-    for (const tool of refused) {
-      const output = model.results.get(`${tool}-refused`) ?? ""
-      assert(`${tool}-refused`, output.length > 0 && !output.includes("private-denied-marker") && !/__exit=/.test(output), null, output)
-    }
-    const expected = [...GROK_ISOLATED_TOOLS].sort()
+    const nativeOutput = (label: string) => model!.results.get(label) ?? ""
+    for (const [label, expected] of [["native-workspace-read", "workspace-readable"], ["native-input-read", "inputs-readable"]] as const) assert(label, nativeOutput(label).includes(expected), null, nativeOutput(label))
+    for (const label of ["native-private-read-denied", "native-symlink-escape-denied", "native-private-grep-denied"]) assert(label, nativeOutput(label).length > 0 && !nativeOutput(label).includes("private-denied-marker"), null, nativeOutput(label))
+    // A denied list_dir comes back as an empty listing, so the check is that no private name shows.
+    assert("native-private-list-denied", [privateFile, configFile].every(path => !nativeOutput("native-private-list-denied").includes(basename(path))), null, nativeOutput("native-private-list-denied"))
+    assert("native-outside-write-denied", !existsSync(nativeOutside), null, nativeOutput("native-outside-write-denied"))
+    assert("native-unblocked-write-denied", !existsSync(nativeUnblocked), null, nativeOutput("native-unblocked-write-denied"))
+    assert("native-workspace-write-policy", existsSync(nativeInside) === config.writable, null, nativeOutput("native-workspace-write-policy"))
+    assert("native-scratch-write", existsSync(nativeScratch), null, nativeOutput("native-scratch-write"))
+    const offered = new Set(model.offeredTools.flat())
     receipt.nativeTools = { agentTurns: model.offeredTools.length, offered: [...new Set(model.offeredTools.map(names => [...names].sort().join(",")))], sideRequests: model.sideTools.length, sideTools: [...new Set(model.sideTools.flat())], extractionTurnTools: model.extractionTools }
-    assert("native-tool-list-exact", model.offeredTools.length > 0 && model.offeredTools.every(names => JSON.stringify([...names].sort()) === JSON.stringify(expected)))
-    assert("extraction-turn-tools-inert", model.extractionTools.every(names => names.every(name => GROK_EXTRACTION_TOOLS.includes(name))))
-    assert("side-requests-no-extra-tools", model.sideTools.every(names => names.every(name => name === "session_title" || GROK_ISOLATED_TOOLS.includes(name))), null, JSON.stringify(model.sideTools))
+    assert("native-file-tools-offered", model.offeredTools.length > 0 && model.offeredTools.every(names => FILE_TOOLS.every(tool => names.includes(tool))), null, JSON.stringify(receipt.nativeTools))
+    // Production's `--tools todo_write` still leaves Grok's MCP gateway (search_tool, use_tool); no MCP
+    // server is configured here and `--deny MCPTool` refuses it, so inert means no file or shell tool.
+    assert("extraction-turn-tools-inert", model.extractionTools.length === 1 && model.extractionTools.every(names => names.every(name => !FILE_TOOLS.includes(name))), null, JSON.stringify(model.extractionTools))
+    assert("side-requests-no-extra-tools", model.sideTools.every(names => names.every(name => name === "session_title" || offered.has(name))), null, JSON.stringify(model.sideTools))
     receipt.passed = true
   } catch (error) { receipt.error = error instanceof Error ? error.message : "Grok preflight failed" }
   finally {

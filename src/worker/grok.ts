@@ -13,8 +13,8 @@
 // Verified against grok 0.2.112+ (prompt-file, streaming-json, sandbox profiles, resume, --agent).
 //
 // Benchmark isolation (OMEGACODE_GROK_ISOLATION_CONFIG) replaces the sandbox mapping: grok runs
-// under an outer Seatbelt profile with a constructed environment, --sandbox off (macOS refuses a
-// nested profile), and only the shell-backed tools. See grok-isolation.ts.
+// under an outer Seatbelt profile with a constructed environment and --sandbox off (macOS refuses a
+// nested profile). Its tools are the production set; only cross-session memory is off. See grok-isolation.ts.
 
 import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url"
 import { addUsage, emptyUsage, type AgentResult, type AgentSpec, type AgentUsage, type Effort, type Sandbox } from "../dsl/types.js"
 import type { Worker, WorkerContext, WorkerProgress } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
-import { GROK_EXTRACTION_TOOLS, isolatedGrokLaunch, isolatedGrokToolArgs, loadGrokIsolation, prepareGrokShellHome, type GrokIsolation } from "./grok-isolation.js"
+import { GROK_ISOLATED_FLAGS, isolatedGrokLaunch, loadGrokIsolation, prepareGrokShellHome, type GrokIsolation } from "./grok-isolation.js"
 import { providerEnv } from "./provider-env.js"
 import { assertValidSchema, parseJsonLoose, parseValidJson } from "./schema.js"
 import {
@@ -39,6 +39,9 @@ const PROVIDER = "grok" as const
 export const GROK_AGENT_PROFILE_PATH = fileURLToPath(
   new URL("./agents/fleet-omegacode-grok-worker.md", import.meta.url),
 )
+
+/** An empty --tools value means unrestricted, so the tool-less extraction turn names an inert allowlist. */
+export const GROK_EXTRACTION_TOOLS = ["todo_write"]
 
 /** Minimum CLI whose flags and streaming-json event shapes this worker is verified against. */
 export const GROK_MIN_VERSION = "0.2.112"
@@ -253,9 +256,8 @@ export class GrokWorker implements Worker {
     if (spec.effort) args.push("--reasoning-effort", EFFORT_TO_GROK[spec.effort])
     if (spec.instructions) args.push("--rules", spec.instructions)
     if (spec.maxTurns !== undefined) args.push("--max-turns", String(spec.maxTurns))
-    if (launch.isolation) args.push(...isolatedGrokToolArgs(opts.noTools === true))
-    // An empty --tools value means unrestricted, so the extraction turn names an inert allowlist.
-    if (opts.noTools) args.push(...(launch.isolation ? [] : ["--tools", GROK_EXTRACTION_TOOLS.join(",")]), "--deny", "MCPTool")
+    if (launch.isolation) args.push(...GROK_ISOLATED_FLAGS)
+    if (opts.noTools) args.push("--tools", GROK_EXTRACTION_TOOLS.join(","), "--deny", "MCPTool")
     // Headless Omega cannot answer Grok permission prompts. Plan mode waits
     // ~30s then cancels the turn. Keep the OS sandbox; never prompt.
     args.push("--always-approve")

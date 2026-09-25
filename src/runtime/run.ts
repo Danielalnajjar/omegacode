@@ -8,6 +8,7 @@ import { DEFAULTS, type Effort, type ProviderId, type RunDefaults, type Sandbox 
 import { DefaultWorkerFactory } from "../worker/factory.js"
 import { writeBbOrigin } from "./bb-origin.js"
 import { type EventListener, FileEventSink } from "./event-sink.js"
+import type { AgentState } from "./events.js"
 import { determinismLint, KEY_VERSION } from "./keys.js"
 import {
   checkResumePreconditions,
@@ -23,7 +24,7 @@ import { checkProviderModelPair, checkSpecEnum, Runtime } from "./primitives.js"
 import { parseWorkflow } from "./sandbox.js"
 import { TerminalRenderer } from "./progress.js"
 import { runInSandbox } from "./sandbox.js"
-import { isValidRunId } from "./run-store.js"
+import { countAgentStates, isValidRunId, type AgentCounts } from "./run-store.js"
 import { resolveRunModes } from "./run-modes.js"
 import type { EvaluationAccounting } from "../evaluation-types.js"
 
@@ -80,6 +81,7 @@ export interface RunOutcome {
   runId: string
   result: unknown
   status: "completed" | "failed" | "interrupted"
+  agentCounts: AgentCounts
   error?: string
   evaluationUsage?: EvaluationAccounting
 }
@@ -141,7 +143,11 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   }
 
   const renderer = new TerminalRenderer({ enabled: !opts.quiet })
-  const listeners: EventListener[] = [renderer.handle]
+  const agentStates = new Map<number, AgentState>()
+  const countAgent: EventListener = (event) => {
+    if (event.type === "agent") agentStates.set(event.index, event.state)
+  }
+  const listeners: EventListener[] = [renderer.handle, countAgent]
   if (opts.onEvent) listeners.push(opts.onEvent)
   const events = new FileEventSink(runId, { listeners })
 
@@ -222,7 +228,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     await events.close()
   }
 
-  return { runId, result, status, error, evaluationUsage: runtime.evaluationAccounting() }
+  return { runId, result, status, agentCounts: countAgentStates(agentStates.values()), error, evaluationUsage: runtime.evaluationAccounting() }
 }
 
 function resolveCodexAppServerSocket(overrides: RunOverrides | undefined): string | undefined {

@@ -278,6 +278,26 @@ describe("CLI end-to-end (--fake)", () => {
     assert.doesNotMatch(r.stderr, /"type":"run\.started"/)
   })
 
+  test("completed run reports an agent failure that pipeline converted to null", async () => {
+    const failing = join(home, "failed-agent.workflow.js")
+    writeFileSync(failing,
+      `export const meta = { name: "failed-agent", description: "fake pipeline failure" }\n` +
+      `const impossible = { type: "object", required: ["n"], properties: { n: { type: "integer", minimum: 5, maximum: 2 } } }\n` +
+      `return await pipeline(["good", "bad"], async (item) => item === "bad"\n` +
+      `  ? await agent("bad", { schema: impossible }) : await agent("good"))\n`,
+    )
+    const run = await runCli(["run", failing, "--fake", "--no-serve", "--json"], { OMEGACODE_HOME: home })
+    assert.equal(run.code, 0, run.stderr)
+    const outcome = JSON.parse(run.stdout)
+    assert.equal(outcome.status, "completed")
+    assert.equal(outcome.result[1], null)
+    assert.deepEqual(outcome.agentCounts, { done: 1, failed: 1, unfinished: 0, skipped: 0 })
+
+    const status = await runCli(["status", outcome.runId, "--json"], { OMEGACODE_HOME: home })
+    assert.equal(status.code, 0, status.stderr)
+    assert.deepEqual(JSON.parse(status.stdout).agentCounts, outcome.agentCounts)
+  })
+
   test("--fake --no-serve --json --start-json emits start event on stderr and final JSON on stdout", async () => {
     const r = await runCli(["run", wf, "--fake", "--no-serve", "--json", "--start-json"], {
       OMEGACODE_HOME: home,

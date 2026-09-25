@@ -17,6 +17,7 @@ import { AgentError, AgentInterrupted } from "./index.js"
 import { isolatedClaudeOptions, loadClaudeIsolation } from "./claude-isolation.js"
 import { prepareClaudeProfile, resolveClaudeProfile, type ClaudeProfileResolver } from "./claude-profile.js"
 import { providerEnv } from "./provider-env.js"
+import { DEFAULT_STALL_TIMEOUT_MS } from "./subprocess-jsonl.js"
 import { assertValidSchema, toClaudeOutputFormat } from "./schema.js"
 
 const WRITE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"])
@@ -57,6 +58,8 @@ export interface ClaudeWorkerOpts {
   profileResolver?: ClaudeProfileResolver
   /** Test seam for inherited auth and call-local environment isolation. */
   baseEnv?: NodeJS.ProcessEnv
+  /** No-message watchdog for each SDK stream wait; 0 disables it. */
+  stallTimeoutMs?: number
 }
 
 // The SDK supports low/medium/high/xhigh/max. The codex-only tiers ("none", "minimal") have no
@@ -150,6 +153,9 @@ export class ClaudeWorker implements Worker {
     let usageIsPartial = false
     let terminalResult: Extract<SDKMessage, { type: "result" }> | undefined
     let subscriptionRejected = false
+    let stalledError: AgentError | undefined
+    let stream: AsyncIterator<SDKMessage> | undefined
+    let streamCompleted = false
     try {
       // The CLI normally ends the stream with a `result` message carrying the final text, usage,
       // and structured output. When background tasks (Monitor / Bash run_in_background) straddle
@@ -167,7 +173,32 @@ export class ClaudeWorker implements Worker {
       let lastUsageId: string | undefined
       let streamUsage = emptyUsage()
       const runQuery = this.opts.queryFn ?? query
-      for await (const message of runQuery({ prompt: spec.prompt, options })) {
+      stream = runQuery({ prompt: spec.prompt, options })[Symbol.asyncIterator]()
+      const stallTimeoutMs = this.opts.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS
+      while (true) {
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const next = stream.next()
+        const step = await (stallTimeoutMs === 0 ? next : Promise.race([
+          next,
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => {
+              stalledError = new AgentError({
+                provider: "claude-code",
+                code: "turn_stalled",
+                message: `claude query produced no message for ${stallTimeoutMs}ms`,
+                retryable: true,
+                usage: observedUsage,
+              })
+              abort.abort()
+              reject(stalledError)
+            }, stallTimeoutMs)
+          }),
+        ])).finally(() => { if (timer) clearTimeout(timer) })
+        if (step.done) {
+          streamCompleted = true
+          break
+        }
+        const message = step.value
         if (message.type === "result") {
           anyResult = message
           if (message.origin?.kind !== "task-notification") primaryResult = message
@@ -259,7 +290,14 @@ export class ClaudeWorker implements Worker {
         usage,
       }
     } catch (err) {
+      if (stream && !streamCompleted) {
+        // for-await normally calls return() when its body throws. This manual next() loop must
+        // also stop the SDK process, without waiting indefinitely for stream cleanup.
+        abort.abort()
+        try { void Promise.resolve(stream.return?.()).catch(() => {}) } catch { /* best effort */ }
+      }
       if (ctx.signal.aborted) throw new AgentInterrupted()
+      if (stalledError) throw stalledError
       if (err instanceof AgentError || err instanceof AgentInterrupted) throw err
       const detail = err instanceof Error ? err.message : String(err)
       const resultDetail = terminalResult

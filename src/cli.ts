@@ -540,10 +540,11 @@ async function cmdRun(flags: Flags): Promise<void> {
 
   if (flags.json === true) {
     const url = base ? `${base}#/run/${outcome.runId}` : undefined
-    process.stdout.write(JSON.stringify({ runId: outcome.runId, status: outcome.status, url, result: outcome.result, error: outcome.error, evaluationUsage: outcome.evaluationUsage }, null, 2) + "\n")
+    process.stdout.write(JSON.stringify({ runId: outcome.runId, status: outcome.status, agentCounts: outcome.agentCounts, url, result: outcome.result, error: outcome.error, evaluationUsage: outcome.evaluationUsage }, null, 2) + "\n")
   } else if (outcome.status === "completed") {
     const r = outcome.result
     process.stdout.write((typeof r === "string" ? r : JSON.stringify(r, null, 2)) + "\n")
+    process.stderr.write(`agents: ${outcome.agentCounts.done} done, ${outcome.agentCounts.failed} failed, ${outcome.agentCounts.unfinished} unfinished\n`)
     process.stderr.write(`\nrunId: ${outcome.runId} — resume with: omegacode run ${file} --resume ${outcome.runId}\n`)
   } else {
     process.stderr.write(`\n${outcome.status}: ${outcome.error ?? ""}\nresume with: omegacode run ${file} --resume ${outcome.runId}\n`)
@@ -730,6 +731,7 @@ function writeStatus(snapshot: RunStatusSnapshot, flags: Flags): void {
     return
   }
   process.stdout.write(`${snapshot.runId}  ${snapshot.status}\n`)
+  process.stdout.write(`agents: ${snapshot.agentCounts.done} done, ${snapshot.agentCounts.failed} failed, ${snapshot.agentCounts.unfinished} unfinished\n`)
   process.stdout.write(`runDir: ${snapshot.runDir}\n`)
   if (snapshot.workflowFile) process.stdout.write(`workflow: ${snapshot.workflowFile}\n`)
   if (snapshot.error) process.stdout.write(`error: ${snapshot.error}\n`)

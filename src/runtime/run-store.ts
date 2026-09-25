@@ -28,6 +28,22 @@ export type AgentSnapshot = {
 
 export type RunStatus = "started" | "completed" | "failed" | "interrupted" | "unknown" | "stale"
 
+export interface AgentCounts {
+  done: number
+  failed: number
+  unfinished: number
+  skipped: number
+}
+
+export function countAgentStates(states: Iterable<AgentState>): AgentCounts {
+  const counts: AgentCounts = { done: 0, failed: 0, unfinished: 0, skipped: 0 }
+  for (const state of states) {
+    if (state === "queued" || state === "running") counts.unfinished++
+    else counts[state]++
+  }
+  return counts
+}
+
 export interface PhaseSnapshot {
   index: number
   title: string
@@ -39,6 +55,7 @@ export interface PhaseSnapshot {
 export interface RunSnapshot {
   runId: string
   status: RunStatus
+  agentCounts: AgentCounts
   name?: string
   workflowFile?: string
   error?: string
@@ -113,6 +130,7 @@ export function foldSnapshotRaw(runId: string, events: WorkflowEvent[]): RunSnap
  */
 export function foldSnapshot(runId: string, events: WorkflowEvent[], lastBeat?: number, raw = false): RunSnapshot {
   const agentByIndex = new Map<number, AgentSnapshot>()
+  const currentAttemptStates = new Map<number, AgentState>()
   const phaseByIndex = new Map<number, PhaseSnapshot>()
   const logs: Array<{ t: number; message: string }> = []
   let status: RunStatus = "unknown"
@@ -127,6 +145,7 @@ export function foldSnapshot(runId: string, events: WorkflowEvent[], lastBeat?: 
       case "run": {
         if (ev.status === "started") {
           status = "started"
+          currentAttemptStates.clear()
           if (startedAt === undefined) startedAt = ev.t
           if (ev.workflowFile) workflowFile = ev.workflowFile
           if (ev.workflowName) workflowName = ev.workflowName
@@ -148,6 +167,7 @@ export function foldSnapshot(runId: string, events: WorkflowEvent[], lastBeat?: 
         break
       }
       case "agent": {
+        currentAttemptStates.set(ev.index, ev.state)
         const prev = agentByIndex.get(ev.index)
         const next: AgentSnapshot = {
           index: ev.index,
@@ -196,7 +216,7 @@ export function foldSnapshot(runId: string, events: WorkflowEvent[], lastBeat?: 
 
   const name = workflowName ?? (workflowFile ? basename(workflowFile).replace(/\.workflow\.[cm]?[jt]s$/i, "").replace(/\.[cm]?[jt]s$/i, "") : undefined)
   const finalStatus = raw ? status : applyDeadman(status, startedAt, lastBeat)
-  return { runId, status: finalStatus, name, workflowFile, error, startedAt, endedAt, phases, agents, logs }
+  return { runId, status: finalStatus, agentCounts: countAgentStates(currentAttemptStates.values()), name, workflowFile, error, startedAt, endedAt, phases, agents, logs }
 }
 
 export function applyDeadman(status: RunStatus, startedAt: number | undefined, lastBeat: number | undefined): RunStatus {

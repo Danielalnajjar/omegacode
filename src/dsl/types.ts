@@ -185,6 +185,8 @@ export interface RunDefaults {
   maxAgents: number
   /** Max items per parallel()/pipeline() call. */
   maxFanout: number
+  /** Wall-clock limit per started agent() call, including retries; 0 disables it. */
+  agentTimeoutMs: number
   /** Output-token ceiling for the run (null = no ceiling). */
   budget: number | null
 }
@@ -196,5 +198,6 @@ export const DEFAULTS: Omit<RunDefaults, "cwd"> = {
   concurrency: 100,
   maxAgents: 1000,
   maxFanout: 4096,
+  agentTimeoutMs: 2 * 60 * 60_000,
   budget: null,
 }

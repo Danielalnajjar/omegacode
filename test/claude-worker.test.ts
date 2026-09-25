@@ -131,6 +131,65 @@ test("happy path: result text + usage (cache tokens fold into inputTokens)", asy
   assert.equal(calls[0]!.prompt, "do the thing")
 })
 
+test("Claude silence watchdog aborts the SDK query with retryable turn_stalled", async () => {
+  let queryAborted = false
+  const worker = new ClaudeWorker({ stallTimeoutMs: 25, queryFn: ({ options }) => (async function* () {
+    await new Promise<void>((resolve) => options.abortController!.signal.addEventListener("abort", () => {
+      queryAborted = true
+      resolve()
+    }, { once: true }))
+  })() })
+  await assert.rejects(worker.runAgent(spec(), ctx()), (err: unknown) =>
+    err instanceof AgentError && err.code === "turn_stalled" && err.retryable && /25ms/.test(err.message))
+  assert.equal(queryAborted, true)
+})
+
+test("Claude silence watchdog resets on each SDK message", async () => {
+  const worker = new ClaudeWorker({ stallTimeoutMs: 250, queryFn: () => (async function* () {
+    for (let i = 0; i < 3; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      yield assistantMsg([{ type: "text", text: String(i) }]) as SDKMessage
+    }
+    yield resultMsg() as SDKMessage
+  })() })
+  assert.equal((await worker.runAgent(spec(), ctx())).text, "all done")
+})
+
+test("Claude silence watchdog 0 allows a silent query to finish", async () => {
+  const worker = new ClaudeWorker({ stallTimeoutMs: 0, queryFn: () => (async function* () {
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    yield resultMsg() as SDKMessage
+  })() })
+  assert.equal((await worker.runAgent(spec(), ctx())).text, "all done")
+})
+
+test("Claude closes an open SDK stream when message handling throws", async () => {
+  let returned = false
+  let queryAbort: AbortSignal | undefined
+  const worker = new ClaudeWorker({ queryFn: ({ options }) => {
+    queryAbort = options.abortController!.signal
+    return { [Symbol.asyncIterator]: () => {
+      let delivered = false
+      return {
+        next: async (): Promise<IteratorResult<SDKMessage>> => {
+          if (delivered) return new Promise(() => {})
+          delivered = true
+          return { done: false, value: assistantMsg([{ type: "text", text: "partial" }]) as SDKMessage }
+        },
+        return: async (): Promise<IteratorResult<SDKMessage>> => {
+          returned = true
+          return { done: true, value: undefined }
+        },
+      }
+    } }
+  } })
+  const context = ctx()
+  context.onProgress = () => { throw new Error("progress handler failed") }
+  await assert.rejects(worker.runAgent(spec(), context), /progress handler failed/)
+  assert.equal(queryAbort?.aborted, true)
+  assert.equal(returned, true)
+})
+
 const MODEL_USAGE_A = {
   inputTokens: 100,
   cacheReadInputTokens: 50,

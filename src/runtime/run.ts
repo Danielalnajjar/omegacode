@@ -34,6 +34,7 @@ export interface RunOverrides {
   sandbox?: Sandbox
   cwd?: string
   concurrency?: number
+  agentTimeoutMs?: number
   budget?: number | null
   /** Forwarded to the Claude worker when provider === "claude-code". */
   claudeModel?: string
@@ -127,6 +128,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     throw new Error(`run "${runId}" already has a journal; use --resume ${runId} instead`)
   }
   const modes = resolveRunModes(opts, loaded.meta, opts.resumeRunId !== undefined)
+  defaults.agentTimeoutMs = resolveAgentTimeoutMs(opts.overrides?.agentTimeoutMs, loaded.meta?.agentTimeoutMs)
   const seed = loaded.meta?.seed ?? randomSeed()
   const baseTimeMs = loaded.meta?.createdAt ?? Date.now()
 
@@ -135,7 +137,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   opts.onStart?.(runId)
   const journal = new Journal(runId)
   if (!loaded.meta) {
-    journal.append({ type: "meta", runId, workflowFile: filePath, fileHash, args: opts.args ?? null, seed, createdAt: baseTimeMs, keyVersion: KEY_VERSION, typesafe: modes.typesafe, fake: modes.fake })
+    journal.append({ type: "meta", runId, workflowFile: filePath, fileHash, args: opts.args ?? null, seed, createdAt: baseTimeMs, keyVersion: KEY_VERSION, typesafe: modes.typesafe, fake: modes.fake, agentTimeoutMs: defaults.agentTimeoutMs })
   }
 
   const renderer = new TerminalRenderer({ enabled: !opts.quiet })
@@ -291,8 +293,18 @@ function resolveDefaults(meta: { defaultProvider?: ProviderId; defaultModel?: st
     concurrency,
     maxAgents: DEFAULTS.maxAgents,
     maxFanout: DEFAULTS.maxFanout,
+    agentTimeoutMs: DEFAULTS.agentTimeoutMs,
     budget: o.budget ?? DEFAULTS.budget,
   }
+}
+
+export function resolveAgentTimeoutMs(requested: number | undefined, recorded?: number): number {
+  for (const [source, value] of [["--agent-timeout-ms", requested], ["recorded --agent-timeout-ms", recorded]] as const) {
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
+      throw new Error(`invalid ${source}: ${value} — must be a non-negative safe integer`)
+    }
+  }
+  return requested ?? recorded ?? DEFAULTS.agentTimeoutMs
 }
 
 function sha256(s: string): string {

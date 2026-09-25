@@ -440,39 +440,92 @@ export class Runtime {
         throw new WorkflowError(`token budget exceeded (${this.totalUsage.outputTokens} / ${budgetTotal} output tokens)`)
       }
       const startedAt = Date.now()
-      this.o.events.emit({ type: "agent", index, phaseIndex, phaseTitle, label, provider: spec.provider, model: spec.model, state: "running", startedAt })
-      this.o.journal.append({
-        type: "started",
-        key,
-        index,
-        label,
-        provider: spec.provider,
-        ...(spec.model ? { model: spec.model } : {}),
-        ...(spec.effort ? { effort: spec.effort } : {}),
-        ...(spec.serviceTier ? { serviceTier: spec.serviceTier } : {}),
-      })
+      const agentAbort = new AbortController()
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined
+      let timeoutError: AgentError | undefined
+      let rejectDeadline!: (reason: Error) => void
+      const deadline = new Promise<never>((_resolve, reject) => { rejectDeadline = reject })
+      void deadline.catch(() => {})
+      const onRunAbort = () => {
+        agentAbort.abort()
+        rejectDeadline(new AgentInterrupted())
+      }
+      const clearDeadline = () => {
+        if (deadlineTimer) clearTimeout(deadlineTimer)
+        this.o.signal.removeEventListener("abort", onRunAbort)
+      }
+      let transcriptForSetup: AgentTranscript | undefined
+      let setupComplete = false
+      try {
+        this.o.signal.addEventListener("abort", onRunAbort, { once: true })
+        if (this.o.signal.aborted) onRunAbort()
+        if (this.o.defaults.agentTimeoutMs > 0) {
+          deadlineTimer = setTimeout(() => {
+            if (this.o.signal.aborted) return onRunAbort()
+            timeoutError = new AgentError({
+              provider: spec.provider,
+              code: "agent_timeout",
+              message: `agent exceeded wall-clock limit of ${this.o.defaults.agentTimeoutMs}ms`,
+              retryable: false,
+            })
+            agentAbort.abort()
+            rejectDeadline(timeoutError)
+          }, this.o.defaults.agentTimeoutMs)
+        }
+        this.o.events.emit({ type: "agent", index, phaseIndex, phaseTitle, label, provider: spec.provider, model: spec.model, state: "running", startedAt })
+        this.o.journal.append({
+          type: "started",
+          key,
+          index,
+          label,
+          provider: spec.provider,
+          ...(spec.model ? { model: spec.model } : {}),
+          ...(spec.effort ? { effort: spec.effort } : {}),
+          ...(spec.serviceTier ? { serviceTier: spec.serviceTier } : {}),
+        })
+        // A re-run truncates only this journal-key-stable agent's transcript.
+        transcriptForSetup = new AgentTranscript(this.o.runId, index)
+        transcriptForSetup.write({ kind: "meta", index, label, provider: spec.provider, model: spec.model, prompt: spec.prompt })
+        transcriptForSetup.write({ kind: "status", state: "running" })
+        setupComplete = true
+      } finally {
+        if (!setupComplete) {
+          clearDeadline()
+          void transcriptForSetup?.close().catch(() => {})
+        }
+      }
 
       let worktree: (Worktree & { gitRoot: string }) | undefined
       let claudeProfileLabel: string | undefined
       const runSpec = { ...spec }
-      // Transcript files are agents/<index>.jsonl — the address the server/viewer resolve from agent
-      // events. The index is journal-key-stable across resume attempts (see above), so a re-run
-      // truncates THIS agent's transcript, never an unrelated agent's that shifted submit position.
-      const transcript = new AgentTranscript(this.o.runId, index)
-      transcript.write({ kind: "meta", index, label, provider: spec.provider, model: spec.model, prompt: spec.prompt })
-      transcript.write({ kind: "status", state: "running" })
+      const transcript = transcriptForSetup!
+      // The deadline is shared by preparation, backoff and both model turns. A worker that ignores
+      // abort cannot hold the runtime open; its late resolution cannot enter the success path.
+      const withinDeadline = <T>(work: Promise<T>): Promise<T> => Promise.race([work, deadline])
       // Usage accumulates across the corrective-retry attempt(s) — do not lose the first attempt's.
       let attemptUsage = emptyUsage()
       // Tracked so the post-teardown worktree event (below) can re-state the right terminal state.
       let succeeded = false
       try {
         if (opts?.worktree) {
-          worktree = await this.setupWorktree(runSpec, opts.worktree, index)
+          const setup = this.setupWorktree(runSpec, opts.worktree, index)
+          try {
+            worktree = await withinDeadline(setup)
+          } catch (err) {
+            // If git finishes creating the worktree after the deadline, the normal finally block
+            // cannot see it. Tear that late worktree down without delaying the timed-out agent.
+            void setup.then((late) => this.worktreeMutex.run(() => teardownWorktree({
+              gitRoot: late.gitRoot,
+              worktree: { path: late.path, branch: late.branch, base: late.base },
+            }))).catch(() => {})
+            throw err
+          }
         }
         const worker = this.o.factory.get(runSpec.provider, runSpec.serviceTier, runSpec.codexExecutionProfile)
         const workerCtx = {
-          signal: this.o.signal,
+          signal: agentAbort.signal,
           onProgress: (e: WorkerProgress) => {
+            if (agentAbort.signal.aborted) return
             switch (e.kind) {
               case "text":
                 transcript.write({ kind: "text", text: e.text })
@@ -535,8 +588,8 @@ export class Runtime {
             }
           },
         }
-        const prepared = runSpec.claudeProfile !== undefined
-          ? await worker.prepareAgentCall?.(runSpec, workerCtx)
+        const prepared = runSpec.claudeProfile !== undefined && worker.prepareAgentCall
+          ? await withinDeadline(worker.prepareAgentCall(runSpec, workerCtx))
           : undefined
         if (runSpec.claudeProfile !== undefined && !prepared) {
           throw new AgentError({ provider: runSpec.provider, code: "claude_profile_unavailable", message: `Claude profile ${runSpec.claudeProfile} cannot be prepared by this worker; no fallback occurred` })
@@ -544,13 +597,13 @@ export class Runtime {
         const runAttempt = prepared ?? ((attemptSpec: AgentSpec, attemptContext: typeof workerCtx) => worker.runAgent(attemptSpec, attemptContext))
         // Wrap the worker call in withRetry so a retryable AgentError (429/overload) backs off
         // instead of killing the agent and usually the whole run.
-        let result = await withRetry(() => runAttempt(runSpec, workerCtx), this.o.signal, {
+        let result = await withinDeadline(withRetry(() => runAttempt(runSpec, workerCtx), agentAbort.signal, {
           onRetry: ({ attempt, maxAttempts, delayMs, error }) => {
             // A retried attempt still billed; keep its usage so the journal and budget see every attempt.
             if (error.usage) attemptUsage = addUsage(attemptUsage, error.usage)
             this.o.events.emit({ type: "log", message: `[${label}] retrying after ${error.code} (attempt ${attempt}/${maxAttempts}, backoff ${delayMs}ms): ${error.message}` })
           },
-        })
+        }))
         attemptUsage = addUsage(attemptUsage, result.usage)
         let value: unknown
         try {
@@ -563,12 +616,12 @@ export class Runtime {
               ...runSpec,
               instructions: `${runSpec.instructions ?? ""}\n\nYour previous response did not match the required JSON schema (${err.message}). Respond again with ONLY a JSON value that exactly matches the schema.`.trim(),
             }
-            result = await withRetry(() => runAttempt(corrective, workerCtx), this.o.signal, {
+            result = await withinDeadline(withRetry(() => runAttempt(corrective, workerCtx), agentAbort.signal, {
               onRetry: ({ attempt, maxAttempts, delayMs, error }) => {
                 if (error.usage) attemptUsage = addUsage(attemptUsage, error.usage)
                 this.o.events.emit({ type: "log", message: `[${label}] corrective retry after ${error.code} (attempt ${attempt}/${maxAttempts}, backoff ${delayMs}ms): ${error.message}` })
               },
-            })
+            }))
             attemptUsage = addUsage(attemptUsage, result.usage)
             value = this.finalizeResult(spec, result)
           } else {
@@ -618,7 +671,10 @@ export class Runtime {
         })
         succeeded = true
         return value as T
-      } catch (err) {
+      } catch (caught) {
+        // A provider may reject on the abort event before Promise.race observes the deadline.
+        // The deadline, not that provider's AgentInterrupted, is the terminal cause.
+        const err = timeoutError ?? caught
         const durationMs = Date.now() - startedAt
         const message = err instanceof Error ? err.message : String(err)
         // Failed turns still bill (L6): fold the provider-reported usage of the failing attempt into
@@ -658,6 +714,7 @@ export class Runtime {
         })
         throw err instanceof AgentError || err instanceof AgentInterrupted ? err : new AgentFailedError(`agent failed: ${message}`)
       } finally {
+        clearDeadline()
         await transcript.close().catch(() => {})
         if (worktree) {
           // Thread the creation-time base through teardown (H10): the git-config fallback lives in

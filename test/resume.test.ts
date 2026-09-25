@@ -13,7 +13,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Runtime } from "../src/runtime/primitives.ts"
-import { runWorkflow } from "../src/runtime/run.ts"
+import { runWorkflow, resolveAgentTimeoutMs } from "../src/runtime/run.ts"
 import { Journal, JournalNotFoundError, ResumePreconditionError, type LoadedJournal } from "../src/runtime/journal.ts"
 import { runInSandbox } from "../src/runtime/sandbox.ts"
 import type { EventSink, WorkflowEventInput } from "../src/runtime/events.ts"
@@ -121,6 +121,21 @@ function withHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
     rmSync(home, { recursive: true, force: true })
   })
 }
+
+test("agent timeout inherits the journaled run value on resume unless explicitly overridden", async () => {
+  await withHome(async (home) => {
+    const file = join(home, "timeout.workflow.js")
+    writeFileSync(file, `export const meta = { name: "timeout-resume", description: "test" };\nreturn await agent("hello")`)
+    const first = await runWorkflow({ file, fake: true, quiet: true, overrides: { agentTimeoutMs: 123 } })
+    assert.equal(first.status, "completed")
+    const recorded = Journal.load(first.runId).meta?.agentTimeoutMs
+    assert.equal(recorded, 123)
+    assert.equal(resolveAgentTimeoutMs(undefined, recorded), 123)
+    assert.equal(resolveAgentTimeoutMs(0, recorded), 0)
+    const resumed = await runWorkflow({ file, resumeRunId: first.runId, quiet: true })
+    assert.equal(resumed.status, "completed")
+  })
+})
 
 const PARALLEL_BODY = `return await parallel([
   () => agent("alpha"),

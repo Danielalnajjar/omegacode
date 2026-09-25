@@ -447,6 +447,11 @@ async function cmdRun(flags: Flags): Promise<void> {
   if (cwd) overrides.cwd = resolve(cwd)
   const concurrency = positiveIntFlag(flags, "concurrency")
   if (concurrency !== undefined) overrides.concurrency = concurrency
+  const agentTimeoutMs = intFlag(flags, "agent-timeout-ms")
+  if (agentTimeoutMs !== undefined) {
+    if (!Number.isSafeInteger(agentTimeoutMs)) throw new UsageError("--agent-timeout-ms must be a non-negative safe integer")
+    overrides.agentTimeoutMs = agentTimeoutMs
+  }
   const budget = numberFlag(flags, "budget")
   if (budget !== undefined) overrides.budget = budget
   const codexAppServerSocket = str(flags["codex-app-server-socket"])
@@ -634,6 +639,7 @@ function buildDetachedChildArgs(
   appendValue(out, "sandbox", opts.overrides.sandbox)
   appendValue(out, "cwd", opts.overrides.cwd)
   appendValue(out, "concurrency", opts.overrides.concurrency)
+  appendValue(out, "agent-timeout-ms", opts.overrides.agentTimeoutMs)
   appendValue(out, "budget", opts.overrides.budget)
   appendValue(out, "codex-app-server-socket", opts.overrides.codexAppServerSocket)
   if (opts.overrides.codexNoAppServerProxy) out.push("--codex-no-app-server-proxy")
@@ -924,6 +930,7 @@ Usage:
       --model <m>                          default model — set together with --provider (both or neither)
       --effort <e>  --sandbox read-only|workspace-write|danger-full-access
       --cwd <dir>  --concurrency <N>       working dir; max concurrent agents (default ${DEFAULTS.concurrency})
+      --agent-timeout-ms <N>               per-agent wall-clock limit (default ${DEFAULTS.agentTimeoutMs}; 0 disables)
       --budget <N>                         output-token ceiling (enables budget.*)
       --codex-enable-local-mcps            opt into selected local stdio MCPs in Codex worker app-servers
       --codex-disable-local-mcps           explicit default: keep selected local MCPs disabled for worker fanout

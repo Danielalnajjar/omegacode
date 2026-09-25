@@ -76,6 +76,7 @@ function defaults(over: Partial<RunDefaults> = {}): RunDefaults {
     concurrency: DEFAULTS.concurrency,
     maxAgents: DEFAULTS.maxAgents,
     maxFanout: DEFAULTS.maxFanout,
+    agentTimeoutMs: DEFAULTS.agentTimeoutMs,
     budget: null,
     ...over,
   }
@@ -294,6 +295,107 @@ test("pipeline() nulls a failed item (skipping its later stages) but keeps sibli
   } finally {
     b.cleanup()
   }
+})
+
+test("agent wall clock aborts only the timed-out provider call and records its failure", async () => {
+  let stopped = false
+  const b = build({
+    defaults: { agentTimeoutMs: 30, concurrency: 2 },
+    hooks: { run: async (spec, ctx) => {
+      if (spec.prompt !== "stuck") return { text: "healthy", status: "completed", usage: emptyUsage() }
+      return new Promise((_resolve, reject) => {
+        ctx.signal.addEventListener("abort", () => { stopped = true; reject(new AgentInterrupted()) }, { once: true })
+      })
+    } },
+  })
+  try {
+    const out = await runBody(b, `return await parallel([() => agent("stuck"), () => agent("healthy")])`)
+    assert.deepEqual(out, [null, "healthy"])
+    assert.equal(stopped, true)
+    assert.deepEqual([...Journal.load("run_test").results.values()].map((e) => e.status).sort(), ["completed", "failed"])
+    assert.ok(b.sink.events.some((e) => e.type === "agent" && e.state === "failed" && e.error?.includes("30ms")))
+    const transcript = readFileSync(agentTranscriptPath("run_test", 1), "utf8")
+    assert.match(transcript, /"state":"failed"/)
+    assert.match(transcript, /30ms/)
+  } finally { b.cleanup() }
+})
+
+test("agent timeout stops retry backoff and does not retry", async () => {
+  const b = build({
+    defaults: { agentTimeoutMs: 25 },
+    hooks: { run: async () => { throw new AgentError({ provider: "codex", code: "overloaded", message: "retry me", retryable: true }) } },
+  })
+  try {
+    await assert.rejects(b.runtime.globals().agent("retry"), (err: unknown) =>
+      err instanceof AgentError && err.code === "agent_timeout" && !err.retryable && /25ms/.test(err.message))
+    assert.equal(b.worker.calls.length, 1)
+  } finally { b.cleanup() }
+})
+
+test("agent deadline settles even if a provider ignores abort", async () => {
+  let providerSignal: AbortSignal | undefined
+  const b = build({ defaults: { agentTimeoutMs: 25 }, hooks: { run: async (_spec, ctx) => {
+    providerSignal = ctx.signal
+    return new Promise<AgentResult>(() => {})
+  } } })
+  try {
+    await assert.rejects(b.runtime.globals().agent("unresponsive"),
+      (err: unknown) => err instanceof AgentError && err.code === "agent_timeout")
+    assert.equal(providerSignal?.aborted, true)
+    assert.equal([...Journal.load("run_test").results.values()][0]?.status, "failed")
+  } finally { b.cleanup() }
+})
+
+test("an agent setup failure clears its deadline before any provider call", async () => {
+  const b = build({ defaults: { agentTimeoutMs: 500 } })
+  const originalEmit = b.sink.emit.bind(b.sink)
+  b.sink.emit = (event) => {
+    if (event.type === "agent" && event.state === "running") throw new Error("running event failed")
+    originalEmit(event)
+  }
+  const activeTimers = () => process.getActiveResourcesInfo().filter((resource) => resource === "Timeout").length
+  const before = activeTimers()
+  try {
+    await assert.rejects(b.runtime.globals().agent("pre-provider failure"), /running event failed/)
+    assert.equal(b.worker.calls.length, 0)
+    assert.equal(activeTimers(), before, "the agent deadline must not survive a pre-provider failure")
+  } finally { b.cleanup() }
+})
+
+test("agent timeout covers a corrective structured-output attempt", async () => {
+  const b = build({
+    defaults: { agentTimeoutMs: 35 },
+    hooks: { run: async (_spec, ctx, call) => call === 0
+      ? { text: "not json", status: "completed", usage: emptyUsage() }
+      : new Promise((_resolve, reject) => ctx.signal.addEventListener("abort", () => reject(new AgentInterrupted()), { once: true })) },
+  })
+  try {
+    await assert.rejects(b.runtime.globals().agent("structured", { schema: { type: "object" } }),
+      (err: unknown) => err instanceof AgentError && err.code === "agent_timeout")
+    assert.equal(b.worker.calls.length, 2)
+  } finally { b.cleanup() }
+})
+
+test("run abort remains an interruption, not an agent timeout", async () => {
+  const ac = new AbortController()
+  const b = build({ ac, defaults: { agentTimeoutMs: 200 }, hooks: { run: async (_spec, ctx) =>
+    new Promise((_resolve, reject) => ctx.signal.addEventListener("abort", () => reject(new AgentInterrupted()), { once: true })) } })
+  try {
+    const pending = b.runtime.globals().agent("cancel")
+    setTimeout(() => ac.abort(), 10)
+    await assert.rejects(pending, AgentInterrupted)
+    assert.equal([...Journal.load("run_test").results.values()][0]?.status, "interrupted")
+  } finally { b.cleanup() }
+})
+
+test("agent timeout 0 disables the wall-clock guard", async () => {
+  const b = build({ defaults: { agentTimeoutMs: 0 }, hooks: { run: async () => {
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    return { text: "late success", status: "completed", usage: emptyUsage() }
+  } } })
+  try {
+    assert.equal(await b.runtime.globals().agent("slow"), "late success")
+  } finally { b.cleanup() }
 })
 
 test("H6: pipeline() RETHROWS AgentInterrupted instead of nulling it", async () => {

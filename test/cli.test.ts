@@ -459,7 +459,7 @@ describe("CLI end-to-end (--fake)", () => {
       const r = await runCli(argv, { OMEGACODE_HOME: home })
       assert.equal(r.code, 0, `stderr=${r.stderr}`)
       assert.ok(r.stdout.startsWith("omegacode — run JS workflow files"), r.stdout)
-      for (const flag of ["--args", "--args-file", "--provider", "--model", "--effort", "--sandbox", "--cwd", "--concurrency", "--budget", "--resume", "--fake", "--json", "--detach", "--start-json", "--open", "--no-serve"]) {
+      for (const flag of ["--args", "--args-file", "--provider", "--model", "--effort", "--sandbox", "--cwd", "--concurrency", "--agent-timeout-ms", "--budget", "--resume", "--fake", "--json", "--detach", "--start-json", "--open", "--no-serve"]) {
         assert.match(r.stdout, new RegExp(`${flag}\\b`), `help is missing ${flag}`)
       }
     }
@@ -980,5 +980,24 @@ catch (error) { return error.message }`)
       assert.match(mismatch.stderr, /must match/)
     }
     assert.equal(readFileSync(calls, "utf8"), "call\n")
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+test("CLI forwards the per-agent timeout through detached launch and validates its value", async () => {
+  const home = mkdtempSync(join(tmpdir(), "omega-cli-agent-timeout-"))
+  try {
+    const file = join(home, "timeout.workflow.js")
+    writeFileSync(file, `export const meta = { name: "timeout-cli", description: "test" };\nreturn await agent("hello")`)
+    const env = { OMEGACODE_HOME: home }
+    const invalid = await runCli(["run", file, "--agent-timeout-ms", "-1", "--fake", "--no-serve"], env)
+    assert.equal(invalid.code, 1)
+    assert.match(invalid.stderr, /--agent-timeout-ms must be a non-negative integer/)
+    const launch = await runCli(["run", file, "--agent-timeout-ms", "123", "--fake", "--detach", "--json", "--no-serve"], env)
+    assert.equal(launch.code, 0, launch.stderr)
+    const runId = JSON.parse(launch.stdout).runId
+    const done = await runCli(["wait", runId, "--json", "--poll-ms", "20", "--timeout-ms", "10000"], env)
+    assert.equal(done.code, 0, done.stderr)
+    const meta = JSON.parse(readFileSync(join(home, "runs", runId, "journal.jsonl"), "utf8").split("\n")[0]!)
+    assert.equal(meta.agentTimeoutMs, 123)
   } finally { rmSync(home, { recursive: true, force: true }) }
 })

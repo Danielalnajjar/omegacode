@@ -17,6 +17,8 @@ export interface JournalMeta {
   args: unknown
   seed: number
   createdAt: number
+  /** Per-agent wall-clock limit retained when --resume omits the flag. */
+  agentTimeoutMs?: number
   /**
    * Key-hashing scheme version (see keys.ts). A resume against a different version is rejected.
    * Absent in baseline (v1) journals — the field predates them — so absent IS v1 on resume.

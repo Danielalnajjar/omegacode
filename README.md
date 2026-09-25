@@ -125,6 +125,23 @@ to deep effort and adjudicates). Try `omegacode run deep-research --args '"your
 question"'`, or `omegacode workflows` to list them. See `omegacode guide` for the
 complete authoring reference.
 
+### Agent time limits and failures
+
+Every started `agent()` call has a two-hour wall-clock limit across provider preparation,
+backoff retries, and the corrective structured-output retry. Set `--agent-timeout-ms N`
+for a run (`0` disables it); the value is journaled and inherited when a resume omits
+the flag. On expiry OmegaCode aborts that provider call and raises non-retryable
+`AgentError` code `agent_timeout`, naming the limit. Parallel and pipeline siblings
+continue, and the failed agent is recorded in the journal, transcript, and events.
+Run cancellation remains a distinct interruption.
+
+Claude Code also has a 30-minute no-message watchdog on its SDK query stream,
+matching the Codex and Grok silence guards. It aborts the query and raises retryable
+`AgentError` code `turn_stalled`, naming the silence interval; each incoming SDK
+message resets the interval. The programmatic `ClaudeWorker` option
+`stallTimeoutMs` overrides it (`0` disables it). The wall-clock limit still applies
+when messages keep arriving.
+
 ### Muse workers
 
 Muse uses the existing CLI login and one `muse exec --json` process per attempt. Select `provider: "muse"` together with a model (for example `muse-spark-1.3-contributor`). Effort values pass through unchanged; `maxTurns` sets the model-step limit. Read-only selects the private `omegacode-read-only` permission profile: shell reads remain enabled, direct writes are denied, and the OS sandbox enforces read-only filesystem and restricted network access; full access is explicit; workspace-write is rejected because confinement failed the spike. Per-run private settings remove MCP servers and symlink authentication without copying credentials. Token usage is reported from the session log; subscription cost remains unpriced (`costUsd: 0`). Muse’s sandbox denies the per-user cache, so read-only Muse workers cannot compile Swift or Clang projects; Node and Python test runs worked in live product runs. Each child gets `TBH_STREAM_IDLE_TIMEOUT_SECS` and `TBH_STREAM_FIRST_EVENT_TIMEOUT_SECS` of 3600 so max reasoning is not killed by Muse's 180s silent-stream default; OmegaCode's stdout stall watchdog uses the same one-hour bound. Set either variable to override. Schema calls always pass `exec --output-schema` (meta provider, terminal text). A remaining Ajv miss still runs one low-effort extraction exec of that answer; the runtime's full-task schema retry is last-resort. `MUSE_BIN` overrides the executable. Run `pnpm verify:muse-smoke -- --bin /path/to/muse` for the opt-in real-binary smoke; ordinary tests use fakes.

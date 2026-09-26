@@ -7,7 +7,7 @@
 //   danger-full-access   → everything allowed.
 // One query() per agent turn.
 
-import { readlinkSync, realpathSync } from "node:fs"
+import { accessSync, constants, readlinkSync, realpathSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { query, USAGE_LIMIT_ERROR_PREFIXES, type Options, type PermissionResult, type SDKMessage } from "@anthropic-ai/claude-agent-sdk"
@@ -161,6 +161,7 @@ export class ClaudeWorker implements Worker {
     if (spec.schema) options.outputFormat = toClaudeOutputFormat(spec.schema)
     if (spec.instructions) options.systemPrompt = { type: "preset", preset: "claude_code", append: spec.instructions }
     const claudeCodeExecutable = this.opts.pathToClaudeCodeExecutable ?? env?.CLAUDE_CODE_EXECUTABLE
+      ?? (isolationFile ? undefined : executorLauncher(options.env!))
     if (claudeCodeExecutable) options.pathToClaudeCodeExecutable = claudeCodeExecutable
 
     let primaryResult: Extract<SDKMessage, { type: "result" }> | undefined
@@ -336,6 +337,22 @@ export class ClaudeWorker implements Worker {
  * Sandbox enforcement for the canUseTool gate. Returns a deny message, or `undefined` to allow.
  * Exported for tests; the write boundary (paths inside spec.cwd) is the security-critical part.
  */
+/**
+ * The launcher BB's Claude routes run, which adds the Executor MCP servers before starting Claude.
+ * A profile's launcher already chains to it, so this covers calls without a profile; isolated
+ * calls keep their empty MCP set.
+ */
+function executorLauncher(env: NodeJS.ProcessEnv): string | undefined {
+  if (process.platform !== "darwin" || !env.HOME) return undefined
+  const path = join(env.HOME, ".local", "libexec", "claude-with-executor-mcp")
+  try {
+    accessSync(path, constants.X_OK)
+    return path
+  } catch {
+    return undefined
+  }
+}
+
 export function checkTool(sandbox: Sandbox, cwd: string, toolName: string, input: Record<string, unknown>): string | undefined {
   if (sandbox === "danger-full-access") return undefined
 

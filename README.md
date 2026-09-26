@@ -78,6 +78,8 @@ never silently ride another provider's call.
 Provider-native options stay deliberately provider-specific:
 - Claude Code: `claudeAgent` selects a user-level custom agent. OmegaCode loads only the user
   setting source for that call; ordinary calls continue to load no settings sources.
+- Grok: `grokAgent` selects a user-level agent by name (for example `"librarian"`), loading
+  its prompt, tools, disallowed tools, and MCP servers. Isolated Grok runs reject this option.
 - Claude Code: on macOS, a call without `claudeProfile` launches through
   `~/.local/libexec/claude-with-executor-mcp` when that launcher is installed. It is the launcher
   BB's Claude routes run and a profile's launcher chains to, so Claude workers reach Executor

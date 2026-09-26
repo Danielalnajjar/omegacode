@@ -192,6 +192,18 @@ test("fresh spawn stamps the absolute shipped Grok fleet profile", async () => {
   assert.ok(isAbsolute(profilePath))
 })
 
+test("grokAgent selects a user-level agent without requiring the shipped profile", async () => {
+  const h = harness([versionOk, happyRun], { agentProfileIsFile: () => false })
+  await h.worker.runAgent(spec({ grokAgent: "librarian", model: "grok-4.7-build-fast", effort: "low" }), ctx())
+
+  const args = h.spawned[1]!.args
+  assert.equal(flagAfter(args, "--agent"), "librarian")
+  assert.equal(flagAfter(args, "-m"), "grok-4.7-build-fast")
+  assert.equal(flagAfter(args, "--reasoning-effort"), "low")
+  assert.ok(args.includes("--no-subagents"))
+  assert.ok(args.includes("--always-approve"))
+})
+
 test("every sandbox maps OS confinement and always-approve", async () => {
   const h = harness([versionOk, happyRun, happyRun, happyRun])
   await h.worker.runAgent(spec({ sandbox: "read-only" }), ctx())
@@ -592,5 +604,15 @@ test("isolation refuses a worker cwd outside the configured workspace before spa
   const { file } = isolationFixture(t)
   const h = harness([], { isolationFile: file })
   await assert.rejects(h.worker.runAgent(spec({ cwd: "/tmp" }), ctx()), /workspace differs/)
+  assert.equal(h.spawned.length, 0)
+})
+
+test("isolation rejects grokAgent before spawning", async (t) => {
+  const { file, workspace } = isolationFixture(t)
+  const h = harness([], { isolationFile: file })
+  await assert.rejects(
+    h.worker.runAgent(spec({ cwd: workspace, grokAgent: "librarian" }), ctx()),
+    (err: unknown) => err instanceof AgentError && err.code === "invalid_config" && /grokAgent/.test(err.message),
+  )
   assert.equal(h.spawned.length, 0)
 })

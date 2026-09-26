@@ -58,6 +58,8 @@ declare global {
     museExecutionProfile?: OmegacodeMuseExecutionProfile
     /** Claude Code user-level custom agent name. */
     claudeAgent?: string
+    /** Grok user-level custom agent name. */
+    grokAgent?: string
     /** Stable Subscription Picker profile id for this direct Claude call. */
     claudeProfile?: string
     /** Codex child role that the root turn must prove it spawned successfully. */

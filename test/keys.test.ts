@@ -123,6 +123,19 @@ test("claudeProfile joins key identity so named agents can pin a home", () => {
   assert.equal(keyedOpts({ claudeProfile: "profile-a" }).claudeProfile, "profile-a")
 })
 
+test("grokAgent changes only named Grok keys", () => {
+  const b = branchKey(ROOT_KEY, "root", 0)
+  const base = { provider: "grok", model: "grok-4.7-build-fast" }
+  const without = keyedSpec(base, undefined)
+  const explicitlyAbsent = keyedSpec({ ...base, grokAgent: undefined }, undefined)
+  const named = keyedSpec({ ...base, grokAgent: "librarian" }, undefined)
+  assert.deepEqual(explicitlyAbsent, without)
+  assert.equal(Object.hasOwn(without, "grokAgent"), false)
+  assert.equal(chainKey(b, 0, "p", explicitlyAbsent), chainKey(b, 0, "p", without))
+  assert.notEqual(chainKey(b, 0, "p", named), chainKey(b, 0, "p", without))
+  assert.equal(keyedOpts({ grokAgent: "librarian" }).grokAgent, "librarian")
+})
+
 test("keyedSpec captures RESOLVED provider/model so default/CLI overrides invalidate (H8)", () => {
   const b = branchKey(ROOT_KEY, "root", 0)
   // resolved spec with provider codex vs claude-code → different keys, even with no opts

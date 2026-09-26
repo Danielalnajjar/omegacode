@@ -908,6 +908,27 @@ test("provider-native options are rejected at the public boundary even with a fa
   }
 })
 
+test("grokAgent requires a non-empty string and the grok provider", async () => {
+  const b = build()
+  try {
+    for (const value of ["", "   ", null, 42]) {
+      await assert.rejects(
+        runBody(b, `return await agent("x", { provider: "grok", model: "grok-4.7", grokAgent: ${JSON.stringify(value)} })`),
+        (err: unknown) => err instanceof AgentError && err.code === "unsupported_option" && /grokAgent must be a non-empty string/.test(err.message),
+      )
+    }
+    await assert.rejects(
+      runBody(b, `return await agent("x", { grokAgent: "librarian" })`),
+      (err: unknown) => err instanceof AgentError && err.code === "unsupported_option" && /grokAgent is grok-only; omit it or use the grok provider/.test(err.message),
+    )
+    assert.equal(b.worker.calls.length, 0)
+    await runBody(b, `return await agent("x", { provider: "grok", model: "grok-4.7", grokAgent: "librarian" })`)
+    assert.equal(b.worker.calls.at(-1)?.grokAgent, "librarian")
+  } finally {
+    b.cleanup()
+  }
+})
+
 test("a resolved Claude profile name is shown on agent events without leaking the profile id", async () => {
   const b = build({
     defaults: { provider: "claude-code", model: "claude-fable-5" },

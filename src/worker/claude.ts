@@ -493,7 +493,8 @@ function isReadOnlyGh(args: string[]): boolean {
     if (method !== undefined && !(method.toUpperCase() === "GET" || (graphql && method.toUpperCase() === "POST"))) return false
     if (t === "--input" || t.startsWith("--input=")) return false
     if (!graphql && (/^-[fF]/.test(t) || t.startsWith("--field") || t.startsWith("--raw-field"))) return false
-    if (graphql && /mutation/i.test(t)) return false
+    // The query must be literal: `@file` and `$VAR` inputs could hide a mutation from this check.
+    if (graphql && (/mutation/i.test(t) || t.includes("$") || /=@|^@/.test(t))) return false
   }
   return true
 }

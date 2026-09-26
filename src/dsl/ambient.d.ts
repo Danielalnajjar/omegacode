@@ -31,6 +31,8 @@ declare global {
 
   type OmegacodeCodexExecutionProfile = "workflow-bulk-v1" | "workflow-plan-v1" | "workflow-research-v1"
 
+  type OmegacodeMuseExecutionProfile = "workflow-research-v1"
+
   type OmegacodeJSONSchema = Record<string, unknown>
 
   /** Options an author passes to `agent()`. All optional; defaults come from meta/config/CLI. */
@@ -52,6 +54,8 @@ declare global {
     serviceTier?: string
     /** Codex-only app-server capability profile for role-scoped workflow workers. */
     codexExecutionProfile?: OmegacodeCodexExecutionProfile
+    /** Muse-only MCP profile; workflow-research-v1 keeps the librarian research servers. */
+    museExecutionProfile?: OmegacodeMuseExecutionProfile
     /** Claude Code user-level custom agent name. */
     claudeAgent?: string
     /** Stable Subscription Picker profile id for this direct Claude call. */

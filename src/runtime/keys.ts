@@ -68,6 +68,7 @@ export interface KeyedFields {
   codexExecutionProfile: string | undefined
   codexWebSearch: string | null
   codexPermissions?: string
+  museExecutionProfile?: string
   codexNetworkAccess: boolean | null
   worktree: unknown
 }
@@ -90,6 +91,7 @@ export function keyedSpec(spec: KeyedSpecInput, worktree: unknown): KeyedFields 
     codexWebSearch: spec.codexWebSearch ?? null,
     codexNetworkAccess: spec.codexNetworkAccess ?? null,
     ...(spec.codexPermissions !== undefined ? { codexPermissions: spec.codexPermissions } : {}),
+    ...(spec.museExecutionProfile !== undefined ? { museExecutionProfile: spec.museExecutionProfile } : {}),
     worktree: worktree ?? null,
   }
 }
@@ -111,6 +113,7 @@ export interface KeyedSpecInput {
   codexWebSearch?: string
   codexNetworkAccess?: boolean
   codexPermissions?: string
+  museExecutionProfile?: string
 }
 
 /** The subset of OPTS that participates in the cache key (used where a resolved spec isn't handy). */

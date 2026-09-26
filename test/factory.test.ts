@@ -199,6 +199,37 @@ test("isReadOnlyBash classification", () => {
   assert.equal(isReadOnlyBash("unknowncmd"), false)
 })
 
+test("isReadOnlyBash allows gh reads and denies gh writes", () => {
+  for (const command of [
+    "gh api repos/cli/cli --jq .stargazers_count",
+    "gh api -X GET search/issues -H 'Accept: application/vnd.github+json'",
+    "gh api graphql -f query='query { viewer { login } }'",
+    "gh api repos/o/r/releases --paginate | jq length",
+    "gh release list -R o/r",
+    "gh pr view 12 -R o/r --json title",
+    "gh search code useQuery --repo o/r",
+    "gh auth status",
+  ]) assert.equal(isReadOnlyBash(command), true, command)
+  for (const command of [
+    "gh api -X DELETE repos/o/r",
+    "gh api --method=PATCH repos/o/r",
+    "gh api repos/o/r/issues -f title=x",
+    "gh api repos/o/r/issues --input body.json",
+    "gh api graphql -f query='mutation { addStar }'",
+    "gh api graphql -f query=@mutation.graphql",
+    "gh api graphql -F query=@q.graphql",
+    "gh api graphql -f query=\"$Q\"",
+    "gh api graphql -f query=${Q}",
+    "gh repo clone o/r",
+    "gh release download v1 -R o/r",
+    "gh pr merge 12",
+    "gh pr checkout 12",
+    "gh issue create",
+    "gh auth token",
+    "gh",
+  ]) assert.equal(isReadOnlyBash(command), false, command)
+})
+
 test("H4: isReadOnlyBash denies command/process substitution", () => {
   assert.equal(isReadOnlyBash("echo $(rm -rf x)"), false)
   assert.equal(isReadOnlyBash("cat `touch pwned`"), false)

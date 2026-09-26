@@ -97,6 +97,11 @@ test("codex execution profiles invalidate keys without changing unprofiled journ
   assert.equal(chainKey(b, 0, "p", unprofiled), golden)
   assert.equal(chainKey(b, 0, "p", explicitlyUnprofiled), golden)
   assert.notEqual(chainKey(b, 0, "p", profiled), golden)
+  const muse = { provider: "muse", model: "muse-model-1" }
+  assert.notEqual(
+    chainKey(b, 0, "p", keyedSpec({ ...muse, museExecutionProfile: "workflow-research-v1" }, undefined)),
+    chainKey(b, 0, "p", keyedSpec(muse, undefined)),
+  )
 })
 
 test("claudeProfile joins key identity so named agents can pin a home", () => {

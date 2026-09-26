@@ -80,8 +80,8 @@ Provider-native options stay deliberately provider-specific:
   setting source for that call; ordinary calls continue to load no settings sources.
 - Claude Code: on macOS, a call without `claudeProfile` launches through
   `~/.local/libexec/claude-with-executor-mcp` when that launcher is installed. It is the launcher
-  BB's Claude routes run and a profile's launcher chains to, so every Claude worker can reach
-  Executor. Isolated calls keep the SDK default and no MCP servers.
+  BB's Claude routes run and a profile's launcher chains to, so Claude workers reach Executor
+  unless the run sets an explicit executable. Isolated calls keep the SDK default and no MCP servers.
 - Claude Code: `claudeProfile` selects a stable Subscription Picker profile ID for a new direct
   Agent SDK call. Resolve names with `bb subscription resolve-omega --reference ... --json`, persist
   only `profileId`, and never use an `acp-sub-*` route. At runtime the strict resolver also returns

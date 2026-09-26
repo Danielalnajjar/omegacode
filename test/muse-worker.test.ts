@@ -102,7 +102,7 @@ function harness(
     queueMicrotask(() => script(proc, call))
     return proc as any
   }
-  return { worker: new MuseWorker({ ...workerOpts, spawnProcess }), spawned }
+  return { worker: new MuseWorker({ readGithubToken: async () => undefined, ...workerOpts, spawnProcess }), spawned }
 }
 
 function ctx(signal?: AbortSignal): { signal: AbortSignal; onProgress: (e: WorkerProgress) => void; events: WorkerProgress[] } {
@@ -396,6 +396,64 @@ for (const sourceExists of [false, true]) {
 
   }
 }
+
+test("Muse research profile keeps only its servers, re-enabled, with ${VAR} expanded", { skip: process.platform === "win32" }, async () => {
+  const root = mkdtempSync(join(tmpdir(), "muse-research-config-"))
+  const previous = process.env.XDG_CONFIG_HOME
+  const previousKey = process.env.OMEGACODE_TEST_EXECUTOR_KEY
+  try {
+    process.env.XDG_CONFIG_HOME = root
+    process.env.OMEGACODE_TEST_EXECUTOR_KEY = "secret-key"
+    mkdirSync(join(root, "muse"))
+    const research = {
+      executor_research: { type: "streamable-http", url: "https://executor.example/mcp", headers: { Authorization: "Bearer ${OMEGACODE_TEST_EXECUTOR_KEY}" }, enabled: false },
+      btca: { type: "stdio", command: "btca", env: { PATH: "/bin" }, enabled: false },
+      grok_search: { type: "stdio", command: "node", args: ["grok.js"] },
+      mintlify: { type: "streamable-http", url: "https://index.mintlify.com", enabled: false },
+    }
+    const settings = { mcpServers: { onepassword: { command: "never" }, ...research } }
+    writeFileSync(join(root, "muse", "settings.json"), JSON.stringify(settings))
+    for (const sandbox of ["read-only", "danger-full-access"] as const) {
+      const { worker } = harness([versionOk, (p, call) => {
+        assert.equal(call.env!.GH_TOKEN, "gho_test")
+        const written = JSON.parse(readFileSync(join(call.env!.XDG_CONFIG_HOME!, "muse", "settings.json"), "utf8"))
+        if (sandbox === "read-only") assert.deepEqual(written.permissions.profiles["omegacode-read-only"].network, { mode: "enabled" })
+        assert.deepEqual(written.mcpServers, {
+          executor_research: { type: "streamable-http", url: "https://executor.example/mcp", headers: { Authorization: "Bearer secret-key" } },
+          btca: { type: "stdio", command: "btca", env: { PATH: "/bin" } },
+          grok_search: research.grok_search,
+          mintlify: { type: "streamable-http", url: "https://index.mintlify.com" },
+        })
+        p.pushLine(terminal()); p.end(0)
+      }], { readGithubToken: async () => "gho_test" })
+      await worker.runAgent(spec({ sandbox, museExecutionProfile: "workflow-research-v1" }), ctx())
+    }
+    assert.deepEqual(JSON.parse(readFileSync(join(root, "muse", "settings.json"), "utf8")), settings)
+
+    const loggedOut = harness([versionOk])
+    await assert.rejects(loggedOut.worker.runAgent(spec({ museExecutionProfile: "workflow-research-v1" }), ctx()), (err: unknown) =>
+      rejects("invalid_config")(err) && /needs a logged-in gh/.test((err as Error).message))
+    assert.equal(loggedOut.spawned.length, 1)
+
+    delete process.env.OMEGACODE_TEST_EXECUTOR_KEY
+    const unset = harness([versionOk], { readGithubToken: async () => "gho_test" })
+    await assert.rejects(unset.worker.runAgent(spec({ museExecutionProfile: "workflow-research-v1" }), ctx()), (err: unknown) =>
+      rejects("invalid_config")(err) && /OMEGACODE_TEST_EXECUTOR_KEY/.test((err as Error).message))
+    assert.equal(unset.spawned.length, 1)
+
+    writeFileSync(join(root, "muse", "settings.json"), JSON.stringify({ mcpServers: { btca: research.btca } }))
+    const missing = harness([versionOk], { readGithubToken: async () => "gho_test" })
+    await assert.rejects(missing.worker.runAgent(spec({ sandbox: "danger-full-access", museExecutionProfile: "workflow-research-v1" }), ctx()), (err: unknown) =>
+      rejects("invalid_config")(err) && /executor_research, grok_search, mintlify/.test((err as Error).message))
+    assert.equal(missing.spawned.length, 1)
+  } finally {
+    if (previous === undefined) delete process.env.XDG_CONFIG_HOME
+    else process.env.XDG_CONFIG_HOME = previous
+    if (previousKey === undefined) delete process.env.OMEGACODE_TEST_EXECUTOR_KEY
+    else process.env.OMEGACODE_TEST_EXECUTOR_KEY = previousKey
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
 // Regression: malformed source settings fail as the worker's own error, before any executable is invoked.
 test("Muse malformed source settings is invalid_config", async () => {

@@ -817,6 +817,11 @@ test("H14: agent() rejects invalid provider/sandbox/effort/approval/serviceTier/
       runBody(b, `return await agent("x", { provider: "claude-code", model: "claude-fable-5", codexExecutionProfile: "workflow-plan-v1" })`),
       (error: unknown) => error instanceof AgentError && error.code === "unsupported_option" && /codexExecutionProfile is codex-only/.test(error.message),
     )
+    await assert.rejects(runBody(b, `return await agent("x", { provider: "muse", model: "m", museExecutionProfile: "workflow-unknown" })`), /invalid museExecutionProfile "workflow-unknown"/)
+    await assert.rejects(
+      runBody(b, `return await agent("x", { museExecutionProfile: "workflow-research-v1" })`),
+      (error: unknown) => error instanceof AgentError && error.code === "unsupported_option" && /museExecutionProfile is muse-only/.test(error.message),
+    )
     // the worker never saw an unvalidated policy
     assert.equal(b.worker.calls.length, 0)
     // valid values still resolve and run — including the new provider ids
@@ -825,6 +830,8 @@ test("H14: agent() rejects invalid provider/sandbox/effort/approval/serviceTier/
     const profiled = await runBody(b, `return await agent("profiled", { codexExecutionProfile: "workflow-plan-v1" })`)
     assert.equal(profiled, "echo:profiled")
     assert.equal(b.worker.calls.at(-1)?.codexExecutionProfile, "workflow-plan-v1")
+    await runBody(b, `return await agent("research", { provider: "muse", model: "m", museExecutionProfile: "workflow-research-v1" })`)
+    assert.equal(b.worker.calls.at(-1)?.museExecutionProfile, "workflow-research-v1")
     const pi = await runBody(b, `return await agent("z", { provider: "pi", model: "openrouter/moonshotai/kimi-k2.6", sandbox: "danger-full-access" })`)
     assert.equal(pi, "echo:z")
     assert.equal(b.worker.calls.at(-1)?.provider, "pi")

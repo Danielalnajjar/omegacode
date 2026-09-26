@@ -30,7 +30,7 @@ const PATH_KEYS = ["file_path", "filePath", "path", "notebook_path", "notebookPa
 const READONLY_BASH = new Set([
   "ls", "cat", "head", "tail", "grep", "rg", "find", "fd", "wc", "echo", "pwd", "which", "type",
   "stat", "file", "tree", "sort", "uniq", "cut", "diff", "git", "jq", "date", "basename",
-  "dirname", "realpath", "true", "false", "test",
+  "dirname", "realpath", "true", "false", "test", "gh",
 ])
 // git subcommands that mutate; everything else (log, status, diff, show, …) is read-only.
 const GIT_WRITE = new Set([
@@ -42,6 +42,21 @@ const GIT_WRITE = new Set([
 // mistaken for the subcommand — e.g. `git -C dir reset` writes via `reset`, not the directory `dir`.
 const GIT_VALUE_FLAGS = new Set([
   "-C", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--attr-source",
+])
+// gh commands that only read GitHub, so read-only research (librarians) can use authenticated gh.
+// `gh api` is classified separately; every other command, and write verbs such as clone,
+// checkout, download, create, edit, and merge, fails closed.
+const GH_READ: ReadonlyMap<string, ReadonlySet<string> | "any"> = new Map<string, ReadonlySet<string> | "any">([
+  ["search", "any"],
+  ["repo", new Set(["view", "list"])],
+  ["release", new Set(["view", "list"])],
+  ["issue", new Set(["view", "list", "status"])],
+  ["pr", new Set(["view", "list", "diff", "checks", "status"])],
+  ["run", new Set(["view", "list"])],
+  ["workflow", new Set(["view", "list"])],
+  ["gist", new Set(["view", "list"])],
+  ["label", new Set(["list"])],
+  ["auth", new Set(["status"])],
 ])
 
 /**
@@ -453,9 +468,32 @@ export function isReadOnlyBash(command: string): boolean {
       // find can write/execute: -delete, -exec/-execdir, -fprint…/-fls (write to a file), -ok…
       if (args.some((t) => t === "-delete" || t === "-fls" || t.startsWith("-exec") || t.startsWith("-ok") || t.startsWith("-fprint"))) return false
     }
+    if (base === "gh" && !isReadOnlyGh(args)) return false
     // `uniq IN OUT` writes OUT; `date -s` sets the clock.
     if (base === "uniq" && args.filter((t) => !t.startsWith("-")).length >= 2) return false
     if (base === "date" && args.some((t) => t === "-s" || t.startsWith("--set"))) return false
+  }
+  return true
+}
+
+/**
+ * `gh api` reads with GET, or with a GraphQL query; any other method, a request body on a REST
+ * endpoint, `--input`, or a GraphQL mutation is a write. Other gh commands must be in GH_READ.
+ */
+function isReadOnlyGh(args: string[]): boolean {
+  const [command, sub] = args
+  if (command !== "api") {
+    const allowed = command === undefined ? undefined : GH_READ.get(command)
+    return allowed === "any" || (allowed !== undefined && sub !== undefined && allowed.has(sub))
+  }
+  const graphql = args.slice(1).some(t => t.replace(/^['"]|['"]$/g, "") === "graphql")
+  for (let j = 1; j < args.length; j++) {
+    const t = args[j]!
+    const method = t === "-X" || t === "--method" ? args[++j] : /^(?:-X|--method=)(.+)$/.exec(t)?.[1]
+    if (method !== undefined && !(method.toUpperCase() === "GET" || (graphql && method.toUpperCase() === "POST"))) return false
+    if (t === "--input" || t.startsWith("--input=")) return false
+    if (!graphql && (/^-[fF]/.test(t) || t.startsWith("--field") || t.startsWith("--raw-field"))) return false
+    if (graphql && /mutation/i.test(t)) return false
   }
   return true
 }

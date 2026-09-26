@@ -1,6 +1,7 @@
 // Shared type contracts for the whole system. Everything compiles against these.
 
 import type { CodexExecutionProfileName } from "../worker/codex-profile.js"
+import type { MuseExecutionProfileName } from "../worker/muse-profile.js"
 
 /** The closed set of backend providers. Model strings stay open — each backend is authoritative. */
 export const PROVIDER_IDS = ["codex", "claude-code", "opencode", "pi", "grok", "muse"] as const
@@ -49,6 +50,8 @@ interface AgentOptsBase {
   serviceTier?: string
   /** Codex-only app-server capability profile for role-scoped workflow workers. */
   codexExecutionProfile?: CodexExecutionProfileName
+  /** Muse-only MCP profile; workflow-research-v1 keeps the librarian research servers. */
+  museExecutionProfile?: MuseExecutionProfileName
   /** Claude Code user-level custom agent name. */
   claudeAgent?: string
   /** Stable Subscription Picker profile id for this direct Claude call. */
@@ -79,6 +82,7 @@ export interface AgentSpec {
   maxTurns?: number
   serviceTier?: string
   codexExecutionProfile?: CodexExecutionProfileName
+  museExecutionProfile?: MuseExecutionProfileName
   claudeAgent?: string
   claudeProfile?: string
   codexChildRole?: string

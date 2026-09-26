@@ -24,6 +24,7 @@ import type { WorkerFactory, WorkerProgress } from "../worker/index.js"
 import { AgentError, AgentInterrupted } from "../worker/index.js"
 import { CODEX_SERVICE_TIERS } from "../worker/codex.js"
 import { CODEX_EXECUTION_PROFILE_NAMES } from "../worker/codex-profile.js"
+import { MUSE_EXECUTION_PROFILE_NAMES } from "../worker/muse-profile.js"
 import { withRetry } from "../worker/errors.js"
 import { stripNullOptionals, validate } from "../worker/schema.js"
 import { Journal, type LoadedJournal } from "./journal.js"
@@ -50,6 +51,7 @@ export const SPEC_ENUMS = {
   approval: ["never", "on-request"],
   serviceTier: CODEX_SERVICE_TIERS,
   codexExecutionProfile: CODEX_EXECUTION_PROFILE_NAMES,
+  museExecutionProfile: MUSE_EXECUTION_PROFILE_NAMES,
   codexWebSearch: ["disabled", "cached", "live"],
 } as const satisfies Record<string, readonly string[]>
 
@@ -277,6 +279,7 @@ export class Runtime {
       maxTurns: opts?.maxTurns,
       serviceTier: opts?.serviceTier,
       codexExecutionProfile: opts?.codexExecutionProfile,
+      museExecutionProfile: opts?.museExecutionProfile,
       claudeAgent: opts?.claudeAgent,
       claudeProfile,
       codexChildRole: opts?.codexChildRole,
@@ -301,6 +304,7 @@ export class Runtime {
     checkSpecEnum("approval", spec.approval)
     checkSpecEnum("serviceTier", spec.serviceTier)
     checkSpecEnum("codexExecutionProfile", spec.codexExecutionProfile)
+    checkSpecEnum("museExecutionProfile", spec.museExecutionProfile)
     checkSpecEnum("codexWebSearch", spec.codexWebSearch)
     // Pairing is checked on the RAW opts (after the enum checks, so a typo'd provider still reports
     // as invalid): a lone provider/model here would silently mix with the other half of the run
@@ -321,6 +325,9 @@ export class Runtime {
         code: "unsupported_option",
         message: "codexExecutionProfile is codex-only; omit it or use the codex provider",
       })
+    }
+    if (spec.museExecutionProfile !== undefined && spec.provider !== "muse") {
+      throw new AgentError({ provider: spec.provider, code: "unsupported_option", message: "museExecutionProfile is muse-only; omit it or use the muse provider" })
     }
     if (spec.claudeAgent !== undefined && spec.provider !== "claude-code") {
       throw new AgentError({

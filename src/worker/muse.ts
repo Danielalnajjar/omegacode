@@ -6,6 +6,8 @@ import { homedir, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { addUsage, emptyUsage, type AgentResult, type AgentSpec, type AgentUsage, type Effort } from "../dsl/types.js"
 import { AgentError, AgentInterrupted, type Worker, type WorkerContext } from "./index.js"
+import { githubTokenReader, hasGithubToken, type ReadGithubToken } from "./github-token.js"
+import { MUSE_PROFILE_MCP_SERVERS, type MuseExecutionProfileName } from "./muse-profile.js"
 import { providerEnv } from "./provider-env.js"
 import { assertValidSchema, parseJsonLoose, parseValidJson, validate } from "./schema.js"
 import { captureStdout, exitError, runJsonlSubprocess, versionAtLeast, type SpawnProcess } from "./subprocess-jsonl.js"
@@ -38,6 +40,8 @@ export interface MuseWorkerOpts {
   /** Replaces spawn for both version probes and agent processes. */
   spawnProcess?: SpawnProcess
   stallTimeoutMs?: number
+  /** Test seam: replaces `gh auth token` for research runs. */
+  readGithubToken?: ReadGithubToken
 }
 
 export class MuseWorker implements Worker {
@@ -46,12 +50,15 @@ export class MuseWorker implements Worker {
   private readonly spawnProcess?: SpawnProcess
   private readonly stallTimeoutMs: number
   private versionCheck: Promise<void> | null = null
+  private readonly readGithubToken: ReadGithubToken
+  private githubToken: Promise<string | undefined> | null = null
   private resolvedVersion = ""
 
   constructor(opts: MuseWorkerOpts = {}) {
     this.bin = opts.bin ?? "muse"
     this.spawnProcess = opts.spawnProcess
     this.stallTimeoutMs = opts.stallTimeoutMs ?? MUSE_DEFAULT_STALL_TIMEOUT_MS
+    this.readGithubToken = opts.readGithubToken ?? githubTokenReader(PROVIDER, opts.spawnProcess)
   }
 
   async runAgent(spec: AgentSpec, ctx: WorkerContext): Promise<AgentResult> {
@@ -78,7 +85,8 @@ export class MuseWorker implements Worker {
     let usage = emptyUsage()
     let usageSessionId = workingSessionId
     try {
-      const env = privateConfigEnv(scratch, spec.sandbox === "read-only")
+      const env = privateConfigEnv(scratch, spec.sandbox === "read-only", spec.museExecutionProfile)
+      if (spec.museExecutionProfile && !hasGithubToken(env)) env.GH_TOKEN = await this.ghToken(ctx.signal)
       let prompt = spec.instructions ? `${spec.instructions}\n\n${spec.prompt}` : spec.prompt
       if (spec.schema) prompt += `\n\nReturn ONLY a JSON value conforming to this JSON Schema, without prose or code fences:\n${JSON.stringify(spec.schema)}`
       const working = await this.runExec(spec, {
@@ -217,6 +225,17 @@ export class MuseWorker implements Worker {
 
   async shutdown(): Promise<void> {}
 
+  /** Muse's sandbox hides gh's keychain login; research runs require the token, so a logged-out gh fails closed. */
+  private async ghToken(signal: AbortSignal): Promise<string> {
+    this.githubToken ??= this.readGithubToken(signal).catch((err: unknown) => { this.githubToken = null; throw err })
+    const token = await this.githubToken
+    if (!token) {
+      this.githubToken = null
+      throw new AgentError({ provider: PROVIDER, code: "invalid_config", message: "Muse profile workflow-research-v1 needs a logged-in gh (gh auth token returned nothing)" })
+    }
+    return token
+  }
+
   private ensureVersion(signal: AbortSignal): Promise<void> {
     if (!this.versionCheck) {
       this.versionCheck = captureStdout({ provider: PROVIDER, bin: this.bin, args: ["--version"], env: providerEnv(), signal, spawnProcess: this.spawnProcess })
@@ -243,13 +262,13 @@ function extractionPrompt(spec: AgentSpec, workingText: string, errors: string):
 }
 
 /** Only settings are copied; all other entries, including auth, remain source-owned symlinks. */
-function privateConfigEnv(scratch: string, readOnly: boolean): NodeJS.ProcessEnv {
+function privateConfigEnv(scratch: string, readOnly: boolean, profile?: MuseExecutionProfileName): NodeJS.ProcessEnv {
   const env = providerEnv()
   const source = resolve(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "muse")
   let settingsText = "{}"
   try { settingsText = readFileSync(join(source, "settings.json"), "utf8") } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      if (!readOnly) return withStreamTimeouts(env)
+      if (!readOnly && !profile) return withStreamTimeouts(env)
     } else {
       const cause = err as NodeJS.ErrnoException
       throw new AgentError({ provider: PROVIDER, code: "invalid_config", message: `Muse settings.json could not be read: ${cause.code}: ${cause.message}` })
@@ -260,15 +279,18 @@ function privateConfigEnv(scratch: string, readOnly: boolean): NodeJS.ProcessEnv
     throw new AgentError({ provider: PROVIDER, code: "invalid_config", message: `Muse settings file is not valid JSON: ${join(source, "settings.json")}` })
   }
   if (!isObject(settings)) throw new AgentError({ provider: PROVIDER, code: "invalid_config", message: "Muse settings.json must contain an object" })
+  const profileServers = profile && profileMcpServers(settings.mcpServers, profile)
   delete settings.mcpServers
+  if (profileServers) settings.mcpServers = profileServers
   if (readOnly) {
     const permissions = isObject(settings.permissions) ? settings.permissions : {}
     const profiles = isObject(permissions.profiles) ? permissions.profiles : {}
     settings.schema_version = 1
     settings.permissions = { ...permissions, schema_version: 1, profiles: {
       ...profiles,
-      // OmegaCode owns this profile; overwrite any same-named user definition.
-      "omegacode-read-only": { extends: ":read-only", approval: "allow_all", reviewer: "none" },
+      // OmegaCode owns this profile; overwrite any same-named user definition. Research needs the
+      // network for gh and curl, as Codex research lanes get codexNetworkAccess; writes stay denied.
+      "omegacode-read-only": { extends: ":read-only", approval: "allow_all", reviewer: "none", ...(profile ? { network: { mode: "enabled" } } : {}) },
     } }
   }
   const xdg = join(scratch, "xdg")
@@ -284,6 +306,38 @@ function privateConfigEnv(scratch: string, readOnly: boolean): NodeJS.ProcessEnv
     if (entry.name !== "settings.json") symlinkSync(join(source, entry.name), join(target, entry.name), entry.isDirectory() ? "junction" : "file")
   }
   return withStreamTimeouts({ ...env, XDG_CONFIG_HOME: xdg })
+}
+
+/**
+ * Keep only the profile's servers, re-enabled: the caller may disable them for interactive Muse.
+ * Muse does not expand `${VAR}`, so header and env values are expanded here; the literal
+ * credential then exists only in the private 0600 settings file.
+ */
+function profileMcpServers(source: unknown, profile: MuseExecutionProfileName): Record<string, unknown> {
+  const servers = isObject(source) ? source : {}
+  const names = MUSE_PROFILE_MCP_SERVERS[profile]
+  const missing = names.filter(name => !isObject(servers[name]))
+  if (missing.length) {
+    throw new AgentError({ provider: PROVIDER, code: "invalid_config", message: `Muse profile ${profile} needs mcpServers ${missing.join(", ")} in Muse settings.json` })
+  }
+  const kept: Record<string, unknown> = {}
+  for (const name of names) {
+    const { enabled: _enabled, ...server } = servers[name] as Record<string, unknown>
+    for (const field of ["headers", "env"]) {
+      const values = server[field]
+      if (!isObject(values)) continue
+      server[field] = Object.fromEntries(Object.entries(values).map(([key, value]) => [key, typeof value !== "string" ? value
+        : value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, variable: string) => {
+          const resolved = process.env[variable]
+          if (resolved === undefined || resolved === "") {
+            throw new AgentError({ provider: PROVIDER, code: "invalid_config", message: `Muse mcpServers.${name}.${field}.${key} needs environment variable ${variable}` })
+          }
+          return resolved
+        })]))
+    }
+    kept[name] = server
+  }
+  return kept
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

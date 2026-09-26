@@ -82,7 +82,7 @@ function harness(
     queueMicrotask(() => script(proc, call))
     return proc as any
   }
-  return { worker: new GrokWorker({ ...workerOpts, spawnProcess }), spawned }
+  return { worker: new GrokWorker({ readGithubToken: async () => undefined, ...workerOpts, spawnProcess }), spawned }
 }
 
 function ctx(signal?: AbortSignal): { signal: AbortSignal; onProgress: (e: WorkerProgress) => void; events: WorkerProgress[] } {
@@ -210,6 +210,33 @@ test("every sandbox maps OS confinement and always-approve", async () => {
   const full = h.spawned[3]!.args
   assert.equal(flagAfter(full, "--sandbox"), "off")
   assert.ok(full.includes("--always-approve"))
+})
+
+test("sandboxed runs get the caller's gh token; full access and preset tokens do not", async () => {
+  let reads = 0
+  const readGithubToken = async () => { reads++; return "gho_test" }
+  const h = harness([versionOk, happyRun, happyRun, happyRun], { readGithubToken })
+  await h.worker.runAgent(spec({ sandbox: "read-only" }), ctx())
+  await h.worker.runAgent(spec({ sandbox: "workspace-write" }), ctx())
+  await h.worker.runAgent(spec({ sandbox: "danger-full-access" }), ctx())
+  assert.deepEqual(h.spawned.slice(1).map(call => call.env?.GH_TOKEN), ["gho_test", "gho_test", undefined])
+  assert.equal(reads, 1)
+
+  const previous = process.env.GITHUB_TOKEN
+  try {
+    process.env.GITHUB_TOKEN = "preset"
+    const preset = harness([versionOk, happyRun], { readGithubToken })
+    await preset.worker.runAgent(spec({ sandbox: "read-only" }), ctx())
+    assert.equal(preset.spawned[1]!.env?.GH_TOKEN, undefined)
+    assert.equal(reads, 1)
+  } finally {
+    if (previous === undefined) delete process.env.GITHUB_TOKEN
+    else process.env.GITHUB_TOKEN = previous
+  }
+
+  const loggedOut = harness([versionOk, happyRun], { readGithubToken: async () => undefined })
+  await loggedOut.worker.runAgent(spec({ sandbox: "read-only" }), ctx())
+  assert.equal(loggedOut.spawned[1]!.env?.GH_TOKEN, undefined)
 })
 
 test("effort maps onto grok-4.7 menu ids", async () => {

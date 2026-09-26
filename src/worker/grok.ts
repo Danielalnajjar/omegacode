@@ -24,6 +24,7 @@ import { addUsage, emptyUsage, type AgentResult, type AgentSpec, type AgentUsage
 import type { Worker, WorkerContext, WorkerProgress } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
 import { GROK_ISOLATED_FLAGS, isolatedGrokLaunch, loadGrokIsolation, prepareGrokShellHome, type GrokIsolation } from "./grok-isolation.js"
+import { githubTokenReader, hasGithubToken, type ReadGithubToken } from "./github-token.js"
 import { providerEnv } from "./provider-env.js"
 import { assertValidSchema, parseJsonLoose, parseValidJson } from "./schema.js"
 import {
@@ -74,6 +75,8 @@ export interface GrokWorkerOpts {
   stallTimeoutMs?: number
   /** Benchmark isolation config file; defaults to OMEGACODE_GROK_ISOLATION_CONFIG. */
   isolationFile?: string
+  /** Test seam: replaces `gh auth token` for sandboxed runs. */
+  readGithubToken?: ReadGithubToken
 }
 
 interface TurnOutcome {
@@ -98,6 +101,8 @@ export class GrokWorker implements Worker {
   private readonly isolationFile?: string
   private agentProfileChecked = false
   private versionCheck: Promise<void> | null = null
+  private readonly readGithubToken: ReadGithubToken
+  private githubToken: Promise<string | undefined> | null = null
 
   constructor(opts: GrokWorkerOpts = {}) {
     this.bin = opts.bin ?? "grok"
@@ -111,6 +116,7 @@ export class GrokWorker implements Worker {
     })
     this.stallTimeoutMs = opts.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS
     this.isolationFile = opts.isolationFile ?? process.env.OMEGACODE_GROK_ISOLATION_CONFIG
+    this.readGithubToken = opts.readGithubToken ?? githubTokenReader(PROVIDER, opts.spawnProcess)
   }
 
   async runAgent(spec: AgentSpec, ctx: WorkerContext): Promise<AgentResult> {
@@ -139,6 +145,12 @@ export class GrokWorker implements Worker {
     this.ensureAgentProfile()
     const launch = this.launch(spec)
     await this.ensureVersion(launch)
+    // Grok's Seatbelt sandbox hides gh's keychain login; benchmark isolation builds its own env.
+    if (!launch.isolation && spec.sandbox !== "danger-full-access" && !hasGithubToken(launch.env)) {
+      this.githubToken ??= this.readGithubToken(ctx.signal).catch((err: unknown) => { this.githubToken = null; throw err })
+      const token = await this.githubToken
+      if (token) launch.env = { ...launch.env, GH_TOKEN: token }
+    }
 
     const working = await this.runTurn(spec, spec.prompt, ctx, launch, { forwardProgress: true })
     if (!spec.schema) return { text: working.text, status: "completed", usage: working.usage }

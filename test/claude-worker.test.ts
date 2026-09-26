@@ -8,7 +8,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { ClaudeWorker, type QueryFn } from "../src/worker/claude.ts"
 import { ISOLATED_TOOLS } from "../src/worker/claude-isolation.ts"
 import { AgentError, AgentInterrupted, type WorkerContext, type WorkerProgress } from "../src/worker/index.ts"
@@ -351,6 +351,29 @@ test("an explicit worker executable overrides the selected profile launcher with
 
   assert.equal(calls[0]!.options.pathToClaudeCodeExecutable, "/explicit/claude")
   assert.equal(calls[0]!.options.env?.CLAUDE_CODE_EXECUTABLE, "/launchers/claude-a")
+})
+
+test("a call without a profile runs the Executor launcher when the home has one, unless isolated", { skip: process.platform !== "darwin" }, async t => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "claude-worker-home-")))
+  t.after(() => rmSync(home, { recursive: true, force: true }))
+  const launcher = join(home, ".local", "libexec", "claude-with-executor-mcp")
+  mkdirSync(dirname(launcher), { recursive: true })
+  writeFileSync(launcher, "#!/bin/sh\n", { mode: 0o700 })
+  for (const name of ["workspace", "inputs", "scratch"]) mkdirSync(join(home, name))
+  const workspace = join(home, "workspace")
+  const isolation = join(home, "isolation.json")
+  writeFileSync(isolation, JSON.stringify({ schemaVersion: "claude-isolation.v1", workspace, inputs: join(home, "inputs"), scratch: join(home, "scratch"),
+    readRoots: [], blockedRoots: [home], writable: true }))
+  const calls: QueryCall[] = []
+  const worker = new ClaudeWorker({ queryFn: scripted([resultMsg(), resultMsg()], calls) })
+
+  setTestEnv(t, { HOME: home })
+  await worker.runAgent(spec(), ctx())
+  process.env.OMEGACODE_CLAUDE_ISOLATION_CONFIG = isolation
+  await worker.runAgent(spec({ cwd: workspace }), ctx())
+
+  assert.equal(calls[0]!.options.pathToClaudeCodeExecutable, launcher)
+  assert.equal(calls[1]!.options.pathToClaudeCodeExecutable, undefined)
 })
 
 for (const [key, value] of [

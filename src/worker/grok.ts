@@ -142,7 +142,14 @@ export class GrokWorker implements Worker {
         message: `grok runs as a one-shot subprocess and cannot surface approval requests to omegacode — use approval: "never" with provider "grok"`,
       })
     }
-    this.ensureAgentProfile()
+    if (this.isolationFile && spec.grokAgent !== undefined) {
+      throw new AgentError({
+        provider: PROVIDER,
+        code: "invalid_config",
+        message: "grokAgent cannot be used with Grok isolation, which excludes user-level agents",
+      })
+    }
+    if (spec.grokAgent === undefined) this.ensureAgentProfile()
     const launch = this.launch(spec)
     await this.ensureVersion(launch)
     // Grok's Seatbelt sandbox hides gh's keychain login; benchmark isolation builds its own env.
@@ -261,7 +268,7 @@ export class GrokWorker implements Worker {
       "--no-auto-update",
       "--no-subagents",
       "--agent",
-      GROK_AGENT_PROFILE_PATH,
+      spec.grokAgent ?? GROK_AGENT_PROFILE_PATH,
     ]
     if (opts.resume) args.push("--resume", opts.resume)
     if (spec.model) args.push("-m", spec.model)

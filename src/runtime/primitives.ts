@@ -281,6 +281,7 @@ export class Runtime {
       codexExecutionProfile: opts?.codexExecutionProfile,
       museExecutionProfile: opts?.museExecutionProfile,
       claudeAgent: opts?.claudeAgent,
+      grokAgent: opts?.grokAgent,
       claudeProfile,
       codexChildRole: opts?.codexChildRole,
       codexWebSearch: opts?.codexWebSearch,
@@ -335,6 +336,14 @@ export class Runtime {
         code: "unsupported_option",
         message: "claudeAgent is claude-code-only; omit it or use the claude-code provider",
       })
+    }
+    if (spec.grokAgent !== undefined) {
+      if (typeof spec.grokAgent !== "string" || !spec.grokAgent.trim()) {
+        throw new AgentError({ provider: spec.provider, code: "unsupported_option", message: "grokAgent must be a non-empty string" })
+      }
+      if (spec.provider !== "grok") {
+        throw new AgentError({ provider: spec.provider, code: "unsupported_option", message: "grokAgent is grok-only; omit it or use the grok provider" })
+      }
     }
     if (spec.claudeProfile !== undefined && spec.provider !== "claude-code") {
       throw new AgentError({ provider: spec.provider, code: "unsupported_option", message: "claudeProfile is claude-code-only; omit it or use the claude-code provider" })

@@ -63,6 +63,7 @@ export interface KeyedFields {
   schema: unknown
   maxTurns: number | null
   claudeAgent: string | null
+  grokAgent?: string
   claudeProfile: string | null
   codexChildRole: string | null
   codexExecutionProfile: string | undefined
@@ -85,6 +86,7 @@ export function keyedSpec(spec: KeyedSpecInput, worktree: unknown): KeyedFields 
     schema: spec.schema ?? null,
     maxTurns: spec.maxTurns ?? null,
     claudeAgent: spec.claudeAgent ?? null,
+    ...(spec.grokAgent !== undefined ? { grokAgent: spec.grokAgent } : {}),
     claudeProfile: spec.claudeProfile ?? null,
     codexChildRole: spec.codexChildRole ?? null,
     codexExecutionProfile: spec.codexExecutionProfile,
@@ -107,6 +109,7 @@ export interface KeyedSpecInput {
   schema?: unknown
   maxTurns?: number
   claudeAgent?: string
+  grokAgent?: string
   claudeProfile?: string
   codexChildRole?: string
   codexExecutionProfile?: string

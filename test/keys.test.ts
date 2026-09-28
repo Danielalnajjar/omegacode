@@ -17,10 +17,11 @@ import type { AgentOpts } from "../src/dsl/types.ts"
 // helper: build the keyed-fields object the way chainKey now expects it
 const fields = (opts?: AgentOpts) => keyedOpts(opts)
 
-test("KEY_VERSION is v5 (bumped for claudeProfile cache identity)", () => {
-  // Adding provider-native semantic fields changes the derivation. The version must change too so
-  // older journals fail fast rather than silently miss every key and re-bill.
-  assert.equal(KEY_VERSION, "v5")
+test("KEY_VERSION is v6 (bumped for the lean Codex tool default)", () => {
+  // Codex calls that omit codexMcpServers/codexPlugins now run without MCP servers or plugins, but
+  // their key fields are unchanged. The version must change so older journals fail fast rather than
+  // replay results produced under the previous tool environment.
+  assert.equal(KEY_VERSION, "v6")
 })
 
 test("canonical sorts object keys recursively and drops __proto__", () => {
@@ -107,7 +108,7 @@ test("codex execution profiles invalidate keys without changing unprofiled journ
     model: "codex-model-1",
     codexExecutionProfile: "workflow-plan-v1",
   }, undefined)
-  const golden = "4348dec1525e28fc8d4aba38b952f51f5dfba753f48a7e655a30f20d145e3a25"
+  const golden = "42559142795c3f10b39f470998e9321ddccd6cb6a6253bc664c0a6040c590010"
 
   assert.equal(chainKey(b, 0, "p", unprofiled), golden)
   assert.equal(chainKey(b, 0, "p", explicitlyUnprofiled), golden)
@@ -134,7 +135,6 @@ test("claudeProfile joins key identity so named agents can pin a home", () => {
   }, undefined))
   assert.notEqual(withProfile, without)
   assert.notEqual(withProfile, otherProfile)
-  assert.equal(KEY_VERSION, "v5")
   assert.equal(keyedOpts({ claudeProfile: "profile-a" }).claudeProfile, "profile-a")
 })
 
@@ -247,7 +247,7 @@ test("named permissions preserve absent-option keys and distinguish profiles", (
   const b = branchKey(ROOT_KEY, "root", 0)
   const base = { provider: "codex", model: "codex-model-1" }
   const key = (permissions?: string) => chainKey(b, 0, "p", keyedSpec({ ...base, codexPermissions: permissions }, undefined))
-  assert.equal(key(), "4348dec1525e28fc8d4aba38b952f51f5dfba753f48a7e655a30f20d145e3a25")
+  assert.equal(key(), "42559142795c3f10b39f470998e9321ddccd6cb6a6253bc664c0a6040c590010")
   assert.notEqual(key("research"), key())
   assert.notEqual(key("research"), key("writer"))
 })

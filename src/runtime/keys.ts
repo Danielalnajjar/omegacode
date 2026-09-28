@@ -19,6 +19,8 @@
 import { createHash } from "node:crypto"
 import type { AgentOpts } from "../dsl/types.js"
 
+// v6: Codex workers start lean (MCP servers and plugins off unless opted in via codexMcpServers /
+// codexPlugins), so an unchanged call from a v5 journal ran under a different tool environment.
 // v5: claudeProfile joins the semantic field set so named Claude agents can pin a subscription
 // without sharing cache slots across homes. v4: provider-native options join the semantic field set. v3 added per-branch key lineage PLUS a
 // per-branch fan-out call counter (v2 lacked the counter, so two
@@ -27,7 +29,7 @@ import type { AgentOpts } from "../dsl/types.js"
 // completion-ordered prevKey and folded the full resolved spec (sandbox/worktree/approval/etc.)
 // into the key. Older-version journals are intentionally rejected on resume (see
 // checkResumePreconditions).
-export const KEY_VERSION = "v5"
+export const KEY_VERSION = "v6"
 
 /** Stable JSON: object keys sorted recursively so equal values hash equally. */
 export function canonical(value: unknown): string {

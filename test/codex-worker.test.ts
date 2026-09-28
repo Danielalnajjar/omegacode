@@ -1043,11 +1043,13 @@ test("per-agent Codex tool opt-ins become leaf thread/start overrides for that t
   assert.deepEqual(threadStarts.map((start) => start.config), [
     {
       "features.context_management": false,
+      mcp_optional_startup_grace_ms: 0,
       "mcp_servers.paos-recall-mcp.enabled": true,
       "mcp_servers.executor.enabled": true,
     },
     {
       "features.context_management": false,
+      mcp_optional_startup_grace_ms: 0,
       "features.plugins": true,
       "plugins.computer-use@openai-bundled.enabled": false,
       "plugins.computer-history@openai-bundled.enabled": true,
@@ -1056,6 +1058,7 @@ test("per-agent Codex tool opt-ins become leaf thread/start overrides for that t
     },
     {
       "features.context_management": false,
+      mcp_optional_startup_grace_ms: 0,
       "features.plugins": true,
       "plugins.computer-use@openai-bundled.enabled": true,
       "plugins.computer-history@openai-bundled.enabled": false,
@@ -1066,6 +1069,7 @@ test("per-agent Codex tool opt-ins become leaf thread/start overrides for that t
     },
     {
       "features.context_management": false,
+      mcp_optional_startup_grace_ms: 0,
       "features.plugins": true,
       "plugins.computer-use@openai-bundled.enabled": false,
       "plugins.computer-history@openai-bundled.enabled": false,
@@ -1076,6 +1080,15 @@ test("per-agent Codex tool opt-ins become leaf thread/start overrides for that t
   ])
   // A parent table would replace the launch-time mcp_servers table instead of merging into it.
   for (const start of threadStarts) assert.ok(!("mcp_servers" in start.config) && !("plugins" in start.config))
+  await worker.shutdown()
+})
+
+test("lean Codex agent sends no optional MCP startup grace override", async () => {
+  const threadStarts: any[] = []
+  const { worker } = toolWorker(threadStarts)
+  await worker.runAgent(spec(), ctx())
+  assert.equal(threadStarts.length, 1)
+  assert.ok(!Object.hasOwn(threadStarts[0].config, "mcp_optional_startup_grace_ms"))
   await worker.shutdown()
 })
 

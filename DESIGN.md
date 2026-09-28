@@ -378,7 +378,9 @@ small registry of live workers and lazily starts each provider the first time it
   `-c` overrides in the same layer, splitting each key on `.`, so `codexMcpServers` and
   `codexPlugins` become leaf keys (`mcp_servers.<name>.enabled`, `features.plugins`,
   `plugins.<id>.enabled` for every installed plugin, plus a plugin's own gates and servers). A
-  selected plugin's manifest (`<source.path>/.codex-plugin/plugin.json`) is read before
+  thread opting into a server or plugin sets `mcp_optional_startup_grace_ms: 0` so Codex waits for
+  its tools before the first turn captures the tool catalog; a lean thread leaves the default.
+  A selected plugin's manifest (`<source.path>/.codex-plugin/plugin.json`) is read before
   `thread/start`: one that declares apps (a manifest `apps` file, or the root `.app.json` Codex
   falls back to) is rejected, because `features.apps` exposes every app connected to the ChatGPT
   account, not one plugin's. The MCP servers its hooks call (`mcp_tool` handlers in the manifest

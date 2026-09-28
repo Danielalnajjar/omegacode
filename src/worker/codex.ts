@@ -6,7 +6,7 @@
 
 import { execFile } from "node:child_process"
 import { copyFile, readFile, stat, writeFile } from "node:fs/promises"
-import { basename, join } from "node:path"
+import { basename, join, resolve as resolvePath } from "node:path"
 import { promisify } from "node:util"
 
 import type { AgentResult, AgentSpec, AgentUsage } from "../dsl/types.js"
@@ -129,8 +129,9 @@ const LEAN_DISABLED_FEATURES = [
   "features.apps", "features.enable_mcp_apps", "features.computer_use",
   "features.browser_use", "features.browser_use_external", "features.in_app_browser",
 ] as const
-/** What a plugin needs beyond features.plugins on a lean thread. computer-use ships only a skill;
- *  its actions run through the host node_repl server, which Codex's bundled hook also targets. */
+/** What a plugin needs beyond features.plugins on a lean thread that its manifest cannot express.
+ *  (MCP servers its hooks call come from the manifest.) computer-use ships only a skill; its
+ *  actions run through the host node_repl server. */
 const PLUGIN_REQUIREMENTS: Readonly<Record<string, { features: readonly string[]; mcpServers: readonly string[] }>> = {
   "computer-use@openai-bundled": { features: ["features.computer_use"], mcpServers: ["node_repl"] },
 }
@@ -143,20 +144,26 @@ export interface CodexAppServerArgsOptions {
   profileMcpServersToDisable?: readonly CodexMcpServerToDisable[]
   profileMcpServerNamesToEnable?: readonly string[]
   /** Codex service tier for every turn served by this app-server ("fast" canonicalizes to
-   *  "priority" on the wire, codex-side). Falls back to OMEGACODE_CODEX_SERVICE_TIER. */
+   *  "priority" on the wire, codex-side). Falls back to OMEGACODE_CODEX_SERVICE_TIER. A proxy
+   *  never delivers it, so with appServerSocket the worker sends it on each thread/start instead. */
   serviceTier?: string
   featureOverrides?: readonly { key: string; value: boolean }[]
 }
 
+/** The validated service tier, falling back to OMEGACODE_CODEX_SERVICE_TIER; undefined when unset. */
+export function resolveCodexServiceTier(serviceTier?: string): string | undefined {
+  const tier = (serviceTier ?? process.env.OMEGACODE_CODEX_SERVICE_TIER ?? "").trim()
+  if (!tier) return undefined
+  if (!(CODEX_SERVICE_TIERS as readonly string[]).includes(tier)) {
+    throw new Error(`invalid codex service tier "${tier}" — must be one of ${CODEX_SERVICE_TIERS.join(", ")}`)
+  }
+  return tier
+}
+
 export function buildCodexAppServerArgs(options: CodexAppServerArgsOptions = {}): string[] {
   const args: string[] = []
-  const tier = (options.serviceTier ?? process.env.OMEGACODE_CODEX_SERVICE_TIER ?? "").trim()
-  if (tier) {
-    if (!(CODEX_SERVICE_TIERS as readonly string[]).includes(tier)) {
-      throw new Error(`invalid codex service tier "${tier}" — must be one of ${CODEX_SERVICE_TIERS.join(", ")}`)
-    }
-    args.push("-c", `service_tier=${tier}`)
-  }
+  const tier = options.appServerSocket ? undefined : resolveCodexServiceTier(options.serviceTier)
+  if (tier) args.push("-c", `service_tier=${tier}`)
   if (options.leanMcpServerNamesToDisable?.length) {
     // One table with quoted keys can name any server; it deep-merges onto the host definitions,
     // so each transport survives and a thread's `mcp_servers.<name>.enabled` leaf re-enables it.
@@ -232,13 +239,10 @@ export function selectCodexProfileMcpServersToDisable(
     })
 }
 
+/** Every inventoried server, whatever its transport: the lean `enabled=false` leaf merges onto the
+ *  host definition, so only a profile's inert replacement transport needs a known transport. */
 export function selectCodexLeanMcpServerNames(stdout: string): string[] {
-  return parseCodexMcpInventory(stdout).map((entry) => {
-    if (entry.transport !== "stdio" && entry.transport !== "streamable_http") {
-      throw new Error(`cannot disable Codex MCP server "${entry.name}": unsupported transport "${entry.transport}"`)
-    }
-    return entry.name
-  })
+  return parseCodexMcpInventory(stdout).map((entry) => entry.name)
 }
 
 export function parseCodexPluginMarketplaceNames(stdout: string): string[] {
@@ -291,17 +295,59 @@ export function parseCodexPluginInventory(listings: readonly string[]): CodexIns
   return [...plugins.values()]
 }
 
-/** Whether a local plugin ships Codex apps: its manifest names an `apps` file, or it has the
- *  `.app.json` Codex reads when the manifest names none. */
-async function codexPluginDeclaresApps(root: string): Promise<boolean> {
-  const manifestPath = join(root, ".codex-plugin", "plugin.json")
-  const manifest: unknown = JSON.parse(await readFile(manifestPath, "utf8"))
-  if (!isObject(manifest)) throw new Error(`${manifestPath} is not a JSON object`)
-  if (typeof manifest.apps === "string" && manifest.apps) return true
-  return stat(join(root, ".app.json")).then(
+interface CodexPluginManifestFacts {
+  readonly declaresApps: boolean
+  readonly hookMcpServers: readonly string[]
+}
+
+function isFile(path: string): Promise<boolean> {
+  return stat(path).then(
     (entry) => entry.isFile(),
     (error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return false; throw error },
   )
+}
+
+async function readJsonObject(path: string): Promise<Record<string, unknown>> {
+  const contents = await readFile(path, "utf8")
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(contents)
+  } catch (error) {
+    throw new Error(`${path} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  if (!isObject(parsed)) throw new Error(`${path} is not a JSON object`)
+  return parsed
+}
+
+/** What a local plugin's manifest commits a lean thread to. It ships Codex apps when the manifest
+ *  names an `apps` file or the root has the `.app.json` Codex reads when it names none. Its hooks
+ *  come from the manifest `hooks` (one path, several paths, one inline hooks file, or several),
+ *  else from `hooks/hooks.json`; every `mcp_tool` handler names a server the thread must have. */
+async function inspectCodexPluginManifest(root: string): Promise<CodexPluginManifestFacts> {
+  const manifest = await readJsonObject(join(root, ".codex-plugin", "plugin.json"))
+  const declaresApps = typeof manifest.apps === "string" && manifest.apps !== "" || await isFile(join(root, ".app.json"))
+  const hookFiles: Record<string, unknown>[] = []
+  if (manifest.hooks === undefined) {
+    const defaultPath = join(root, "hooks", "hooks.json")
+    if (await isFile(defaultPath)) hookFiles.push(await readJsonObject(defaultPath))
+  } else {
+    for (const entry of Array.isArray(manifest.hooks) ? manifest.hooks : [manifest.hooks]) {
+      if (typeof entry === "string") hookFiles.push(await readJsonObject(resolvePath(root, entry)))
+      else if (isObject(entry)) hookFiles.push(entry)
+      else throw new Error(`the manifest "hooks" entry must be a path or a hooks object, got ${JSON.stringify(entry)}`)
+    }
+  }
+  const hookMcpServers = new Set<string>()
+  for (const file of hookFiles) {
+    for (const groups of Object.values(isObject(file.hooks) ? file.hooks : {})) {
+      for (const group of Array.isArray(groups) ? groups : []) {
+        for (const handler of isObject(group) && Array.isArray(group.hooks) ? group.hooks : []) {
+          if (isObject(handler) && handler.type === "mcp_tool" && typeof handler.server === "string") hookMcpServers.add(handler.server)
+        }
+      }
+    }
+  }
+  return { declaresApps, hookMcpServers: [...hookMcpServers] }
 }
 
 export function selectMissingAllowedMcpServerNames(stdout: string, allowedServerNames: readonly string[]): string[] {
@@ -466,8 +512,9 @@ export class CodexWorker implements Worker {
   private readonly readPluginInventory: (bin: string) => Promise<string[]>
   private mcpInventory: Promise<string> | null = null
   private pluginInventory: Promise<readonly CodexInstalledPlugin[]> | null = null
-  /** Lean disables every thread/start carries when a proxy relays to a shared daemon. */
+  /** Lean disables and service tier every thread/start carries when a proxy relays to a shared daemon. */
   private sharedServerLeanConfig: Record<string, boolean> = {}
+  private sharedServerServiceTier: string | undefined
   private readonly logProfileWarning: (message: string) => void
   private readonly spawnChild?: SpawnChild
   private readonly requestTimeoutMs: number
@@ -528,6 +575,7 @@ export class CodexWorker implements Worker {
         ? { permissions: spec.codexPermissions }
         : { sandbox: toCodexSandboxMode(spec.sandbox) }),
       ...(spec.instructions ? { developerInstructions: spec.instructions } : {}),
+      ...(this.sharedServerServiceTier ? { serviceTier: this.sharedServerServiceTier } : {}),
       experimentalRawEvents: false,
       // Codex 0.149 does not list child metadata for ephemeral threads.
       // Role-proof calls are briefly persisted, verified, then deleted as an exact subtree.
@@ -690,10 +738,8 @@ export class CodexWorker implements Worker {
   private async resolveThreadToolConfig(spec: AgentSpec): Promise<Record<string, boolean>> {
     const config: Record<string, boolean> = { ...this.sharedServerLeanConfig }
     const plugins = spec.codexPlugins ?? []
-    const mcpServers = [...new Set([
-      ...spec.codexMcpServers ?? [],
-      ...plugins.flatMap((id) => PLUGIN_REQUIREMENTS[id]?.mcpServers ?? []),
-    ])]
+    // Each MCP server a selected plugin needs, keyed to the first plugin that needs it.
+    const pluginMcpServers = new Map<string, string>()
     if (plugins.length) {
       const installed = await (this.pluginInventory ??= this.readPluginInventory(this.bin).then(parseCodexPluginInventory).catch((error: unknown) => {
         throw new AgentError({ provider: PROVIDER, code: "plugin_inventory_failed", message: `cannot inspect installed Codex plugins: ${error instanceof Error ? error.message : String(error)}`, retryable: false })
@@ -712,11 +758,14 @@ export class CodexWorker implements Worker {
         if (!plugin.root) {
           throw new AgentError({ provider: PROVIDER, code: "plugin_inventory_failed", message: `the Codex plugin inventory gives no local source path for "${id}"`, retryable: false })
         }
-        const declaresApps = await codexPluginDeclaresApps(plugin.root).catch((error: unknown) => {
-          throw new AgentError({ provider: PROVIDER, code: "plugin_inventory_failed", message: `cannot read the manifest of Codex plugin "${id}": ${error instanceof Error ? error.message : String(error)}`, retryable: false })
+        const { declaresApps, hookMcpServers } = await inspectCodexPluginManifest(plugin.root).catch((error: unknown) => {
+          throw new AgentError({ provider: PROVIDER, code: "plugin_inventory_failed", message: `cannot read the manifest or hooks of Codex plugin "${id}": ${error instanceof Error ? error.message : String(error)}`, retryable: false })
         })
         if (declaresApps) {
           throw new AgentError({ provider: PROVIDER, code: "unsupported_plugin", message: `codexPlugins names "${id}", whose manifest declares apps; a lean thread cannot enable features.apps for one plugin, because it exposes every app connected to the ChatGPT account`, retryable: false })
+        }
+        for (const name of [...PLUGIN_REQUIREMENTS[id]?.mcpServers ?? [], ...hookMcpServers]) {
+          if (!pluginMcpServers.has(name)) pluginMcpServers.set(name, id)
         }
       }
       config["features.plugins"] = true
@@ -726,11 +775,12 @@ export class CodexWorker implements Worker {
         for (const feature of PLUGIN_REQUIREMENTS[id]?.features ?? []) config[feature] = true
       }
     }
+    const mcpServers = [...new Set([...spec.codexMcpServers ?? [], ...pluginMcpServers.keys()])]
     if (mcpServers.length) {
       const known = new Set(parseCodexMcpInventory(await this.loadMcpInventory()).map((entry) => entry.name))
       for (const name of mcpServers) {
         if (!known.has(name)) {
-          const requiredBy = spec.codexMcpServers?.includes(name) ? "codexMcpServers names" : "a selected codexPlugins entry requires"
+          const requiredBy = spec.codexMcpServers?.includes(name) ? "codexMcpServers names" : `codexPlugins entry "${pluginMcpServers.get(name)}" requires`
           throw new AgentError({ provider: PROVIDER, code: "unknown_mcp_server", message: `${requiredBy} MCP server "${name}", which is not in this host's Codex MCP inventory`, retryable: false })
         }
         config[`mcp_servers.${threadOverrideSegment("MCP server", name)}.enabled`] = true
@@ -976,11 +1026,13 @@ export class CodexWorker implements Worker {
 
     if (this.appServerSocket !== undefined) {
       // A proxy relays bytes to a daemon that loaded its config already, so launch `-c` values never
-      // reach it. The lean policy rides on every thread/start instead, as leaves the opt-ins overwrite.
+      // reach it. The lean policy rides on every thread/start instead, as leaves the opt-ins overwrite,
+      // and so does the service tier.
       this.sharedServerLeanConfig = Object.fromEntries([
         ...featureOverrides.map(({ key, value }) => [key, value]),
         ...leanMcpServerNamesToDisable.map((name) => [`mcp_servers.${threadOverrideSegment("MCP server", name)}.enabled`, false]),
       ])
+      this.sharedServerServiceTier = resolveCodexServiceTier(this.serviceTier)
       leanMcpServerNamesToDisable = []
       featureOverrides = []
     }

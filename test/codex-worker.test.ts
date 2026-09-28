@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import { EventEmitter } from "node:events"
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { existsSync } from "node:fs"
 
 import {
@@ -169,16 +169,20 @@ test("lean launch disables every inventoried server in one transport-preserving 
 
 test("buildCodexAppServerArgs can proxy through an existing app-server socket", () => {
   assert.deepEqual(buildCodexAppServerArgs({ appServerSocket: "/tmp/codex.sock" }), ["app-server", "proxy", "--sock", "/tmp/codex.sock"])
+  // A proxy relays bytes, so a launch service tier would never reach the daemon.
+  assert.deepEqual(buildCodexAppServerArgs({ appServerSocket: "/tmp/codex.sock", serviceTier: "flex" }), ["app-server", "proxy", "--sock", "/tmp/codex.sock"])
 })
 
-test("lean inventory includes stdio, HTTP, and already-disabled servers", () => {
+test("lean inventory includes stdio, HTTP, legacy SSE, and already-disabled servers", () => {
   const inventory = JSON.stringify([
     mcpInventoryEntry("paos-recall-mcp"),
     mcpInventoryEntry("openaiDeveloperDocs", { type: "streamable_http" }),
     mcpInventoryEntry("node_repl"),
     mcpInventoryEntry("onepassword"),
+    // The lean leaf keeps the host transport, so a transport no profile could replace is still disabled.
+    mcpInventoryEntry("legacy-sse", { type: "sse" }),
   ])
-  assert.deepEqual(selectCodexLeanMcpServerNames(inventory), ["paos-recall-mcp", "openaiDeveloperDocs", "node_repl", "onepassword"])
+  assert.deepEqual(selectCodexLeanMcpServerNames(inventory), ["paos-recall-mcp", "openaiDeveloperDocs", "node_repl", "onepassword", "legacy-sse"])
   assert.deepEqual(selectCodexLeanMcpServerNames(JSON.stringify([mcpInventoryEntry("off", { enabled: false })])), ["off"])
 })
 
@@ -552,6 +556,7 @@ test("lean worker inventories every MCP transport and disables process features 
           mcpInventoryEntry("onepassword"),
           mcpInventoryEntry("node_repl"),
           mcpInventoryEntry("openaiDeveloperDocs", { type: "streamable_http" }),
+          mcpInventoryEntry("legacy-sse", { type: "sse" }),
         ])
       },
     },
@@ -563,7 +568,7 @@ test("lean worker inventories every MCP transport and disables process features 
   const launchedArgs = (worker as any).appServerArgs as string[]
   assert.deepEqual(configValues(launchedArgs), [
     "service_tier=default",
-    "mcp_servers={paos-recall-mcp={enabled=false},onepassword={enabled=false},node_repl={enabled=false},openaiDeveloperDocs={enabled=false}}",
+    "mcp_servers={paos-recall-mcp={enabled=false},onepassword={enabled=false},node_repl={enabled=false},openaiDeveloperDocs={enabled=false},legacy-sse={enabled=false}}",
     ...["plugins", "plugin_sharing", "remote_plugin", "apps", "enable_mcp_apps", "computer_use", "browser_use", "browser_use_external", "in_app_browser"].map((name) => `features.${name}=false`),
   ])
   await worker.shutdown()
@@ -1022,7 +1027,10 @@ async function localPlugin(pluginId: string, manifest: unknown, files: Record<st
   const root = await mkdtemp(join(tmpdir(), "codex-plugin-"))
   await mkdir(join(root, ".codex-plugin"))
   await writeFile(join(root, ".codex-plugin", "plugin.json"), JSON.stringify(manifest))
-  for (const [name, contents] of Object.entries(files)) await writeFile(join(root, name), contents)
+  for (const [name, contents] of Object.entries(files)) {
+    await mkdir(dirname(join(root, name)), { recursive: true })
+    await writeFile(join(root, name), contents)
+  }
   return { pluginId, source: { source: "local", path: root } }
 }
 
@@ -1143,7 +1151,7 @@ test("plugins that need the app or remote-plugin gate, or have no readable manif
     ["convex@openai-curated", "unsupported_plugin", /"convex@openai-curated", whose manifest declares apps/],
     ["linear@openai-curated", "unsupported_plugin", /"linear@openai-curated", whose manifest declares apps/],
     ["github@openai-curated-remote", "unsupported_plugin", /"github@openai-curated-remote", a remote plugin; a lean thread cannot enable features\.remote_plugin/],
-    ["broken@local", "plugin_inventory_failed", /cannot read the manifest of Codex plugin "broken@local": .*ENOENT/],
+    ["broken@local", "plugin_inventory_failed", /cannot read the manifest or hooks of Codex plugin "broken@local": .*ENOENT/],
     ["pathless@local", "plugin_inventory_failed", /gives no local source path for "pathless@local"/],
   ] as const) {
     await assert.rejects(
@@ -1153,6 +1161,87 @@ test("plugins that need the app or remote-plugin gate, or have no readable manif
   }
   assert.equal(threadStarts.length, 0)
   await worker.shutdown()
+})
+
+/** A hooks file whose events call each server through an `mcp_tool` handler, beside a command hook. */
+function mcpToolHooks(...servers: string[]) {
+  return {
+    hooks: {
+      Stop: servers.map((server) => ({ hooks: [{ type: "mcp_tool", server, tool: "turn_ended" }] })),
+      SessionStart: [{ hooks: [{ type: "command", command: "echo ready" }] }],
+    },
+  }
+}
+
+test("MCP servers a selected plugin's hooks call are enabled for that thread only", async () => {
+  const threadStarts: any[] = []
+  const { worker } = toolWorker(threadStarts, {
+    readPluginInventory: async () => [JSON.stringify({ installed: [
+      await localPlugin("browser@openai-bundled", { name: "browser", hooks: mcpToolHooks("node_repl") }),
+      await localPlugin("filed@local", { name: "filed", hooks: "./hooks.json" }, { "hooks.json": JSON.stringify(mcpToolHooks("btca")) }),
+      await localPlugin("several@local", { name: "several", hooks: ["./a.json", mcpToolHooks("paos-recall-mcp")] }, { "a.json": JSON.stringify(mcpToolHooks("btca", "node_repl")) }),
+      // Codex reads hooks/hooks.json when the manifest names no hooks.
+      await localPlugin("defaulted@local", { name: "defaulted" }, { "hooks/hooks.json": JSON.stringify(mcpToolHooks("executor")) }),
+      await localPlugin("commands@local", { name: "commands", hooks: { hooks: { Stop: [{ hooks: [{ type: "command", command: "true" }] }] } } }),
+    ] })],
+  })
+  const servers = async (plugins: string[]) => {
+    await worker.runAgent(spec({ codexPlugins: plugins }), ctx())
+    const config = threadStarts.at(-1).config
+    return Object.keys(config).filter((key) => key.startsWith("mcp_servers.") && config[key] === true)
+  }
+  assert.deepEqual(await servers(["browser@openai-bundled"]), ["mcp_servers.node_repl.enabled"])
+  assert.deepEqual(await servers(["filed@local"]), ["mcp_servers.btca.enabled"])
+  assert.deepEqual(await servers(["several@local"]), ["mcp_servers.btca.enabled", "mcp_servers.node_repl.enabled", "mcp_servers.paos-recall-mcp.enabled"])
+  assert.deepEqual(await servers(["defaulted@local"]), ["mcp_servers.executor.enabled"])
+  assert.deepEqual(await servers(["commands@local"]), [])
+  await worker.runAgent(spec(), ctx())
+  assert.deepEqual(threadStarts.at(-1).config, { "features.context_management": false })
+  await worker.shutdown()
+})
+
+test("a plugin hook server missing from the host, or an unreadable hooks file, fails before thread/start", async () => {
+  const threadStarts: any[] = []
+  const { worker } = toolWorker(threadStarts, {
+    readPluginInventory: async () => [JSON.stringify({ installed: [
+      await localPlugin("absent-server@local", { name: "absent-server", hooks: mcpToolHooks("node_repl", "ghost") }),
+      await localPlugin("missing-file@local", { name: "missing-file", hooks: "./hooks.json" }),
+      await localPlugin("bad-file@local", { name: "bad-file" }, { "hooks/hooks.json": "{" }),
+    ] })],
+  })
+  for (const [id, code, message] of [
+    ["absent-server@local", "unknown_mcp_server", /codexPlugins entry "absent-server@local" requires MCP server "ghost", which is not in this host's Codex MCP inventory/],
+    ["missing-file@local", "plugin_inventory_failed", /cannot read the manifest or hooks of Codex plugin "missing-file@local": .*ENOENT.*hooks\.json/],
+    ["bad-file@local", "plugin_inventory_failed", /"bad-file@local": .*hooks\.json is not valid JSON/],
+  ] as const) {
+    await assert.rejects(
+      worker.runAgent(spec({ codexPlugins: [id] }), ctx()),
+      (error: unknown) => error instanceof AgentError && error.code === code && error.retryable === false && message.test(error.message),
+    )
+  }
+  assert.equal(threadStarts.length, 0)
+  await worker.shutdown()
+})
+
+test("a shared app-server socket carries the service tier on every thread/start; a fresh app-server gets it at launch", async () => {
+  const socketStarts: any[] = []
+  const socket = toolWorker(socketStarts, {
+    appServerSocket: "/tmp/shared-codex.sock",
+    serviceTier: "flex",
+    readMcpInventory: async () => JSON.stringify([mcpInventoryEntry("node_repl")]),
+  })
+  await socket.worker.runAgent(spec(), ctx())
+  await socket.worker.runAgent(spec({ codexPlugins: ["computer-use@openai-bundled"] }), ctx())
+  assert.deepEqual((socket.worker as any).appServerArgs, ["app-server", "proxy", "--sock", "/tmp/shared-codex.sock"])
+  assert.deepEqual(socketStarts.map((start) => start.serviceTier), ["flex", "flex"])
+  await socket.worker.shutdown()
+
+  const freshStarts: any[] = []
+  const fresh = toolWorker(freshStarts, { serviceTier: "flex" })
+  await fresh.worker.runAgent(spec(), ctx())
+  assert.deepEqual(configValues((fresh.worker as any).appServerArgs)[0], "service_tier=flex")
+  assert.ok(!("serviceTier" in freshStarts[0]))
+  await fresh.worker.shutdown()
 })
 
 test("a shared app-server socket gets the lean policy on every thread/start, under the opt-ins", async () => {

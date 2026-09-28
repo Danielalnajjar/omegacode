@@ -381,15 +381,19 @@ small registry of live workers and lazily starts each provider the first time it
   selected plugin's manifest (`<source.path>/.codex-plugin/plugin.json`) is read before
   `thread/start`: one that declares apps (a manifest `apps` file, or the root `.app.json` Codex
   falls back to) is rejected, because `features.apps` exposes every app connected to the ChatGPT
-  account, not one plugin's. Remote plugins are rejected because `features.remote_plugin` swaps the
-  host's local `openai-curated` plugins for their remote twins. An unreadable manifest is
-  `plugin_inventory_failed`. The
+  account, not one plugin's. The MCP servers its hooks call (`mcp_tool` handlers in the manifest
+  `hooks` paths or inline objects, else `hooks/hooks.json`) are enabled for that thread, as
+  `PLUGIN_REQUIREMENTS` does for what a manifest cannot express (computer-use's `node_repl`); one
+  missing from the host MCP inventory is `unknown_mcp_server`. Remote plugins are rejected because
+  `features.remote_plugin` swaps the host's local `openai-curated` plugins for their remote twins.
+  An unreadable manifest or hooks file is `plugin_inventory_failed`. The
   installed-plugin inventory is the union of `codex plugin list --json` and one
   `codex plugin list --marketplace <name> --json` per configured marketplace, because the default
   listing omits whole marketplaces (0.156.1 drops `openai-curated`). A
   parent `mcp_servers` or `plugins` value would replace the launch table. `app-server proxy` only
   relays bytes, so a shared-socket worker sends the same feature and `mcp_servers.<name>.enabled`
-  disables as leaves on every `thread/start`, with the opt-ins overwriting them. Profiles keep inert
+  disables as leaves on every `thread/start`, with the opt-ins overwriting them, and sends its
+  service tier as `thread/start.serviceTier` instead of the launch `-c service_tier`. Profiles keep inert
   transports for disallowed MCPs and reject plugin opt-ins.
 - `runAgent`: `thread/start` (cwd, model, sandbox, approvalPolicy, instructions, optional
   `config.web_search` and tool opt-in leaves, `experimentalRawEvents:

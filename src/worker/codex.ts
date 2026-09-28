@@ -559,7 +559,7 @@ export class CodexWorker implements Worker {
       throw new AgentError({ provider: PROVIDER, code: "unsupported_option", message: profileToolError, retryable: false })
     }
     await this.waitForStarted(ctx.signal)
-    const threadToolConfig = await this.resolveThreadToolConfig(spec)
+    const threadToolConfig = await this.resolveThreadToolConfig(spec, ctx.signal)
 
     // 1. thread/start → obtain providerThreadId.
     const startParams: ThreadStartParams = {
@@ -753,15 +753,15 @@ export class CodexWorker implements Worker {
   /** Leaf-valued thread/start overrides that turn on this agent's opted-in tools. Codex splits
    *  request override paths on "." without TOML quoting, so names containing "." cannot be addressed.
    *  A parent `mcp_servers` or `plugins` table would replace the launch table instead of merging. */
-  private async resolveThreadToolConfig(spec: AgentSpec): Promise<Record<string, boolean | number>> {
+  private async resolveThreadToolConfig(spec: AgentSpec, signal: AbortSignal): Promise<Record<string, boolean | number>> {
     const config: Record<string, boolean | number> = {}
     const profileMcp = this.executionProfile === undefined ? "none" : resolveCodexExecutionProfile(this.executionProfile).mcp
     let cwdInventory: CodexMcpInventoryEntry[] | undefined
     // Explicit app-server args own the startup surface, so only opt-ins are checked against the cwd.
     if (!this.hasExplicitAppServerArgs) {
       // A trusted project's .codex/config.toml adds servers the neutral launch table cannot name.
-      const baseNames = new Set((await this.readMcpInventoryEntries(tmpdir())).map((entry) => entry.name))
-      cwdInventory = await this.readMcpInventoryEntries(spec.cwd)
+      const baseNames = new Set((await untilAborted(this.readMcpInventoryEntries(tmpdir()), signal)).map((entry) => entry.name))
+      cwdInventory = await untilAborted(this.readMcpInventoryEntries(spec.cwd), signal)
       const allowedByProfile = profileMcp === "none" ? [] : profileMcp.allowedServerNames
       for (const { name } of cwdInventory) {
         if (!baseNames.has(name)) {
@@ -809,7 +809,7 @@ export class CodexWorker implements Worker {
     }
     const mcpServers = [...new Set([...spec.codexMcpServers ?? [], ...pluginMcpServers.keys()])]
     if (mcpServers.length) {
-      const known = new Set((cwdInventory ?? await this.readMcpInventoryEntries(spec.cwd)).map((entry) => entry.name))
+      const known = new Set((cwdInventory ?? await untilAborted(this.readMcpInventoryEntries(spec.cwd), signal)).map((entry) => entry.name))
       for (const name of mcpServers) {
         if (!known.has(name)) {
           const requiredBy = spec.codexMcpServers?.includes(name) ? "codexMcpServers names" : `codexPlugins entry "${pluginMcpServers.get(name)}" requires`
@@ -934,24 +934,7 @@ export class CodexWorker implements Worker {
     // Bail before ensureStarted(): a pre-aborted caller must not kick off
     // shared init, and throwing after would leave initPromise unobserved.
     if (signal.aborted) throw new AgentInterrupted()
-    const started = this.ensureStarted()
-    let onAbort: (() => void) | undefined
-    const interrupted = new Promise<never>((_resolve, reject) => {
-      // ensureStarted()'s synchronous prologue can re-entrantly abort the
-      // signal (injected probes); an already-aborted signal never fires the
-      // "abort" event, so recheck before relying on the listener.
-      if (signal.aborted) {
-        reject(new AgentInterrupted())
-        return
-      }
-      onAbort = () => reject(new AgentInterrupted())
-      signal.addEventListener("abort", onAbort, { once: true })
-    })
-    try {
-      await Promise.race([started, interrupted])
-    } finally {
-      if (onAbort) signal.removeEventListener("abort", onAbort)
-    }
+    await untilAborted(this.ensureStarted(), signal)
   }
 
   private async startAndHandshake(): Promise<void> {
@@ -1554,6 +1537,27 @@ export class CodexWorker implements Worker {
       message: err instanceof Error ? err.message : String(err),
       retryable: true,
     })
+  }
+}
+
+/** Settle this caller on abort while shared work (startup, a cached inventory read) continues for others. */
+async function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  let onAbort: (() => void) | undefined
+  const interrupted = new Promise<never>((_resolve, reject) => {
+    // The work's synchronous prologue can re-entrantly abort the signal
+    // (injected probes); an already-aborted signal never fires the "abort"
+    // event, so recheck before relying on the listener.
+    if (signal.aborted) {
+      reject(new AgentInterrupted())
+      return
+    }
+    onAbort = () => reject(new AgentInterrupted())
+    signal.addEventListener("abort", onAbort, { once: true })
+  })
+  try {
+    return await Promise.race([work, interrupted])
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort)
   }
 }
 

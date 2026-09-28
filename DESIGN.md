@@ -395,10 +395,12 @@ small registry of live workers and lazily starts each provider the first time it
   listing omits whole marketplaces (0.156.1 drops `openai-curated`). A
   parent `mcp_servers` or `plugins` value would replace the launch table. Profiles keep inert
   transports for disallowed host MCPs and reject plugin opt-ins. Each thread also inventories its
-  own cwd once per distinct cwd per worker. Project-only servers get per-thread `enabled` leaves:
+  own cwd once per distinct cwd per worker; that read is a snapshot for the run, so a
+  `.codex/config.toml` edited mid-run applies from the next run. Project-only servers get per-thread `enabled` leaves:
   off unless selected or profile-allowlisted. A project-only dotted name fails before thread/start
   because Codex cannot address it with a leaf override. The neutral launch inventory prevents a
-  project-only name from producing a launch entry without a transport in another cwd.
+  project-only name from producing a launch entry without a transport in another cwd, and a
+  generated app-server launches from that same neutral directory.
 - `runAgent`: `thread/start` (cwd, model, sandbox, approvalPolicy, instructions, optional
   `config.web_search` and tool opt-in leaves, `experimentalRawEvents:
   false`) → `thread/start` returns a `threadId` → `turn/start` (input text, model, effort, sandboxPolicy,

@@ -466,7 +466,7 @@ function makeServedWorker(
     bin?: string
     appServerArgs?: string[]
     serviceTier?: string
-    readMcpInventory?: (bin: string) => Promise<string>
+    readMcpInventory?: (bin: string, cwd: string) => Promise<string>
     readPluginInventory?: (bin: string) => Promise<string[]>
     executionProfile?: CodexExecutionProfileName
     readFeatureInventory?: (bin: string) => Promise<string>
@@ -885,6 +885,38 @@ test("a re-entrant abort during the synchronous startup prologue still interrupt
   )
   releaseInventory("[]")
   assert.equal((await worker.runAgent(spec(), ctx())).text, "done")
+  await worker.shutdown()
+})
+
+test("abort settles promptly while an agent cwd's MCP inventory is still loading", async () => {
+  const controller = new AbortController()
+  let releaseProject!: (inventory: string) => void
+  const projectInventory = new Promise<string>((resolve) => { releaseProject = resolve })
+  let enteredProject!: () => void
+  const entered = new Promise<void>((resolve) => { enteredProject = resolve })
+  const { worker } = makeServedWorker(
+    (_req, reply) => {
+      reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
+      reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
+    },
+    {
+      readMcpInventory: async (_bin, cwd) => {
+        if (cwd !== "/project") return "[]"
+        enteredProject()
+        return await projectInventory
+      },
+    },
+  )
+  const run = worker.runAgent(spec({ cwd: "/project" }), ctx(controller.signal))
+  await entered
+  controller.abort()
+  const result = await Promise.race([
+    run.then(() => "resolved", (error) => error),
+    new Promise<"timed-out">((resolve) => setTimeout(() => resolve("timed-out"), 500)),
+  ])
+  assert.ok(result instanceof AgentInterrupted)
+  releaseProject("[]")
+  assert.equal((await worker.runAgent(spec({ cwd: "/project" }), ctx())).text, "done")
   await worker.shutdown()
 })
 

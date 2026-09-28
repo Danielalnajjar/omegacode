@@ -959,6 +959,9 @@ export class CodexWorker implements Worker {
     const client = new JsonRpcStdioClient({
       bin: this.bin,
       args: appServerArgs,
+      // Generated launch overrides describe the neutral inventory, not OmegaCode's project.
+      // Explicit args own their startup surface and keep the caller's inherited cwd.
+      cwd: this.hasExplicitAppServerArgs ? undefined : tmpdir(),
       spawnChild: this.spawnChild,
       requestTimeoutMs: this.requestTimeoutMs,
       onServerRequest: (id, method, params) => this.handleServerRequest(id, method, params),

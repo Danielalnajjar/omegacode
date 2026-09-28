@@ -43,10 +43,12 @@ export class JsonRpcResponseError extends Error {
 export type SpawnChild = () => ChildProcessWithoutNullStreams
 
 export interface JsonRpcStdioOptions {
-  /** Spawn the underlying child. Defaults to `spawn(bin, args, {stdio:["pipe","pipe","pipe"]})`. */
+  /** Spawn the underlying child. Defaults to `spawn(bin, args, {cwd, env, stdio})`. */
   spawnChild?: SpawnChild
   bin?: string
   args?: string[]
+  /** Working directory for the default spawn; omitted to inherit the parent's cwd. */
+  cwd?: string
   /** Per-request timeout in ms (0/undefined disables). Rejects the request and is retryable. */
   requestTimeoutMs?: number
   /** Max stderr bytes retained for crash diagnostics (ring buffer). */
@@ -85,7 +87,7 @@ export class JsonRpcStdioClient {
   constructor(opts: JsonRpcStdioOptions = {}) {
     const bin = opts.bin ?? "codex"
     const args = opts.args ?? ["app-server"]
-    this.spawnChild = opts.spawnChild ?? (() => spawn(bin, args, { env: providerEnv(), stdio: ["pipe", "pipe", "pipe"] }))
+    this.spawnChild = opts.spawnChild ?? (() => spawn(bin, args, { cwd: opts.cwd, env: providerEnv(), stdio: ["pipe", "pipe", "pipe"] }))
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 0
     this.stderrLimit = opts.stderrLimit ?? DEFAULT_STDERR_LIMIT
     this.onServerRequest = opts.onServerRequest

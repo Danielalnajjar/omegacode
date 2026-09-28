@@ -1,7 +1,7 @@
 import { after, test } from "node:test"
 import assert from "node:assert/strict"
 import { EventEmitter } from "node:events"
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { existsSync } from "node:fs"
@@ -1123,6 +1123,46 @@ test("project-only MCP servers are disabled or selected per cwd, with one invent
   assert.deepEqual(reads, [tmpdir(), "/project", "/other"])
   assert.ok(!configValues((worker as any).appServerArgs).some((value) => value.includes("project_only")))
   await worker.shutdown()
+})
+
+test("default app-server launches from the neutral inventory cwd, not OmegaCode's project", { skip: process.platform === "win32" }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "codex-launch-cwd-"))
+  const bin = join(dir, "fake-codex")
+  const record = join(dir, "cwd.json")
+  const agentCwd = join(dir, "agent")
+  await mkdir(agentCwd)
+  await writeFile(bin, `#!/usr/bin/env node
+const fs = require("node:fs")
+const readline = require("node:readline")
+const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\\n")
+readline.createInterface({ input: process.stdin }).on("line", (line) => {
+  const request = JSON.parse(line)
+  if (request.method === "initialize") send({ id: request.id, result: { userAgent: "codex/test" } })
+  if (request.method === "thread/start") {
+    fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({ launchCwd: process.cwd(), threadCwd: request.params.cwd }))
+    send({ id: request.id, result: { thread: { id: "thread-1" } } })
+  }
+  if (request.method === "turn/start") {
+    send({ id: request.id, result: {} })
+    send({ method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
+    send({ method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
+  }
+  if (request.method === "thread/unsubscribe") {
+    send({ id: request.id, result: { status: "unsubscribed" } })
+    send({ method: "thread/closed", params: { threadId: "thread-1" } })
+  }
+})
+`, { mode: 0o755 })
+  const worker = new CodexWorker({ bin, ...HERMETIC_INVENTORY, requestTimeoutMs: 5000 })
+  try {
+    assert.equal((await worker.runAgent(spec({ cwd: agentCwd }), ctx())).text, "done")
+    const observed = JSON.parse(await readFile(record, "utf8"))
+    assert.equal(await realpath(observed.launchCwd), await realpath(tmpdir()))
+    assert.equal(observed.threadCwd, agentCwd)
+  } finally {
+    await worker.shutdown()
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 
 test("a dotted project-only MCP name fails before thread/start, including on a lean thread", async () => {

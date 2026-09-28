@@ -50,8 +50,6 @@ export interface CodexWorkerOpts {
   bin?: string
   /** Full argv after the codex binary; defaults to ["app-server"]. */
   appServerArgs?: string[]
-  /** Use `codex app-server proxy --sock <path>` instead of spawning a fresh app-server. */
-  appServerSocket?: string
   /** Override Codex MCP inventory loading (tests inject a hermetic result). */
   readMcpInventory?: (bin: string) => Promise<string>
   /** Override Codex feature inventory loading (tests inject a hermetic result). */
@@ -139,31 +137,24 @@ const PLUGIN_REQUIREMENTS: Readonly<Record<string, { features: readonly string[]
 export const CODEX_SERVICE_TIERS = ["default", "flex", "priority", "fast"] as const
 
 export interface CodexAppServerArgsOptions {
-  appServerSocket?: string
   leanMcpServerNamesToDisable?: readonly string[]
   profileMcpServersToDisable?: readonly CodexMcpServerToDisable[]
   profileMcpServerNamesToEnable?: readonly string[]
   /** Codex service tier for every turn served by this app-server ("fast" canonicalizes to
-   *  "priority" on the wire, codex-side). Falls back to OMEGACODE_CODEX_SERVICE_TIER. A proxy
-   *  never delivers it, so with appServerSocket the worker sends it on each thread/start instead. */
+   *  "priority" on the wire, codex-side). Falls back to OMEGACODE_CODEX_SERVICE_TIER. */
   serviceTier?: string
   featureOverrides?: readonly { key: string; value: boolean }[]
 }
 
-/** The validated service tier, falling back to OMEGACODE_CODEX_SERVICE_TIER; undefined when unset. */
-export function resolveCodexServiceTier(serviceTier?: string): string | undefined {
-  const tier = (serviceTier ?? process.env.OMEGACODE_CODEX_SERVICE_TIER ?? "").trim()
-  if (!tier) return undefined
-  if (!(CODEX_SERVICE_TIERS as readonly string[]).includes(tier)) {
-    throw new Error(`invalid codex service tier "${tier}" — must be one of ${CODEX_SERVICE_TIERS.join(", ")}`)
-  }
-  return tier
-}
-
 export function buildCodexAppServerArgs(options: CodexAppServerArgsOptions = {}): string[] {
   const args: string[] = []
-  const tier = options.appServerSocket ? undefined : resolveCodexServiceTier(options.serviceTier)
-  if (tier) args.push("-c", `service_tier=${tier}`)
+  const tier = (options.serviceTier ?? process.env.OMEGACODE_CODEX_SERVICE_TIER ?? "").trim()
+  if (tier) {
+    if (!(CODEX_SERVICE_TIERS as readonly string[]).includes(tier)) {
+      throw new Error(`invalid codex service tier "${tier}" — must be one of ${CODEX_SERVICE_TIERS.join(", ")}`)
+    }
+    args.push("-c", `service_tier=${tier}`)
+  }
   if (options.leanMcpServerNamesToDisable?.length) {
     // One table with quoted keys can name any server; it deep-merges onto the host definitions,
     // so each transport survives and a thread's `mcp_servers.<name>.enabled` leaf re-enables it.
@@ -180,7 +171,6 @@ export function buildCodexAppServerArgs(options: CodexAppServerArgsOptions = {})
     args.push("-c", `${override.key}=${override.value}`)
   }
   args.push("app-server")
-  if (options.appServerSocket) args.push("proxy", "--sock", options.appServerSocket)
   return args
 }
 
@@ -504,7 +494,6 @@ export class CodexWorker implements Worker {
   private readonly bin: string
   private appServerArgs: string[] | null
   private readonly hasExplicitAppServerArgs: boolean
-  private readonly appServerSocket?: string
   private readonly serviceTier?: string
   private readonly executionProfile?: CodexExecutionProfileName
   private readonly readMcpInventory: (bin: string) => Promise<string>
@@ -512,9 +501,6 @@ export class CodexWorker implements Worker {
   private readonly readPluginInventory: (bin: string) => Promise<string[]>
   private mcpInventory: Promise<string> | null = null
   private pluginInventory: Promise<readonly CodexInstalledPlugin[]> | null = null
-  /** Lean disables and service tier every thread/start carries when a proxy relays to a shared daemon. */
-  private sharedServerLeanConfig: Record<string, boolean> = {}
-  private sharedServerServiceTier: string | undefined
   private readonly logProfileWarning: (message: string) => void
   private readonly spawnChild?: SpawnChild
   private readonly requestTimeoutMs: number
@@ -534,7 +520,6 @@ export class CodexWorker implements Worker {
     this.bin = opts.bin ?? "codex"
     this.appServerArgs = opts.appServerArgs === undefined ? null : [...opts.appServerArgs]
     this.hasExplicitAppServerArgs = opts.appServerArgs !== undefined
-    this.appServerSocket = opts.appServerSocket
     this.serviceTier = opts.serviceTier ?? process.env.OMEGACODE_CODEX_SERVICE_TIER
     this.executionProfile = opts.executionProfile
     this.readMcpInventory = opts.readMcpInventory ?? readCodexMcpInventory
@@ -575,7 +560,6 @@ export class CodexWorker implements Worker {
         ? { permissions: spec.codexPermissions }
         : { sandbox: toCodexSandboxMode(spec.sandbox) }),
       ...(spec.instructions ? { developerInstructions: spec.instructions } : {}),
-      ...(this.sharedServerServiceTier ? { serviceTier: this.sharedServerServiceTier } : {}),
       experimentalRawEvents: false,
       // Codex 0.149 does not list child metadata for ephemeral threads.
       // Role-proof calls are briefly persisted, verified, then deleted as an exact subtree.
@@ -731,12 +715,11 @@ export class CodexWorker implements Worker {
     }
   }
 
-  /** Leaf-valued thread/start overrides that turn on this agent's opted-in tools, over the lean
-   *  disables when the daemon is shared. Codex splits
+  /** Leaf-valued thread/start overrides that turn on this agent's opted-in tools. Codex splits
    *  request override paths on "." without TOML quoting, so names containing "." cannot be addressed.
    *  A parent `mcp_servers` or `plugins` table would replace the launch table instead of merging. */
   private async resolveThreadToolConfig(spec: AgentSpec): Promise<Record<string, boolean>> {
-    const config: Record<string, boolean> = { ...this.sharedServerLeanConfig }
+    const config: Record<string, boolean> = {}
     const plugins = spec.codexPlugins ?? []
     // Each MCP server a selected plugin needs, keyed to the first plugin that needs it.
     const pluginMcpServers = new Map<string, string>()
@@ -958,14 +941,6 @@ export class CodexWorker implements Worker {
   }
 
   private async resolveAppServerArgs(): Promise<string[]> {
-    if (this.executionProfile !== undefined && this.appServerSocket !== undefined) {
-      throw new AgentError({
-        provider: PROVIDER,
-        code: "profile_proxy_unsupported",
-        message: "Codex execution profiles require a dedicated app-server; the caller must resolve the app-server socket and execution profile combination",
-        retryable: false,
-      })
-    }
     if (this.executionProfile !== undefined && this.hasExplicitAppServerArgs) {
       throw new AgentError({
         provider: PROVIDER,
@@ -1024,20 +999,7 @@ export class CodexWorker implements Worker {
       })
     }
 
-    if (this.appServerSocket !== undefined) {
-      // A proxy relays bytes to a daemon that loaded its config already, so launch `-c` values never
-      // reach it. The lean policy rides on every thread/start instead, as leaves the opt-ins overwrite,
-      // and so does the service tier.
-      this.sharedServerLeanConfig = Object.fromEntries([
-        ...featureOverrides.map(({ key, value }) => [key, value]),
-        ...leanMcpServerNamesToDisable.map((name) => [`mcp_servers.${threadOverrideSegment("MCP server", name)}.enabled`, false]),
-      ])
-      this.sharedServerServiceTier = resolveCodexServiceTier(this.serviceTier)
-      leanMcpServerNamesToDisable = []
-      featureOverrides = []
-    }
     this.appServerArgs = buildCodexAppServerArgs({
-      appServerSocket: this.appServerSocket,
       leanMcpServerNamesToDisable,
       profileMcpServersToDisable,
       profileMcpServerNamesToEnable,

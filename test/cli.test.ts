@@ -109,18 +109,13 @@ describe("parseArgs — boolean flags never consume the next token (M18)", () =>
     assert.deepEqual(f._, ["runs", "next"])
   })
 
-  test("codex worker process flags are boolean and do not swallow the workflow path", () => {
+  test("codex worker process flags do not swallow the workflow path", () => {
     const f = parseArgs([
       "run",
-      "--codex-no-app-server-proxy",
       "wf.js",
-      "--codex-app-server-socket",
-      "/tmp/codex.sock",
       "--codex-thread-start-concurrency",
       "12",
     ])
-    assert.equal(f["codex-no-app-server-proxy"], true)
-    assert.equal(f["codex-app-server-socket"], "/tmp/codex.sock")
     assert.equal(f["codex-thread-start-concurrency"], "12")
     assert.deepEqual(f._, ["run", "wf.js"])
   })
@@ -546,13 +541,6 @@ describe("CLI end-to-end (--fake)", () => {
     const r = await runCli(["run", wf, "--budget", "abc", "--fake", "--no-serve"], { OMEGACODE_HOME: home })
     assert.equal(r.code, 1)
     assert.match(r.stderr, /--budget must be a non-negative number/)
-  })
-
-  test("conflicting Codex app-server proxy flags are rejected cleanly", async () => {
-    const r = await runCli(["run", wf, "--codex-app-server-socket", "/tmp/codex.sock", "--codex-no-app-server-proxy", "--fake", "--no-serve"], { OMEGACODE_HOME: home })
-    assert.equal(r.code, 1)
-    assert.match(r.stderr, /cannot be combined/)
-    assert.doesNotMatch(r.stderr, /at \w+ \(/)
   })
 
   test("empty --budget= is rejected, not silently 0 (Number('') === 0)", async () => {

@@ -167,12 +167,6 @@ test("lean launch disables every inventoried server in one transport-preserving 
   ])
 })
 
-test("buildCodexAppServerArgs can proxy through an existing app-server socket", () => {
-  assert.deepEqual(buildCodexAppServerArgs({ appServerSocket: "/tmp/codex.sock" }), ["app-server", "proxy", "--sock", "/tmp/codex.sock"])
-  // A proxy relays bytes, so a launch service tier would never reach the daemon.
-  assert.deepEqual(buildCodexAppServerArgs({ appServerSocket: "/tmp/codex.sock", serviceTier: "flex" }), ["app-server", "proxy", "--sock", "/tmp/codex.sock"])
-})
-
 test("lean inventory includes stdio, HTTP, legacy SSE, and already-disabled servers", () => {
   const inventory = JSON.stringify([
     mcpInventoryEntry("paos-recall-mcp"),
@@ -458,7 +452,6 @@ function makeServedWorker(
   opts: {
     bin?: string
     appServerArgs?: string[]
-    appServerSocket?: string
     serviceTier?: string
     readMcpInventory?: (bin: string) => Promise<string>
     readPluginInventory?: (bin: string) => Promise<string[]>
@@ -480,7 +473,6 @@ function makeServedWorker(
   const worker = new CodexWorker({
     bin: opts.bin,
     appServerArgs: opts.appServerArgs,
-    appServerSocket: opts.appServerSocket,
     serviceTier: opts.serviceTier,
     readMcpInventory: opts.readMcpInventory ?? HERMETIC_INVENTORY.readMcpInventory,
     readPluginInventory: opts.readPluginInventory ?? (async () => [JSON.stringify({ installed: [] })]),
@@ -782,32 +774,6 @@ test("profile feature inventory fails closed when all override keys are unknown"
       && error.code === "feature_inventory_failed"
       && /none of 15 profile feature override keys/.test(error.message),
   )
-  assert.equal(spawned, false)
-})
-
-test("execution profiles reject shared app-server proxy mode before probing", async () => {
-  let probed = false
-  let spawned = false
-  const worker = new CodexWorker({
-    executionProfile: "workflow-plan-v1",
-    appServerSocket: "/tmp/shared-codex.sock",
-    readMcpInventory: async () => {
-      probed = true
-      return "[]"
-    },
-    spawnChild: () => {
-      spawned = true
-      return new FakeChild() as any
-    },
-  })
-  await assert.rejects(
-    worker.runAgent(spec(), ctx()),
-    (error) => error instanceof AgentError
-      && error.code === "profile_proxy_unsupported"
-      && error.retryable === false
-      && /dedicated app-server/.test(error.message),
-  )
-  assert.equal(probed, false)
   assert.equal(spawned, false)
 })
 
@@ -1223,75 +1189,13 @@ test("a plugin hook server missing from the host, or an unreadable hooks file, f
   await worker.shutdown()
 })
 
-test("a shared app-server socket carries the service tier on every thread/start; a fresh app-server gets it at launch", async () => {
-  const socketStarts: any[] = []
-  const socket = toolWorker(socketStarts, {
-    appServerSocket: "/tmp/shared-codex.sock",
-    serviceTier: "flex",
-    readMcpInventory: async () => JSON.stringify([mcpInventoryEntry("node_repl")]),
-  })
-  await socket.worker.runAgent(spec(), ctx())
-  await socket.worker.runAgent(spec({ codexPlugins: ["computer-use@openai-bundled"] }), ctx())
-  assert.deepEqual((socket.worker as any).appServerArgs, ["app-server", "proxy", "--sock", "/tmp/shared-codex.sock"])
-  assert.deepEqual(socketStarts.map((start) => start.serviceTier), ["flex", "flex"])
-  await socket.worker.shutdown()
-
+test("a fresh app-server gets the service tier at launch, not on thread/start", async () => {
   const freshStarts: any[] = []
   const fresh = toolWorker(freshStarts, { serviceTier: "flex" })
   await fresh.worker.runAgent(spec(), ctx())
   assert.deepEqual(configValues((fresh.worker as any).appServerArgs)[0], "service_tier=flex")
   assert.ok(!("serviceTier" in freshStarts[0]))
   await fresh.worker.shutdown()
-})
-
-test("a shared app-server socket gets the lean policy on every thread/start, under the opt-ins", async () => {
-  const threadStarts: any[] = []
-  const { worker } = toolWorker(threadStarts, {
-    appServerSocket: "/tmp/shared-codex.sock",
-    readMcpInventory: async () => JSON.stringify([mcpInventoryEntry("btca"), mcpInventoryEntry("node_repl"), mcpInventoryEntry("executor", { type: "streamable_http" })]),
-  })
-  await worker.runAgent(spec(), ctx())
-  await worker.runAgent(spec({ codexMcpServers: ["btca"], codexPlugins: ["computer-use@openai-bundled"] }), ctx())
-  // The proxy only relays bytes, so launch `-c` values would never reach the daemon.
-  assert.deepEqual((worker as any).appServerArgs, ["app-server", "proxy", "--sock", "/tmp/shared-codex.sock"])
-  const lean = {
-    ...Object.fromEntries(["plugins", "plugin_sharing", "remote_plugin", "apps", "enable_mcp_apps", "computer_use", "browser_use", "browser_use_external", "in_app_browser"].map((name) => [`features.${name}`, false])),
-    "mcp_servers.btca.enabled": false,
-    "mcp_servers.node_repl.enabled": false,
-    "mcp_servers.executor.enabled": false,
-  }
-  assert.deepEqual(threadStarts[0].config, { "features.context_management": false, ...lean })
-  assert.deepEqual(threadStarts[1].config, {
-    "features.context_management": false,
-    ...lean,
-    "features.plugins": true,
-    "features.computer_use": true,
-    "mcp_servers.btca.enabled": true,
-    "mcp_servers.node_repl.enabled": true,
-    "plugins.computer-use@openai-bundled.enabled": true,
-    "plugins.computer-history@openai-bundled.enabled": false,
-    "plugins.messages@openai-bundled.enabled": false,
-    "plugins.build-ios-apps@openai-curated.enabled": false,
-  })
-  await worker.shutdown()
-})
-
-test("a shared app-server socket rejects a host MCP server no thread override can disable", async () => {
-  let spawned = false
-  const worker = new CodexWorker({
-    appServerSocket: "/tmp/shared-codex.sock",
-    readMcpInventory: async () => JSON.stringify([mcpInventoryEntry("dotted.server")]),
-    readFeatureInventory: HERMETIC_INVENTORY.readFeatureInventory,
-    spawnChild: () => {
-      spawned = true
-      return new FakeChild() as any
-    },
-  })
-  await assert.rejects(
-    worker.runAgent(spec(), ctx()),
-    (error: unknown) => error instanceof AgentError && error.code === "unsupported_option" && /"dotted.server" contains "\."/.test(error.message),
-  )
-  assert.equal(spawned, false)
 })
 
 test("a plugin inventory failure is non-retryable and happens before thread/start", async () => {

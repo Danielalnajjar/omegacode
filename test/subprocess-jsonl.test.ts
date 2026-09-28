@@ -205,17 +205,20 @@ test("stall watchdog kills the child and rejects with retryable turn_stalled", a
   assert.deepEqual(h.proc.kills, ["SIGTERM", "SIGKILL"])
 })
 
-test("stdout activity re-arms the stall watchdog", async () => {
+test("stdout activity re-arms the stall watchdog", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] })
   const h = harness({ stallTimeoutMs: 60 })
+  const outcome = h.run.then((exit) => ({ exit }), (error) => ({ error }))
   await tick()
   for (let i = 0; i < 4; i++) {
-    await new Promise((r) => setTimeout(r, 30))
+    t.mock.timers.tick(30)
     h.proc.pushLine({ beat: i })
   }
+  t.mock.timers.tick(30)
   h.proc.end(0)
-  const exit = await h.run
-  assert.equal(exit.code, 0)
-  assert.equal(h.values.length, 4)
+  assert.deepEqual(await outcome, { exit: { code: 0, signal: null, stderrTail: "" } })
+  assert.deepEqual(h.values, [{ beat: 0 }, { beat: 1 }, { beat: 2 }, { beat: 3 }])
+  assert.deepEqual(h.proc.kills, [])
 })
 
 test("abort SIGTERMs the child and rejects AgentInterrupted; SIGKILL follows after grace", async () => {

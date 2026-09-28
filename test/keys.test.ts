@@ -74,8 +74,23 @@ test("provider-native options each invalidate the cache key", () => {
     { codexWebSearch: "live" as const },
     { codexNetworkAccess: true },
     { codexPermissions: "research" },
+    { codexMcpServers: ["btca"] },
+    { codexPlugins: ["computer-use@openai-bundled"] },
   ]) {
     assert.notEqual(chainKey(b, 0, "p", fields(opts)), baseline)
+  }
+})
+
+test("Codex tool selections join resume identity through keyedSpec", () => {
+  const b = branchKey(ROOT_KEY, "root", 0)
+  const key = (over: Record<string, readonly string[]> = {}) =>
+    chainKey(b, 0, "p", keyedSpec({ provider: "codex", model: "codex-model-1", ...over }, undefined))
+  const base = key()
+  assert.equal(key({ codexMcpServers: undefined as unknown as string[] }), base)
+  for (const field of ["codexMcpServers", "codexPlugins"] as const) {
+    assert.notEqual(key({ [field]: ["a"] }), base)
+    assert.notEqual(key({ [field]: ["a"] }), key({ [field]: ["b"] }))
+    assert.equal(key({ [field]: ["a"] }), key({ [field]: ["a"] }))
   }
 })
 

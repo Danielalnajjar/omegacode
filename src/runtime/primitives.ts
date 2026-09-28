@@ -23,7 +23,7 @@ import { addUsage, emptyUsage, PROVIDER_IDS } from "../dsl/types.js"
 import type { WorkerFactory, WorkerProgress } from "../worker/index.js"
 import { AgentError, AgentInterrupted } from "../worker/index.js"
 import { CODEX_SERVICE_TIERS } from "../worker/codex.js"
-import { CODEX_EXECUTION_PROFILE_NAMES } from "../worker/codex-profile.js"
+import { CODEX_EXECUTION_PROFILE_NAMES, codexProfileToolSelectionError } from "../worker/codex-profile.js"
 import { MUSE_EXECUTION_PROFILE_NAMES } from "../worker/muse-profile.js"
 import { withRetry } from "../worker/errors.js"
 import { stripNullOptionals, validate } from "../worker/schema.js"
@@ -286,6 +286,8 @@ export class Runtime {
       codexChildRole: opts?.codexChildRole,
       codexWebSearch: opts?.codexWebSearch,
       codexNetworkAccess: opts?.codexNetworkAccess,
+      codexMcpServers: opts?.codexMcpServers,
+      codexPlugins: opts?.codexPlugins,
       codexPermissions: opts?.codexPermissions,
     }
     if (spec.codexPermissions !== undefined) {
@@ -307,6 +309,15 @@ export class Runtime {
     checkSpecEnum("codexExecutionProfile", spec.codexExecutionProfile)
     checkSpecEnum("museExecutionProfile", spec.museExecutionProfile)
     checkSpecEnum("codexWebSearch", spec.codexWebSearch)
+    for (const [field, values] of [["codexMcpServers", spec.codexMcpServers], ["codexPlugins", spec.codexPlugins]] as const) {
+      if (values !== undefined && (!Array.isArray(values) || values.some((value) => typeof value !== "string" || value.length === 0))) {
+        throw new AgentError({ provider: spec.provider, code: "unsupported_option", message: `${field} must be an array of non-empty names` })
+      }
+    }
+    const profileToolError = spec.codexExecutionProfile === undefined ? undefined : codexProfileToolSelectionError(spec.codexExecutionProfile, spec)
+    if (profileToolError !== undefined) {
+      throw new AgentError({ provider: spec.provider, code: "unsupported_option", message: profileToolError })
+    }
     // Pairing is checked on the RAW opts (after the enum checks, so a typo'd provider still reports
     // as invalid): a lone provider/model here would silently mix with the other half of the run
     // defaults — the exact leak this rule exists to prevent. resolveDefaults covers the CLI/meta sites.
@@ -350,12 +361,12 @@ export class Runtime {
     }
     if (
       spec.provider !== "codex"
-      && (spec.codexChildRole !== undefined || spec.codexWebSearch !== undefined || spec.codexNetworkAccess !== undefined || spec.codexPermissions !== undefined)
+      && (spec.codexChildRole !== undefined || spec.codexWebSearch !== undefined || spec.codexNetworkAccess !== undefined || spec.codexPermissions !== undefined || spec.codexMcpServers !== undefined || spec.codexPlugins !== undefined)
     ) {
       throw new AgentError({
         provider: spec.provider,
         code: "unsupported_option",
-        message: "codexChildRole, codexWebSearch, codexNetworkAccess, and codexPermissions are codex-only; omit them or use the codex provider",
+        message: "codexChildRole, codexWebSearch, codexNetworkAccess, codexPermissions, codexMcpServers, and codexPlugins are codex-only; omit them or use the codex provider",
       })
     }
     return spec

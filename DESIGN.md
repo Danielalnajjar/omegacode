@@ -370,8 +370,21 @@ small registry of live workers and lazily starts each provider the first time it
 - Named execution profiles own the app-server's startup surface. `workflow-research-v1` enables only
   `btca`, `executor_research`, `grok_search`, and `mintlify`, disables every other inventoried MCP
   server (including full `executor`), and fails before spawn if any allowlisted server is missing.
+- An unprofiled app-server disables every stdio and HTTP MCP server in the host config (inventory
+  read with plugins off, since plugin-provided servers have no host transport to merge onto) with
+  one `mcp_servers={name={enabled=false},...}` launch value that keeps each host transport. It
+  turns off the process-spawning plugin/app/browser feature gates the host knows, and leaves web
+  search and image generation alone. Codex 0.156.1 applies `thread/start.config` after the launch
+  `-c` overrides in the same layer, splitting each key on `.`, so `codexMcpServers` and
+  `codexPlugins` become leaf keys (`mcp_servers.<name>.enabled`, `features.plugins`,
+  `plugins.<id>.enabled` for every installed plugin, plus a plugin's own gates and servers). The
+  installed-plugin inventory is the union of `codex plugin list --json` and one
+  `codex plugin list --marketplace <name> --json` per configured marketplace, because the default
+  listing omits whole marketplaces (0.156.1 drops `openai-curated`). A
+  parent `mcp_servers` or `plugins` value would replace the launch table. Profiles keep inert
+  transports for disallowed MCPs and reject plugin opt-ins.
 - `runAgent`: `thread/start` (cwd, model, sandbox, approvalPolicy, instructions, optional
-  `config.web_search`, `experimentalRawEvents:
+  `config.web_search` and tool opt-in leaves, `experimentalRawEvents:
   false`) → `thread/start` returns a `threadId` → `turn/start` (input text, model, effort, sandboxPolicy,
   approvalPolicy, **`outputSchema`** when `schema` set). Subscribe by `threadId`: accumulate
   `item/agentMessage/delta`, capture the final `agentMessage` item, resolve on **`turn/completed`**;

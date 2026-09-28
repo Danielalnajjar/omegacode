@@ -14,7 +14,6 @@ export interface FactoryOpts {
   fake?: boolean
   codexBin?: string
   codexAppServerSocket?: string
-  codexDisableLocalMcps?: boolean
   codexThreadStartConcurrency?: number
   claudeModel?: string
   /** Path to the claude-code executable (forwarded to the SDK). */
@@ -46,7 +45,6 @@ export class DefaultWorkerFactory implements WorkerFactory {
         return new CodexWorker({
           bin: this.opts.codexBin,
           appServerSocket: this.opts.codexAppServerSocket,
-          disableLocalMcps: this.opts.codexDisableLocalMcps,
           threadStartConcurrency: this.opts.codexThreadStartConcurrency,
           serviceTier,
           executionProfile: codexExecutionProfile,

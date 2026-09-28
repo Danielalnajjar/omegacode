@@ -82,7 +82,7 @@ A Codex agent starts with no MCP servers and no plugins. It has the built-in she
 
 Every server or plugin an agent names starts its own processes for that agent, so a 25-way `parallel()` that names a plugin starts 25 copies of it. That is the reason agents get nothing by default.
 
-Some tools are exclusive: the screen (computer use), a simulator, and an open Paper or Pencil document. Two agents on one of these click over each other or edit the same document, so only one agent may hold each at a time. Run the stages that use one in sequence, with `await` in a `for` loop rather than `parallel()` or `pipeline()`, and keep the other stages parallel. Parallel Xcode agents are safe only when each prompt names its own simulator and build output path:
+Some tools are exclusive: the screen (computer use), a simulator, and an open Paper or Pencil document. Two agents on one of these click over each other or edit the same document, so only one agent may hold each at a time. Parallel Xcode agents are safe only when each prompt names its own simulator and build output path. Otherwise run the stages that use an exclusive tool in sequence, with `await` in a `for` loop rather than `parallel()` or `pipeline()`, and keep the other stages parallel:
 
 ```js
 // Copy stages need no tools.

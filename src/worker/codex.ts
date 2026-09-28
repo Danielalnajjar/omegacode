@@ -6,7 +6,7 @@
 
 import { execFile } from "node:child_process"
 import { copyFile, readFile, stat, writeFile } from "node:fs/promises"
-import { basename, join, resolve as resolvePath } from "node:path"
+import { basename, isAbsolute, join, parse, resolve as resolvePath } from "node:path"
 import { promisify } from "node:util"
 
 import type { AgentResult, AgentSpec, AgentUsage } from "../dsl/types.js"
@@ -51,7 +51,7 @@ export interface CodexWorkerOpts {
   /** Full argv after the codex binary; defaults to ["app-server"]. */
   appServerArgs?: string[]
   /** Override Codex MCP inventory loading (tests inject a hermetic result). */
-  readMcpInventory?: (bin: string) => Promise<string>
+  readMcpInventory?: (bin: string, cwd: string) => Promise<string>
   /** Override Codex feature inventory loading (tests inject a hermetic result). */
   readFeatureInventory?: (bin: string) => Promise<string>
   /** Override installed plugin inventory loading: one `plugin list` output per listing (tests inject a hermetic result). */
@@ -108,9 +108,9 @@ export const DEFAULT_TURN_STALL_TIMEOUT_MS = 30 * 60_000
 export const DEFAULT_EXTRACTION_TURN_TIMEOUT_MS = 15 * 60_000
 
 /** Provider-side Codex threads are an implementation detail of an OmegaCode run.
- *  Keep ordinary calls ephemeral. A codexChildRole call is temporarily durable
- *  only because 0.149 does not list ephemeral child metadata; that exact subtree
- *  is deleted after role verification. */
+ *  Keep ordinary calls ephemeral and unsubscribe after each agent. A codexChildRole
+ *  call is temporarily durable because 0.149 does not list ephemeral child metadata;
+ *  that exact subtree is deleted after role verification. */
 export const DEFAULT_THREAD_EPHEMERAL = true
 
 /** Keep thread initialization below the measured local app-server saturation
@@ -122,6 +122,7 @@ const exec = promisify(execFile)
 const MCP_INVENTORY_TIMEOUT_MS = 30_000
 const FEATURE_INVENTORY_TIMEOUT_MS = 30_000
 const PLUGIN_INVENTORY_TIMEOUT_MS = 30_000
+const THREAD_RELEASE_TIMEOUT_MS = 15_000
 const LEAN_DISABLED_FEATURES = [
   "features.plugins", "features.plugin_sharing", "features.remote_plugin",
   "features.apps", "features.enable_mcp_apps", "features.computer_use",
@@ -147,7 +148,9 @@ export interface CodexAppServerArgsOptions {
 }
 
 export function buildCodexAppServerArgs(options: CodexAppServerArgsOptions = {}): string[] {
-  const args: string[] = []
+  // Unsubscribed, idle threads unload immediately instead of holding their MCP connections
+  // for Codex's default 60-second grace period. Sibling subscribed threads are unaffected.
+  const args: string[] = ["-c", "thread_unload_delay_secs=0"]
   const tier = (options.serviceTier ?? process.env.OMEGACODE_CODEX_SERVICE_TIER ?? "").trim()
   if (tier) {
     if (!(CODEX_SERVICE_TIERS as readonly string[]).includes(tier)) {
@@ -420,10 +423,11 @@ function isMissingBinaryError(error: unknown): boolean {
   return (code === "ENOENT" || code === "EACCES") && typeof syscall === "string" && syscall.startsWith("spawn")
 }
 
-async function readCodexMcpInventory(bin: string): Promise<string> {
+async function readCodexMcpInventory(bin: string, cwd: string): Promise<string> {
   // With plugins on, the list also names plugin-provided servers. Those have no host transport,
   // so a launch override naming one fails config load; plugins are selected with codexPlugins.
   const { stdout } = await exec(bin, ["-c", "features.plugins=false", "mcp", "list", "--json"], {
+    cwd,
     env: providerEnv(),
     encoding: "utf8",
     timeout: MCP_INVENTORY_TIMEOUT_MS,
@@ -490,16 +494,17 @@ interface TurnState {
 }
 
 export class CodexWorker implements Worker {
+  private readonly neutralCwd = parse(process.cwd()).root
   readonly id = PROVIDER
   private readonly bin: string
   private appServerArgs: string[] | null
   private readonly hasExplicitAppServerArgs: boolean
   private readonly serviceTier?: string
   private readonly executionProfile?: CodexExecutionProfileName
-  private readonly readMcpInventory: (bin: string) => Promise<string>
+  private readonly readMcpInventory: (bin: string, cwd: string) => Promise<string>
   private readonly readFeatureInventory: (bin: string) => Promise<string>
   private readonly readPluginInventory: (bin: string) => Promise<string[]>
-  private mcpInventory: Promise<string> | null = null
+  private readonly mcpInventoryByCwd = new Map<string, Promise<string>>()
   private pluginInventory: Promise<readonly CodexInstalledPlugin[]> | null = null
   private readonly logProfileWarning: (message: string) => void
   private readonly spawnChild?: SpawnChild
@@ -514,11 +519,17 @@ export class CodexWorker implements Worker {
   private serverUserAgent: string | null = null
   /** Active turns keyed by providerThreadId. */
   private readonly turns = new Map<string, TurnState>()
+  private readonly threadCloseWaiters = new Map<string, () => void>()
   private shuttingDown = false
 
   constructor(opts: CodexWorkerOpts = {}) {
-    this.bin = opts.bin ?? "codex"
+    const bin = opts.bin ?? "codex"
+    this.bin = (bin.includes("/") || bin.includes("\\")) && !isAbsolute(bin) ? resolvePath(bin) : bin
     this.appServerArgs = opts.appServerArgs === undefined ? null : [...opts.appServerArgs]
+    if (this.appServerArgs) {
+      const commandIndex = this.appServerArgs.indexOf("app-server")
+      if (commandIndex >= 0) this.appServerArgs.splice(commandIndex, 0, "-c", "thread_unload_delay_secs=0")
+    }
     this.hasExplicitAppServerArgs = opts.appServerArgs !== undefined
     this.serviceTier = opts.serviceTier ?? process.env.OMEGACODE_CODEX_SERVICE_TIER
     this.executionProfile = opts.executionProfile
@@ -535,6 +546,9 @@ export class CodexWorker implements Worker {
 
   async runAgent(spec: AgentSpec, ctx: WorkerContext): Promise<AgentResult> {
     if (ctx.signal.aborted) throw new AgentInterrupted()
+    // A per-agent relative cwd is relative to OmegaCode, not the neutral app-server cwd. Absolute
+    // paths pass through unchanged (on Windows, resolving "/x" would prepend the current drive).
+    if (!isAbsolute(spec.cwd)) spec = { ...spec, cwd: resolvePath(spec.cwd) }
     // codex maps reasoning effort, sandbox, approval and schema; it has no
     // turn-cap concept. Reject maxTurns explicitly rather than silently ignore it.
     if (spec.maxTurns !== undefined) {
@@ -549,7 +563,7 @@ export class CodexWorker implements Worker {
       throw new AgentError({ provider: PROVIDER, code: "unsupported_option", message: profileToolError, retryable: false })
     }
     await this.waitForStarted(ctx.signal)
-    const threadToolConfig = await this.resolveThreadToolConfig(spec)
+    const threadToolConfig = await this.resolveThreadToolConfig(spec, ctx.signal)
 
     // 1. thread/start → obtain providerThreadId.
     const startParams: ThreadStartParams = {
@@ -699,18 +713,43 @@ export class CodexWorker implements Worker {
       usage: extraction.usage,
     }
     } finally {
-      if (spec.codexChildRole !== undefined) {
-        try {
+      try {
+        if (spec.codexChildRole !== undefined) {
           await this.request("thread/delete", { threadId })
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          ctx.onProgress({
-            kind: "tool-result",
-            name: "codex-thread-cleanup",
-            output: `could not delete temporary provider thread ${threadId}: ${message}`,
-            isError: true,
+        } else {
+          // Codex rejects thread/delete for ephemeral threads. Unsubscribe the only
+          // app-server connection, then wait for its shutdown/MCP teardown notification.
+          let resolveClosed!: () => void
+          const threadClosed = new Promise<void>((resolve) => {
+            resolveClosed = resolve
           })
+          let timeout!: ReturnType<typeof setTimeout>
+          const releaseDeadline = new Promise<never>((_, reject) => {
+            timeout = setTimeout(() => reject(new Error("timed out waiting for thread/closed after unsubscribe")), THREAD_RELEASE_TIMEOUT_MS)
+          })
+          this.threadCloseWaiters.set(threadId, () => {
+            this.threadCloseWaiters.delete(threadId)
+            resolveClosed()
+          })
+          try {
+            const release = this.request("thread/unsubscribe", { threadId }).then((response) => {
+              if (isObject(response) && response.status === "notLoaded") this.threadCloseWaiters.get(threadId)?.()
+              return threadClosed
+            })
+            await Promise.race([release, releaseDeadline])
+          } finally {
+            clearTimeout(timeout)
+            this.threadCloseWaiters.delete(threadId)
+          }
         }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        ctx.onProgress({
+          kind: "tool-result",
+          name: "codex-thread-cleanup",
+          output: `could not release provider thread ${threadId}: ${message}`,
+          isError: true,
+        })
       }
     }
   }
@@ -718,8 +757,22 @@ export class CodexWorker implements Worker {
   /** Leaf-valued thread/start overrides that turn on this agent's opted-in tools. Codex splits
    *  request override paths on "." without TOML quoting, so names containing "." cannot be addressed.
    *  A parent `mcp_servers` or `plugins` table would replace the launch table instead of merging. */
-  private async resolveThreadToolConfig(spec: AgentSpec): Promise<Record<string, boolean | number>> {
+  private async resolveThreadToolConfig(spec: AgentSpec, signal: AbortSignal): Promise<Record<string, boolean | number>> {
     const config: Record<string, boolean | number> = {}
+    const profileMcp = this.executionProfile === undefined ? "none" : resolveCodexExecutionProfile(this.executionProfile).mcp
+    let cwdInventory: CodexMcpInventoryEntry[] | undefined
+    // Explicit app-server args own the startup surface, so only opt-ins are checked against the cwd.
+    if (!this.hasExplicitAppServerArgs) {
+      // A trusted project's .codex/config.toml adds servers the neutral launch table cannot name.
+      const baseNames = new Set((await untilAborted(this.readMcpInventoryEntries(this.neutralCwd), signal)).map((entry) => entry.name))
+      cwdInventory = await untilAborted(this.readMcpInventoryEntries(spec.cwd), signal)
+      const allowedByProfile = profileMcp === "none" ? [] : profileMcp.allowedServerNames
+      for (const { name } of cwdInventory) {
+        if (!baseNames.has(name)) {
+          config[`mcp_servers.${threadOverrideSegment("project MCP server", name)}.enabled`] = allowedByProfile.includes(name)
+        }
+      }
+    }
     const plugins = spec.codexPlugins ?? []
     // Each MCP server a selected plugin needs, keyed to the first plugin that needs it.
     const pluginMcpServers = new Map<string, string>()
@@ -760,25 +813,37 @@ export class CodexWorker implements Worker {
     }
     const mcpServers = [...new Set([...spec.codexMcpServers ?? [], ...pluginMcpServers.keys()])]
     if (mcpServers.length) {
-      const known = new Set(parseCodexMcpInventory(await this.loadMcpInventory()).map((entry) => entry.name))
+      const known = new Set((cwdInventory ?? await untilAborted(this.readMcpInventoryEntries(spec.cwd), signal)).map((entry) => entry.name))
       for (const name of mcpServers) {
         if (!known.has(name)) {
           const requiredBy = spec.codexMcpServers?.includes(name) ? "codexMcpServers names" : `codexPlugins entry "${pluginMcpServers.get(name)}" requires`
-          throw new AgentError({ provider: PROVIDER, code: "unknown_mcp_server", message: `${requiredBy} MCP server "${name}", which is not in this host's Codex MCP inventory`, retryable: false })
+          throw new AgentError({ provider: PROVIDER, code: "unknown_mcp_server", message: `${requiredBy} MCP server "${name}", which is not in the Codex MCP inventory for ${spec.cwd}`, retryable: false })
         }
         config[`mcp_servers.${threadOverrideSegment("MCP server", name)}.enabled`] = true
       }
     }
     // Wait for opted-in tools and profile MCPs before Codex snapshots the first turn's tool catalog.
-    const profileMcp = this.executionProfile === undefined ? "none" : resolveCodexExecutionProfile(this.executionProfile).mcp
     if (plugins.length || mcpServers.length || (profileMcp !== "none" && profileMcp.allowedServerNames.length)) {
       config.mcp_optional_startup_grace_ms = 0
     }
     return config
   }
 
-  private loadMcpInventory(): Promise<string> {
-    return (this.mcpInventory ??= this.readMcpInventory(this.bin))
+  private loadMcpInventory(cwd: string): Promise<string> {
+    let inventory = this.mcpInventoryByCwd.get(cwd)
+    if (!inventory) {
+      inventory = this.readMcpInventory(this.bin, cwd)
+      this.mcpInventoryByCwd.set(cwd, inventory)
+    }
+    return inventory
+  }
+
+  private async readMcpInventoryEntries(cwd: string): Promise<CodexMcpInventoryEntry[]> {
+    try {
+      return parseCodexMcpInventory(await this.loadMcpInventory(cwd))
+    } catch (error) {
+      throw new AgentError({ provider: PROVIDER, code: "mcp_inventory_failed", message: `cannot inspect Codex MCP configuration for ${cwd}: ${error instanceof Error ? error.message : String(error)}`, retryable: false })
+    }
   }
 
   /** Run one codex turn on an existing thread; resolves on turn completion. */
@@ -873,24 +938,7 @@ export class CodexWorker implements Worker {
     // Bail before ensureStarted(): a pre-aborted caller must not kick off
     // shared init, and throwing after would leave initPromise unobserved.
     if (signal.aborted) throw new AgentInterrupted()
-    const started = this.ensureStarted()
-    let onAbort: (() => void) | undefined
-    const interrupted = new Promise<never>((_resolve, reject) => {
-      // ensureStarted()'s synchronous prologue can re-entrantly abort the
-      // signal (injected probes); an already-aborted signal never fires the
-      // "abort" event, so recheck before relying on the listener.
-      if (signal.aborted) {
-        reject(new AgentInterrupted())
-        return
-      }
-      onAbort = () => reject(new AgentInterrupted())
-      signal.addEventListener("abort", onAbort, { once: true })
-    })
-    try {
-      await Promise.race([started, interrupted])
-    } finally {
-      if (onAbort) signal.removeEventListener("abort", onAbort)
-    }
+    await untilAborted(this.ensureStarted(), signal)
   }
 
   private async startAndHandshake(): Promise<void> {
@@ -898,6 +946,9 @@ export class CodexWorker implements Worker {
     const client = new JsonRpcStdioClient({
       bin: this.bin,
       args: appServerArgs,
+      // Generated launch overrides describe the neutral inventory, not OmegaCode's project.
+      // Explicit args own their startup surface and keep the caller's inherited cwd.
+      cwd: this.hasExplicitAppServerArgs ? undefined : this.neutralCwd,
       spawnChild: this.spawnChild,
       requestTimeoutMs: this.requestTimeoutMs,
       onServerRequest: (id, method, params) => this.handleServerRequest(id, method, params),
@@ -962,7 +1013,7 @@ export class CodexWorker implements Worker {
     let featureOverrides: readonly { key: string; value: boolean }[] = []
     const profile = this.executionProfile === undefined ? undefined : resolveCodexExecutionProfile(this.executionProfile)
     try {
-      const inventory = await this.loadMcpInventory()
+      const inventory = await this.loadMcpInventory(this.neutralCwd)
       if (profile) {
         const allowedServerNames = profile.mcp === "none" ? [] : profile.mcp.allowedServerNames
         const missingAllowed = selectMissingAllowedMcpServerNames(inventory, allowedServerNames)
@@ -1111,6 +1162,10 @@ export class CodexWorker implements Worker {
       if (live) this.touchTurn(live)
     }
     switch (method) {
+      case "thread/closed": {
+        if (isObject(params) && typeof params.threadId === "string") this.threadCloseWaiters.get(params.threadId)?.()
+        return
+      }
       case "item/agentMessage/delta": {
         if (!isThreadDelta(params)) return
         const state = this.turns.get(params.threadId)
@@ -1486,6 +1541,27 @@ export class CodexWorker implements Worker {
       message: err instanceof Error ? err.message : String(err),
       retryable: true,
     })
+  }
+}
+
+/** Settle this caller on abort while shared work (startup, a cached inventory read) continues for others. */
+async function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  let onAbort: (() => void) | undefined
+  const interrupted = new Promise<never>((_resolve, reject) => {
+    // The work's synchronous prologue can re-entrantly abort the signal
+    // (injected probes); an already-aborted signal never fires the "abort"
+    // event, so recheck before relying on the listener.
+    if (signal.aborted) {
+      reject(new AgentInterrupted())
+      return
+    }
+    onAbort = () => reject(new AgentInterrupted())
+    signal.addEventListener("abort", onAbort, { once: true })
+  })
+  try {
+    return await Promise.race([work, interrupted])
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort)
   }
 }
 

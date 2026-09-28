@@ -1,7 +1,7 @@
 import { after, test } from "node:test"
 import assert from "node:assert/strict"
 import { EventEmitter } from "node:events"
-import { mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { existsSync } from "node:fs"
@@ -196,7 +196,13 @@ test("lean MCP selection rejects inventory schema drift", () => {
 })
 
 test("plugin inventory accepts only installed plugin ids", () => {
-  assert.deepEqual(parseCodexPluginInventory([JSON.stringify({ installed: [{ pluginId: "computer-use@openai-bundled" }] })]), ["computer-use@openai-bundled"])
+  assert.deepEqual(parseCodexPluginInventory([JSON.stringify({ installed: [
+    { pluginId: "computer-use@openai-bundled", source: { source: "local", path: "/plugins/computer-use" } },
+    { pluginId: "github@openai-curated-remote", source: { source: "remote", id: "plugin_connector_1p_x" } },
+  ] })]), [
+    { id: "computer-use@openai-bundled", root: "/plugins/computer-use", remote: false },
+    { id: "github@openai-curated-remote", remote: true },
+  ])
   assert.throws(() => parseCodexPluginInventory(["{}"]), /no installed plugin inventory/)
   assert.throws(() => parseCodexPluginInventory(["{"]), /invalid JSON/)
   assert.throws(() => parseCodexPluginInventory([JSON.stringify({ installed: [{ enabled: true }] })]), /entry 0 has no valid pluginId/)
@@ -210,7 +216,7 @@ test("plugin inventory unions the default listing with every marketplace listing
     listing("computer-use@openai-bundled"),
     listing("build-ios-apps@openai-curated", "linear@openai-curated"),
     listing(),
-  ]), ["computer-use@openai-bundled", "github@openai-curated-remote", "build-ios-apps@openai-curated", "linear@openai-curated"])
+  ]).map((plugin) => plugin.id), ["computer-use@openai-bundled", "github@openai-curated-remote", "build-ios-apps@openai-curated", "linear@openai-curated"])
   assert.throws(
     () => parseCodexPluginInventory([listing("build-ios-apps@openai-curated", "build-ios-apps@openai-curated")]),
     /duplicate id "build-ios-apps@openai-curated"/,
@@ -1011,6 +1017,15 @@ test("CodexWorker maps web search to thread config and network access to the tur
   await worker.shutdown()
 })
 
+/** A `codex plugin list` entry for a local plugin whose root holds `manifest` and any extra files. */
+async function localPlugin(pluginId: string, manifest: unknown, files: Record<string, string> = {}) {
+  const root = await mkdtemp(join(tmpdir(), "codex-plugin-"))
+  await mkdir(join(root, ".codex-plugin"))
+  await writeFile(join(root, ".codex-plugin", "plugin.json"), JSON.stringify(manifest))
+  for (const [name, contents] of Object.entries(files)) await writeFile(join(root, name), contents)
+  return { pluginId, source: { source: "local", path: root } }
+}
+
 function toolWorker(threadStarts: any[], over: Parameters<typeof makeServedWorker>[1] = {}) {
   return makeServedWorker(
     (_req, reply) => {
@@ -1027,11 +1042,13 @@ function toolWorker(threadStarts: any[], over: Parameters<typeof makeServedWorke
       ]),
       readPluginInventory: async () => [
         JSON.stringify({ installed: [
-          { pluginId: "computer-use@openai-bundled" },
-          { pluginId: "computer-history@openai-bundled" },
-          { pluginId: "messages@openai-bundled" },
+          await localPlugin("computer-use@openai-bundled", { name: "computer-use", skills: "./skills/" }),
+          await localPlugin("computer-history@openai-bundled", { name: "computer-history", skills: "./skills/", mcpServers: "./.mcp.json" }),
+          await localPlugin("messages@openai-bundled", { name: "messages", mcpServers: "./.mcp.json" }),
         ] }),
-        JSON.stringify({ installed: [{ pluginId: "build-ios-apps@openai-curated" }] }),
+        JSON.stringify({ installed: [
+          await localPlugin("build-ios-apps@openai-curated", { name: "build-ios-apps", skills: "./skills/", mcpServers: "./.mcp.json" }),
+        ] }),
       ],
       onServerReq: (_child, req) => {
         if (req.method === "thread/start") threadStarts.push(req.params)
@@ -1099,6 +1116,38 @@ test("unknown or unaddressable Codex tool names fail before thread/start", async
   ] as const) {
     await assert.rejects(
       worker.runAgent(spec(over), ctx()),
+      (error: unknown) => error instanceof AgentError && error.code === code && error.retryable === false && message.test(error.message),
+    )
+  }
+  assert.equal(threadStarts.length, 0)
+  await worker.shutdown()
+})
+
+test("plugins that need the app or remote-plugin gate, or have no readable manifest, fail before thread/start", async () => {
+  const threadStarts: any[] = []
+  const apps = JSON.stringify({ apps: { vercel: { id: "connector_vercel" } } })
+  const noManifest = await localPlugin("broken@local", {})
+  const { worker } = toolWorker(threadStarts, {
+    readPluginInventory: async () => [JSON.stringify({ installed: [
+      await localPlugin("vercel@openai-curated", { name: "vercel", skills: "./skills/", apps: "./.app.json" }, { ".app.json": apps }),
+      // Codex reads a root .app.json when the manifest names no apps file.
+      await localPlugin("convex@openai-curated", { name: "convex" }, { ".app.json": apps }),
+      await localPlugin("linear@openai-curated", { name: "linear", mcpServers: "./.mcp.json", apps: "./.app.json" }),
+      { pluginId: "github@openai-curated-remote", source: { source: "remote", id: "plugin_connector_1p_github" } },
+      { ...noManifest, source: { source: "local", path: join(noManifest.source.path, "missing") } },
+      { pluginId: "pathless@local", source: { source: "local" } },
+    ] })],
+  })
+  for (const [id, code, message] of [
+    ["vercel@openai-curated", "unsupported_plugin", /codexPlugins names "vercel@openai-curated", whose manifest declares apps; a lean thread cannot enable features\.apps for one plugin/],
+    ["convex@openai-curated", "unsupported_plugin", /"convex@openai-curated", whose manifest declares apps/],
+    ["linear@openai-curated", "unsupported_plugin", /"linear@openai-curated", whose manifest declares apps/],
+    ["github@openai-curated-remote", "unsupported_plugin", /"github@openai-curated-remote", a remote plugin; a lean thread cannot enable features\.remote_plugin/],
+    ["broken@local", "plugin_inventory_failed", /cannot read the manifest of Codex plugin "broken@local": .*ENOENT/],
+    ["pathless@local", "plugin_inventory_failed", /gives no local source path for "pathless@local"/],
+  ] as const) {
+    await assert.rejects(
+      worker.runAgent(spec({ codexPlugins: [id] }), ctx()),
       (error: unknown) => error instanceof AgentError && error.code === code && error.retryable === false && message.test(error.message),
     )
   }

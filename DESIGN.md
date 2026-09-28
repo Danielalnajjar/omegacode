@@ -377,7 +377,13 @@ small registry of live workers and lazily starts each provider the first time it
   search and image generation alone. Codex 0.156.1 applies `thread/start.config` after the launch
   `-c` overrides in the same layer, splitting each key on `.`, so `codexMcpServers` and
   `codexPlugins` become leaf keys (`mcp_servers.<name>.enabled`, `features.plugins`,
-  `plugins.<id>.enabled` for every installed plugin, plus a plugin's own gates and servers). The
+  `plugins.<id>.enabled` for every installed plugin, plus a plugin's own gates and servers). A
+  selected plugin's manifest (`<source.path>/.codex-plugin/plugin.json`) is read before
+  `thread/start`: one that declares apps (a manifest `apps` file, or the root `.app.json` Codex
+  falls back to) is rejected, because `features.apps` exposes every app connected to the ChatGPT
+  account, not one plugin's. Remote plugins are rejected because `features.remote_plugin` swaps the
+  host's local `openai-curated` plugins for their remote twins. An unreadable manifest is
+  `plugin_inventory_failed`. The
   installed-plugin inventory is the union of `codex plugin list --json` and one
   `codex plugin list --marketplace <name> --json` per configured marketplace, because the default
   listing omits whole marketplaces (0.156.1 drops `openai-curated`). A

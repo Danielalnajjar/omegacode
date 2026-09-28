@@ -5,7 +5,7 @@
 // settle on turn/completed (or on an `error` notification, or on process death).
 
 import { execFile } from "node:child_process"
-import { copyFile, writeFile } from "node:fs/promises"
+import { copyFile, readFile, stat, writeFile } from "node:fs/promises"
 import { basename, join } from "node:path"
 import { promisify } from "node:util"
 
@@ -255,10 +255,17 @@ export function parseCodexPluginMarketplaceNames(stdout: string): string[] {
   })
 }
 
-/** Union of installed plugin ids across `codex plugin list --json` outputs. The default listing
+export interface CodexInstalledPlugin {
+  readonly id: string
+  /** Local plugin root (`source.path`); remote plugins have none. */
+  readonly root?: string
+  readonly remote: boolean
+}
+
+/** Union of installed plugins across `codex plugin list --json` outputs. The default listing
  *  omits whole configured marketplaces, so callers pass it plus one listing per marketplace. */
-export function parseCodexPluginInventory(listings: readonly string[]): string[] {
-  const ids = new Set<string>()
+export function parseCodexPluginInventory(listings: readonly string[]): CodexInstalledPlugin[] {
+  const plugins = new Map<string, CodexInstalledPlugin>()
   for (const stdout of listings) {
     let value: unknown
     try { value = JSON.parse(stdout) } catch { throw new Error("codex plugin list --json returned invalid JSON") }
@@ -272,10 +279,29 @@ export function parseCodexPluginInventory(listings: readonly string[]): string[]
       }
       if (listed.has(plugin.pluginId)) throw new Error(`Codex plugin inventory contains duplicate id "${plugin.pluginId}"`)
       listed.add(plugin.pluginId)
-      ids.add(plugin.pluginId)
+      if (plugins.has(plugin.pluginId)) continue
+      const source = isObject(plugin.source) ? plugin.source : {}
+      plugins.set(plugin.pluginId, {
+        id: plugin.pluginId,
+        ...(typeof source.path === "string" && source.path ? { root: source.path } : {}),
+        remote: source.source === "remote",
+      })
     }
   }
-  return [...ids]
+  return [...plugins.values()]
+}
+
+/** Whether a local plugin ships Codex apps: its manifest names an `apps` file, or it has the
+ *  `.app.json` Codex reads when the manifest names none. */
+async function codexPluginDeclaresApps(root: string): Promise<boolean> {
+  const manifestPath = join(root, ".codex-plugin", "plugin.json")
+  const manifest: unknown = JSON.parse(await readFile(manifestPath, "utf8"))
+  if (!isObject(manifest)) throw new Error(`${manifestPath} is not a JSON object`)
+  if (typeof manifest.apps === "string" && manifest.apps) return true
+  return stat(join(root, ".app.json")).then(
+    (entry) => entry.isFile(),
+    (error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return false; throw error },
+  )
 }
 
 export function selectMissingAllowedMcpServerNames(stdout: string, allowedServerNames: readonly string[]): string[] {
@@ -439,7 +465,7 @@ export class CodexWorker implements Worker {
   private readonly readFeatureInventory: (bin: string) => Promise<string>
   private readonly readPluginInventory: (bin: string) => Promise<string[]>
   private mcpInventory: Promise<string> | null = null
-  private pluginInventory: Promise<readonly string[]> | null = null
+  private pluginInventory: Promise<readonly CodexInstalledPlugin[]> | null = null
   /** Lean disables every thread/start carries when a proxy relays to a shared daemon. */
   private sharedServerLeanConfig: Record<string, boolean> = {}
   private readonly logProfileWarning: (message: string) => void
@@ -673,13 +699,29 @@ export class CodexWorker implements Worker {
         throw new AgentError({ provider: PROVIDER, code: "plugin_inventory_failed", message: `cannot inspect installed Codex plugins: ${error instanceof Error ? error.message : String(error)}`, retryable: false })
       }))
       for (const id of plugins) {
-        if (!installed.includes(id)) {
+        const plugin = installed.find((entry) => entry.id === id)
+        if (!plugin) {
           throw new AgentError({ provider: PROVIDER, code: "unknown_plugin", message: `codexPlugins names "${id}", which is not an installed Codex plugin`, retryable: false })
+        }
+        // Both gates reach past the one plugin: features.remote_plugin swaps the host's local
+        // openai-curated plugins for their remote twins, and features.apps exposes every app
+        // connected to the ChatGPT account. A plugin that needs either is refused, not left inert.
+        if (plugin.remote) {
+          throw new AgentError({ provider: PROVIDER, code: "unsupported_plugin", message: `codexPlugins names "${id}", a remote plugin; a lean thread cannot enable features.remote_plugin, which replaces this host's local openai-curated plugins`, retryable: false })
+        }
+        if (!plugin.root) {
+          throw new AgentError({ provider: PROVIDER, code: "plugin_inventory_failed", message: `the Codex plugin inventory gives no local source path for "${id}"`, retryable: false })
+        }
+        const declaresApps = await codexPluginDeclaresApps(plugin.root).catch((error: unknown) => {
+          throw new AgentError({ provider: PROVIDER, code: "plugin_inventory_failed", message: `cannot read the manifest of Codex plugin "${id}": ${error instanceof Error ? error.message : String(error)}`, retryable: false })
+        })
+        if (declaresApps) {
+          throw new AgentError({ provider: PROVIDER, code: "unsupported_plugin", message: `codexPlugins names "${id}", whose manifest declares apps; a lean thread cannot enable features.apps for one plugin, because it exposes every app connected to the ChatGPT account`, retryable: false })
         }
       }
       config["features.plugins"] = true
       // features.plugins loads every host-enabled plugin, so every other installed plugin is switched off.
-      for (const id of installed) config[`plugins.${threadOverrideSegment("plugin", id)}.enabled`] = plugins.includes(id)
+      for (const { id } of installed) config[`plugins.${threadOverrideSegment("plugin", id)}.enabled`] = plugins.includes(id)
       for (const id of plugins) {
         for (const feature of PLUGIN_REQUIREMENTS[id]?.features ?? []) config[feature] = true
       }

@@ -109,8 +109,10 @@ Provider-native options stay deliberately provider-specific:
   from the host's inventory across every configured marketplace (`codex plugin marketplace list
   --json`, then `codex plugin list --marketplace <name> --json`), and differ between hosts.
   `computer-use@openai-bundled` also enables the `node_repl` server it runs through. Unknown
-  names, and names containing `.` (Codex request overrides cannot address them), fail before
-  `thread/start`. Without these options every MCP server and the process-spawning
+  names, names containing `.` (Codex request overrides cannot address them), remote plugins, and
+  plugins whose manifest declares apps fail before `thread/start`: Codex's remote-plugin gate
+  replaces the host's local curated plugins, and its app gate exposes every app connected to the
+  ChatGPT account rather than one plugin's. Without these options every MCP server and the process-spawning
   plugin/app/browser features are off; web search and image generation keep their host settings.
   Execution profiles keep their dedicated app-server boundary: MCP names must be
   profile-allowlisted, and plugins are rejected.

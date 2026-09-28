@@ -718,8 +718,8 @@ export class CodexWorker implements Worker {
   /** Leaf-valued thread/start overrides that turn on this agent's opted-in tools. Codex splits
    *  request override paths on "." without TOML quoting, so names containing "." cannot be addressed.
    *  A parent `mcp_servers` or `plugins` table would replace the launch table instead of merging. */
-  private async resolveThreadToolConfig(spec: AgentSpec): Promise<Record<string, boolean>> {
-    const config: Record<string, boolean> = {}
+  private async resolveThreadToolConfig(spec: AgentSpec): Promise<Record<string, boolean | number>> {
+    const config: Record<string, boolean | number> = {}
     const plugins = spec.codexPlugins ?? []
     // Each MCP server a selected plugin needs, keyed to the first plugin that needs it.
     const pluginMcpServers = new Map<string, string>()
@@ -768,6 +768,11 @@ export class CodexWorker implements Worker {
         }
         config[`mcp_servers.${threadOverrideSegment("MCP server", name)}.enabled`] = true
       }
+    }
+    // Wait for opted-in tools and profile MCPs before Codex snapshots the first turn's tool catalog.
+    const profileMcp = this.executionProfile === undefined ? "none" : resolveCodexExecutionProfile(this.executionProfile).mcp
+    if (plugins.length || mcpServers.length || (profileMcp !== "none" && profileMcp.allowedServerNames.length)) {
+      config.mcp_optional_startup_grace_ms = 0
     }
     return config
   }

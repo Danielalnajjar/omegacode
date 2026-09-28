@@ -80,7 +80,7 @@ A Codex agent starts with no MCP servers and no plugins. It has the built-in she
 - A name that is not in the host inventory fails that agent before its thread starts. So does a plugin whose hooks call a server missing from that MCP list, a remote plugin (`@openai-curated-remote`), and a plugin whose manifest declares apps, such as `vercel@openai-curated` or `linear@openai-curated`: turning on apps for one agent would give it every app connected to the ChatGPT account. Plugins that bring skills or MCP servers, such as `build-ios-apps@openai-curated`, work. Both options are Codex-only and part of the resume key.
 - Under `codexExecutionProfile`, `codexMcpServers` may name only the profile's allowlisted servers, and `codexPlugins` is an error.
 
-Every server or plugin an agent names starts its own processes for that agent, so a 25-way `parallel()` that names a plugin starts 25 copies of it. That is the reason agents get nothing by default.
+Every server or plugin an agent names starts its own processes for that agent before its first turn, so a 25-way `parallel()` that names a plugin starts 25 copies of it. That is the reason agents get nothing by default.
 
 Some tools are exclusive: the screen (computer use), a simulator, and an open Paper or Pencil document. Two agents on one of these click over each other or edit the same document, so only one agent may hold each at a time. Parallel Xcode agents are safe only when each prompt names its own simulator and build output path. Otherwise run the stages that use an exclusive tool in sequence, with `await` in a `for` loop rather than `parallel()` or `pipeline()`, and keep the other stages parallel:
 

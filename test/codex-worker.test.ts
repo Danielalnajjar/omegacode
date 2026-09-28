@@ -634,6 +634,7 @@ test("execution profiles build their exact known feature and MCP override sets",
   ])
   for (const executionProfile of ["workflow-bulk-v1", "workflow-plan-v1", "workflow-research-v1"] as const) {
     let featureReads = 0
+    const threadStarts: any[] = []
     const { worker } = makeServedWorker(
       (_req, reply) => {
         reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
@@ -648,12 +649,19 @@ test("execution profiles build their exact known feature and MCP override sets",
             .map((override) => `${override.slice("features.".length).split("=")[0]} stable true`)
             .join("\n")
         },
+        onServerReq: (_child, req) => {
+          if (req.method === "thread/start") threadStarts.push(req.params)
+        },
       },
     )
 
     await worker.runAgent(spec(), ctx())
     await worker.runAgent(spec(), ctx())
     assert.equal(featureReads, 1)
+    assert.deepEqual(
+      threadStarts.map((start) => start.config.mcp_optional_startup_grace_ms),
+      executionProfile === "workflow-research-v1" ? [0, 0] : [undefined, undefined],
+    )
     const expectedMcp = executionProfile === "workflow-research-v1"
       ? 'mcp_servers={context7={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},executor={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},node_repl={command="",enabled=false},btca={enabled=true},executor_research={enabled=true},grok_search={enabled=true},mintlify={enabled=true}}'
       : 'mcp_servers={btca={command="",enabled=false},context7={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},executor={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},executor_research={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},grok_search={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},mintlify={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},node_repl={command="",enabled=false}}'
@@ -1043,11 +1051,13 @@ test("per-agent Codex tool opt-ins become leaf thread/start overrides for that t
   assert.deepEqual(threadStarts.map((start) => start.config), [
     {
       "features.context_management": false,
+      mcp_optional_startup_grace_ms: 0,
       "mcp_servers.paos-recall-mcp.enabled": true,
       "mcp_servers.executor.enabled": true,
     },
     {
       "features.context_management": false,
+      mcp_optional_startup_grace_ms: 0,
       "features.plugins": true,
       "plugins.computer-use@openai-bundled.enabled": false,
       "plugins.computer-history@openai-bundled.enabled": true,
@@ -1056,6 +1066,7 @@ test("per-agent Codex tool opt-ins become leaf thread/start overrides for that t
     },
     {
       "features.context_management": false,
+      mcp_optional_startup_grace_ms: 0,
       "features.plugins": true,
       "plugins.computer-use@openai-bundled.enabled": true,
       "plugins.computer-history@openai-bundled.enabled": false,
@@ -1066,6 +1077,7 @@ test("per-agent Codex tool opt-ins become leaf thread/start overrides for that t
     },
     {
       "features.context_management": false,
+      mcp_optional_startup_grace_ms: 0,
       "features.plugins": true,
       "plugins.computer-use@openai-bundled.enabled": false,
       "plugins.computer-history@openai-bundled.enabled": false,
@@ -1076,6 +1088,15 @@ test("per-agent Codex tool opt-ins become leaf thread/start overrides for that t
   ])
   // A parent table would replace the launch-time mcp_servers table instead of merging into it.
   for (const start of threadStarts) assert.ok(!("mcp_servers" in start.config) && !("plugins" in start.config))
+  await worker.shutdown()
+})
+
+test("lean Codex agent sends no optional MCP startup grace override", async () => {
+  const threadStarts: any[] = []
+  const { worker } = toolWorker(threadStarts)
+  await worker.runAgent(spec(), ctx())
+  assert.equal(threadStarts.length, 1)
+  assert.ok(!Object.hasOwn(threadStarts[0].config, "mcp_optional_startup_grace_ms"))
   await worker.shutdown()
 })
 

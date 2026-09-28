@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import { EventEmitter } from "node:events"
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, join, parse, relative, resolve } from "node:path"
 import { existsSync } from "node:fs"
 
 import {
@@ -1152,20 +1152,53 @@ test("project-only MCP servers are disabled or selected per cwd, with one invent
   await worker.runAgent(spec({ cwd: "/project", codexMcpServers: ["project_only"] }), ctx())
   await worker.runAgent(spec({ cwd: "/other" }), ctx())
   assert.deepEqual(starts.map((start) => start.config["mcp_servers.project_only.enabled"]), [false, true, undefined])
-  assert.deepEqual(reads, [tmpdir(), "/project", "/other"])
+  assert.deepEqual(reads, [parse(process.cwd()).root, "/project", "/other"])
   assert.ok(!configValues((worker as any).appServerArgs).some((value) => value.includes("project_only")))
   await worker.shutdown()
 })
 
+test("path-like Codex binary and relative agent cwd keep their invocation base", async () => {
+  const reads: Array<{ bin: string; cwd: string }> = []
+  const starts: any[] = []
+  const turns: any[] = []
+  const { worker } = makeServedWorker(
+    (_req, reply) => {
+      reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
+      reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
+    },
+    {
+      bin: "./tools/codex",
+      readMcpInventory: async (bin, cwd) => {
+        reads.push({ bin, cwd })
+        return "[]"
+      },
+      onServerReq: (_child, req) => {
+        if (req.method === "thread/start") starts.push(req.params)
+        if (req.method === "turn/start") turns.push(req.params)
+      },
+    },
+  )
+  const agentCwd = resolve("relative-agent")
+  assert.equal((await worker.runAgent(spec({ cwd: "relative-agent", sandbox: "workspace-write" }), ctx())).text, "done")
+  assert.deepEqual(reads, [
+    { bin: resolve("./tools/codex"), cwd: parse(process.cwd()).root },
+    { bin: resolve("./tools/codex"), cwd: agentCwd },
+  ])
+  assert.equal(starts[0].cwd, agentCwd)
+  assert.deepEqual(turns[0].sandboxPolicy.writableRoots, [agentCwd])
+  await worker.shutdown()
+})
+
 test("default app-server launches from the neutral inventory cwd, not OmegaCode's project", { skip: process.platform === "win32" }, async () => {
-  const dir = await mkdtemp(join(tmpdir(), "codex-launch-cwd-"))
+  // Keep the executable under the invocation cwd so a relative bin would fail from the root.
+  const dir = await mkdtemp(join(process.cwd(), ".codex-launch-cwd-"))
   const bin = join(dir, "fake-codex")
   const record = join(dir, "cwd.json")
   const agentCwd = join(dir, "agent")
   await mkdir(agentCwd)
   await writeFile(bin, `#!/usr/bin/env node
-const fs = require("node:fs")
-const readline = require("node:readline")
+import fs from "node:fs"
+import readline from "node:readline"
 const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\\n")
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const request = JSON.parse(line)
@@ -1185,11 +1218,11 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   }
 })
 `, { mode: 0o755 })
-  const worker = new CodexWorker({ bin, ...HERMETIC_INVENTORY, requestTimeoutMs: 5000 })
+  const worker = new CodexWorker({ bin: relative(process.cwd(), bin), ...HERMETIC_INVENTORY, requestTimeoutMs: 5000 })
   try {
     assert.equal((await worker.runAgent(spec({ cwd: agentCwd }), ctx())).text, "done")
     const observed = JSON.parse(await readFile(record, "utf8"))
-    assert.equal(await realpath(observed.launchCwd), await realpath(tmpdir()))
+    assert.equal(await realpath(observed.launchCwd), await realpath(parse(process.cwd()).root))
     assert.equal(observed.threadCwd, agentCwd)
   } finally {
     await worker.shutdown()

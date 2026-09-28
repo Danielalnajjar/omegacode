@@ -6,8 +6,7 @@
 
 import { execFile } from "node:child_process"
 import { copyFile, readFile, stat, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { basename, join, resolve as resolvePath } from "node:path"
+import { basename, join, parse, resolve as resolvePath } from "node:path"
 import { promisify } from "node:util"
 
 import type { AgentResult, AgentSpec, AgentUsage } from "../dsl/types.js"
@@ -495,6 +494,7 @@ interface TurnState {
 }
 
 export class CodexWorker implements Worker {
+  private readonly neutralCwd = parse(process.cwd()).root
   readonly id = PROVIDER
   private readonly bin: string
   private appServerArgs: string[] | null
@@ -523,7 +523,8 @@ export class CodexWorker implements Worker {
   private shuttingDown = false
 
   constructor(opts: CodexWorkerOpts = {}) {
-    this.bin = opts.bin ?? "codex"
+    const bin = opts.bin ?? "codex"
+    this.bin = bin.includes("/") || bin.includes("\\") ? resolvePath(bin) : bin
     this.appServerArgs = opts.appServerArgs === undefined ? null : [...opts.appServerArgs]
     if (this.appServerArgs) {
       const commandIndex = this.appServerArgs.indexOf("app-server")
@@ -545,6 +546,8 @@ export class CodexWorker implements Worker {
 
   async runAgent(spec: AgentSpec, ctx: WorkerContext): Promise<AgentResult> {
     if (ctx.signal.aborted) throw new AgentInterrupted()
+    // A per-agent relative cwd is relative to OmegaCode, not the neutral app-server cwd.
+    spec = { ...spec, cwd: resolvePath(spec.cwd) }
     // codex maps reasoning effort, sandbox, approval and schema; it has no
     // turn-cap concept. Reject maxTurns explicitly rather than silently ignore it.
     if (spec.maxTurns !== undefined) {
@@ -760,7 +763,7 @@ export class CodexWorker implements Worker {
     // Explicit app-server args own the startup surface, so only opt-ins are checked against the cwd.
     if (!this.hasExplicitAppServerArgs) {
       // A trusted project's .codex/config.toml adds servers the neutral launch table cannot name.
-      const baseNames = new Set((await untilAborted(this.readMcpInventoryEntries(tmpdir()), signal)).map((entry) => entry.name))
+      const baseNames = new Set((await untilAborted(this.readMcpInventoryEntries(this.neutralCwd), signal)).map((entry) => entry.name))
       cwdInventory = await untilAborted(this.readMcpInventoryEntries(spec.cwd), signal)
       const allowedByProfile = profileMcp === "none" ? [] : profileMcp.allowedServerNames
       for (const { name } of cwdInventory) {
@@ -944,7 +947,7 @@ export class CodexWorker implements Worker {
       args: appServerArgs,
       // Generated launch overrides describe the neutral inventory, not OmegaCode's project.
       // Explicit args own their startup surface and keep the caller's inherited cwd.
-      cwd: this.hasExplicitAppServerArgs ? undefined : tmpdir(),
+      cwd: this.hasExplicitAppServerArgs ? undefined : this.neutralCwd,
       spawnChild: this.spawnChild,
       requestTimeoutMs: this.requestTimeoutMs,
       onServerRequest: (id, method, params) => this.handleServerRequest(id, method, params),
@@ -1009,7 +1012,7 @@ export class CodexWorker implements Worker {
     let featureOverrides: readonly { key: string; value: boolean }[] = []
     const profile = this.executionProfile === undefined ? undefined : resolveCodexExecutionProfile(this.executionProfile)
     try {
-      const inventory = await this.loadMcpInventory(tmpdir())
+      const inventory = await this.loadMcpInventory(this.neutralCwd)
       if (profile) {
         const allowedServerNames = profile.mcp === "none" ? [] : profile.mcp.allowedServerNames
         const missingAllowed = selectMissingAllowedMcpServerNames(inventory, allowedServerNames)

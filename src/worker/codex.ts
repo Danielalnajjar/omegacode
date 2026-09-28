@@ -716,20 +716,23 @@ export class CodexWorker implements Worker {
           // Codex rejects thread/delete for ephemeral threads. Unsubscribe the only
           // app-server connection, then wait for its shutdown/MCP teardown notification.
           let resolveClosed!: () => void
-          let rejectClosed!: (error: Error) => void
-          const threadClosed = new Promise<void>((resolve, reject) => {
+          const threadClosed = new Promise<void>((resolve) => {
             resolveClosed = resolve
-            rejectClosed = reject
           })
-          const timeout = setTimeout(() => rejectClosed(new Error("timed out waiting for thread/closed after unsubscribe")), THREAD_RELEASE_TIMEOUT_MS)
+          let timeout!: ReturnType<typeof setTimeout>
+          const releaseDeadline = new Promise<never>((_, reject) => {
+            timeout = setTimeout(() => reject(new Error("timed out waiting for thread/closed after unsubscribe")), THREAD_RELEASE_TIMEOUT_MS)
+          })
           this.threadCloseWaiters.set(threadId, () => {
             this.threadCloseWaiters.delete(threadId)
             resolveClosed()
           })
           try {
-            const response = await this.request("thread/unsubscribe", { threadId })
-            if (isObject(response) && response.status === "notLoaded") this.threadCloseWaiters.get(threadId)?.()
-            await threadClosed
+            const release = this.request("thread/unsubscribe", { threadId }).then((response) => {
+              if (isObject(response) && response.status === "notLoaded") this.threadCloseWaiters.get(threadId)?.()
+              return threadClosed
+            })
+            await Promise.race([release, releaseDeadline])
           } finally {
             clearTimeout(timeout)
             this.threadCloseWaiters.delete(threadId)

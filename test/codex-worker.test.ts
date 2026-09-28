@@ -58,6 +58,7 @@ class FakeChild extends EventEmitter {
   /** Make the next write report this error to its callback. */
   failNextWrite: Error | null = null
   failUnsubscribe = false
+  holdUnsubscribe = false
 
   constructor() {
     super()
@@ -79,7 +80,9 @@ class FakeChild extends EventEmitter {
               const request = JSON.parse(t)
               self.onWrite?.(request)
               if (request.method === "thread/unsubscribe") {
-                if (self.failUnsubscribe) {
+                if (self.holdUnsubscribe) {
+                  continue
+                } else if (self.failUnsubscribe) {
                   self.pushLine({ jsonrpc: "2.0", id: request.id, error: { code: -32000, message: "fixture unsubscribe failure" } })
                 } else {
                   self.pushLine({ jsonrpc: "2.0", id: request.id, result: { status: "unsubscribed" } })
@@ -1465,6 +1468,37 @@ test("CodexWorker reports an ephemeral thread release error without failing its 
   assert.equal((await worker.runAgent(spec(), context)).text, "done")
   assert.ok(context.events.some((event) => event.kind === "tool-result" && event.name === "codex-thread-cleanup" && event.isError))
   await worker.shutdown()
+})
+
+test("CodexWorker bounds release when unsubscribe never responds", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const context = ctx()
+  const { worker } = makeServedWorker(
+    (_req, reply) => {
+      reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
+      reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
+    },
+    {
+      requestTimeoutMs: 0,
+      onServerReq: (child, req) => { if (req.method === "thread/unsubscribe") child.holdUnsubscribe = true },
+    },
+  )
+  try {
+    const result = worker.runAgent(spec(), context)
+    await tick()
+    t.mock.timers.tick(15_000)
+    const settled = await Promise.race([
+      result.then((value) => value.text),
+      new Promise<string>((resolve) => setImmediate(() => resolve("still waiting"))),
+    ])
+    assert.equal(settled, "done")
+    assert.ok(context.events.some((event) => event.kind === "tool-result"
+      && event.name === "codex-thread-cleanup"
+      && event.isError
+      && event.output?.includes("timed out waiting for thread/closed")))
+  } finally {
+    await worker.shutdown()
+  }
 })
 
 test("CodexWorker can explicitly disable ephemeral thread/start for debugging", async () => {

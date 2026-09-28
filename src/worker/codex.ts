@@ -6,7 +6,7 @@
 
 import { execFile } from "node:child_process"
 import { copyFile, readFile, stat, writeFile } from "node:fs/promises"
-import { basename, join, parse, resolve as resolvePath } from "node:path"
+import { basename, isAbsolute, join, parse, resolve as resolvePath } from "node:path"
 import { promisify } from "node:util"
 
 import type { AgentResult, AgentSpec, AgentUsage } from "../dsl/types.js"
@@ -524,7 +524,7 @@ export class CodexWorker implements Worker {
 
   constructor(opts: CodexWorkerOpts = {}) {
     const bin = opts.bin ?? "codex"
-    this.bin = bin.includes("/") || bin.includes("\\") ? resolvePath(bin) : bin
+    this.bin = (bin.includes("/") || bin.includes("\\")) && !isAbsolute(bin) ? resolvePath(bin) : bin
     this.appServerArgs = opts.appServerArgs === undefined ? null : [...opts.appServerArgs]
     if (this.appServerArgs) {
       const commandIndex = this.appServerArgs.indexOf("app-server")
@@ -546,8 +546,9 @@ export class CodexWorker implements Worker {
 
   async runAgent(spec: AgentSpec, ctx: WorkerContext): Promise<AgentResult> {
     if (ctx.signal.aborted) throw new AgentInterrupted()
-    // A per-agent relative cwd is relative to OmegaCode, not the neutral app-server cwd.
-    spec = { ...spec, cwd: resolvePath(spec.cwd) }
+    // A per-agent relative cwd is relative to OmegaCode, not the neutral app-server cwd. Absolute
+    // paths pass through unchanged (on Windows, resolving "/x" would prepend the current drive).
+    if (!isAbsolute(spec.cwd)) spec = { ...spec, cwd: resolvePath(spec.cwd) }
     // codex maps reasoning effort, sandbox, approval and schema; it has no
     // turn-cap concept. Reject maxTurns explicitly rather than silently ignore it.
     if (spec.maxTurns !== undefined) {

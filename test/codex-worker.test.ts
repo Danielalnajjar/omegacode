@@ -57,6 +57,7 @@ class FakeChild extends EventEmitter {
   onWrite?: (obj: any) => void
   /** Make the next write report this error to its callback. */
   failNextWrite: Error | null = null
+  failUnsubscribe = false
 
   constructor() {
     super()
@@ -75,7 +76,16 @@ class FakeChild extends EventEmitter {
             const t = line.trim()
             if (!t) continue
             try {
-              self.onWrite?.(JSON.parse(t))
+              const request = JSON.parse(t)
+              self.onWrite?.(request)
+              if (request.method === "thread/unsubscribe") {
+                if (self.failUnsubscribe) {
+                  self.pushLine({ jsonrpc: "2.0", id: request.id, error: { code: -32000, message: "fixture unsubscribe failure" } })
+                } else {
+                  self.pushLine({ jsonrpc: "2.0", id: request.id, result: { status: "unsubscribed" } })
+                  self.pushLine({ jsonrpc: "2.0", method: "thread/closed", params: { threadId: request.params.threadId } })
+                }
+              }
             } catch {
               // ignore non-JSON
             }
@@ -143,14 +153,14 @@ function mcpInventoryEntry(
 }
 
 test("buildCodexAppServerArgs defaults to a fresh stdio app-server", () => {
-  assert.deepEqual(buildCodexAppServerArgs(), ["app-server"])
+  assert.deepEqual(buildCodexAppServerArgs(), ["-c", "thread_unload_delay_secs=0", "app-server"])
 })
 
 test("buildCodexAppServerArgs honors the env service-tier fallback when no per-worker tier is set", () => {
   const previous = process.env.OMEGACODE_CODEX_SERVICE_TIER
   process.env.OMEGACODE_CODEX_SERVICE_TIER = "flex"
   try {
-    assert.deepEqual(buildCodexAppServerArgs(), ["-c", "service_tier=flex", "app-server"])
+    assert.deepEqual(buildCodexAppServerArgs(), ["-c", "thread_unload_delay_secs=0", "-c", "service_tier=flex", "app-server"])
   } finally {
     if (previous === undefined) delete process.env.OMEGACODE_CODEX_SERVICE_TIER
     else process.env.OMEGACODE_CODEX_SERVICE_TIER = previous
@@ -158,12 +168,12 @@ test("buildCodexAppServerArgs honors the env service-tier fallback when no per-w
 })
 
 test("buildCodexAppServerArgs prefers an explicit per-worker service tier", () => {
-  assert.deepEqual(buildCodexAppServerArgs({ serviceTier: "fast" }), ["-c", "service_tier=fast", "app-server"])
+  assert.deepEqual(buildCodexAppServerArgs({ serviceTier: "fast" }), ["-c", "thread_unload_delay_secs=0", "-c", "service_tier=fast", "app-server"])
 })
 
 test("lean launch disables every inventoried server in one transport-preserving table", () => {
   assert.deepEqual(buildCodexAppServerArgs({ leanMcpServerNamesToDisable: ["onepassword", "paos-recall-mcp", "dotted.server"] }), [
-    "-c", 'mcp_servers={onepassword={enabled=false},paos-recall-mcp={enabled=false},"dotted.server"={enabled=false}}', "app-server",
+    "-c", "thread_unload_delay_secs=0", "-c", 'mcp_servers={onepassword={enabled=false},paos-recall-mcp={enabled=false},"dotted.server"={enabled=false}}', "app-server",
   ])
 })
 
@@ -257,7 +267,7 @@ test("profile MCP table quotes and escapes dynamic TOML keys", () => {
   assert.deepEqual(buildCodexAppServerArgs({
     profileMcpServersToDisable: [{ name: 'odd."name\\server', transport: "stdio" }],
     profileMcpServerNamesToEnable: ['allowed."name\\server'],
-  }), ["-c", 'mcp_servers={"odd.\\"name\\\\server"={command="",enabled=false},"allowed.\\"name\\\\server"={enabled=true}}', "app-server"])
+  }), ["-c", "thread_unload_delay_secs=0", "-c", 'mcp_servers={"odd.\\"name\\\\server"={command="",enabled=false},"allowed.\\"name\\\\server"={enabled=true}}', "app-server"])
 })
 
 test("profile MCP selection rejects an unsupported transport only when it would be disabled", () => {
@@ -556,9 +566,10 @@ test("lean worker inventories every MCP transport and disables process features 
 
   await worker.runAgent(spec(), ctx())
   await worker.runAgent(spec(), ctx())
-  assert.equal(inventoryReads, 1)
+  assert.equal(inventoryReads, 2)
   const launchedArgs = (worker as any).appServerArgs as string[]
   assert.deepEqual(configValues(launchedArgs), [
+    "thread_unload_delay_secs=0",
     "service_tier=default",
     "mcp_servers={paos-recall-mcp={enabled=false},onepassword={enabled=false},node_repl={enabled=false},openaiDeveloperDocs={enabled=false},legacy-sse={enabled=false}}",
     ...["plugins", "plugin_sharing", "remote_plugin", "apps", "enable_mcp_apps", "computer_use", "browser_use", "browser_use_external", "in_app_browser"].map((name) => `features.${name}=false`),
@@ -665,7 +676,7 @@ test("execution profiles build their exact known feature and MCP override sets",
     const expectedMcp = executionProfile === "workflow-research-v1"
       ? 'mcp_servers={context7={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},executor={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},node_repl={command="",enabled=false},btca={enabled=true},executor_research={enabled=true},grok_search={enabled=true},mintlify={enabled=true}}'
       : 'mcp_servers={btca={command="",enabled=false},context7={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},executor={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},executor_research={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},grok_search={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},mintlify={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},node_repl={command="",enabled=false}}'
-    assert.deepEqual(configValues((worker as any).appServerArgs), [expectedMcp, ...PROFILE_FEATURE_ARGS[executionProfile]])
+    assert.deepEqual(configValues((worker as any).appServerArgs), ["thread_unload_delay_secs=0", expectedMcp, ...PROFILE_FEATURE_ARGS[executionProfile]])
     await worker.shutdown()
   }
 })
@@ -839,7 +850,7 @@ test("one caller aborting shared initialization does not interrupt another calle
   await assert.rejects(runA, (error) => error instanceof AgentInterrupted)
   releaseInventory("[]")
   assert.equal((await runB).text, "done")
-  assert.equal(inventoryReads, 1)
+  assert.equal(inventoryReads, 2)
   await worker.shutdown()
 })
 
@@ -906,7 +917,7 @@ test("abort settles promptly while shared initialization continues", async () =>
 
 test("explicit app-server args bypass inventory", async () => {
   for (const options of [
-    { appServerArgs: ["app-server", "custom"], expected: ["app-server", "custom"] },
+    { appServerArgs: ["app-server", "custom"], expected: ["-c", "thread_unload_delay_secs=0", "app-server", "custom"] },
   ]) {
     const { worker } = makeServedWorker(
       (_req, reply) => {
@@ -1091,6 +1102,49 @@ test("per-agent Codex tool opt-ins become leaf thread/start overrides for that t
   await worker.shutdown()
 })
 
+test("project-only MCP servers are disabled or selected per cwd, with one inventory read per cwd", async () => {
+  const starts: any[] = []
+  const reads: string[] = []
+  const host = JSON.stringify([mcpInventoryEntry("host")])
+  const project = JSON.stringify([mcpInventoryEntry("host"), mcpInventoryEntry("project_only")])
+  const { worker } = toolWorker(starts, {
+    readMcpInventory: async (_bin, cwd) => {
+      reads.push(cwd)
+      return cwd === "/project" ? project : host
+    },
+  })
+  await worker.runAgent(spec({ cwd: "/project" }), ctx())
+  await worker.runAgent(spec({ cwd: "/project", codexMcpServers: ["project_only"] }), ctx())
+  await worker.runAgent(spec({ cwd: "/other" }), ctx())
+  assert.deepEqual(starts.map((start) => start.config["mcp_servers.project_only.enabled"]), [false, true, undefined])
+  assert.deepEqual(reads, [tmpdir(), "/project", "/other"])
+  assert.ok(!configValues((worker as any).appServerArgs).some((value) => value.includes("project_only")))
+  await worker.shutdown()
+})
+
+test("a dotted project-only MCP name fails before thread/start, including on a lean thread", async () => {
+  const starts: any[] = []
+  const { worker } = toolWorker(starts, {
+    readMcpInventory: async (_bin, cwd) => JSON.stringify(cwd === "/project" ? [mcpInventoryEntry("dotted.project")] : []),
+  })
+  await assert.rejects(worker.runAgent(spec({ cwd: "/project" }), ctx()), /project MCP server "dotted.project" contains "\."/)
+  assert.equal(starts.length, 0)
+  await worker.shutdown()
+})
+
+test("an execution profile disables project-only MCP servers outside its allowlist", async () => {
+  const starts: any[] = []
+  const { worker } = toolWorker(starts, {
+    executionProfile: "workflow-plan-v1",
+    readMcpInventory: async (_bin, cwd) => JSON.stringify(cwd === "/project" ? [mcpInventoryEntry("project_only")] : []),
+    readFeatureInventory: async () => PROFILE_FEATURE_ARGS["workflow-plan-v1"]
+      .map((override) => `${override.slice("features.".length).split("=")[0]} stable true`).join("\n"),
+  })
+  await worker.runAgent(spec({ cwd: "/project" }), ctx())
+  assert.equal(starts[0].config["mcp_servers.project_only.enabled"], false)
+  await worker.shutdown()
+})
+
 test("lean Codex agent sends no optional MCP startup grace override", async () => {
   const threadStarts: any[] = []
   const { worker } = toolWorker(threadStarts)
@@ -1104,7 +1158,7 @@ test("unknown or unaddressable Codex tool names fail before thread/start", async
   const threadStarts: any[] = []
   const { worker } = toolWorker(threadStarts)
   for (const [over, code, message] of [
-    [{ codexMcpServers: ["btca", "missing"] }, "unknown_mcp_server", /codexMcpServers names MCP server "missing", which is not in this host's Codex MCP inventory/],
+    [{ codexMcpServers: ["btca", "missing"] }, "unknown_mcp_server", /codexMcpServers names MCP server "missing", which is not in the Codex MCP inventory for \/tmp\/work/],
     [{ codexPlugins: ["build-ios-apps@openai-curated-remote"] }, "unknown_plugin", /codexPlugins names "build-ios-apps@openai-curated-remote", which is not an installed Codex plugin/],
     [{ codexPlugins: ["build-web-apps@openai-curated"] }, "unknown_plugin", /codexPlugins names "build-web-apps@openai-curated"/],
     [{ codexMcpServers: ["dotted.server"] }, "unsupported_option", /"dotted.server" contains "\." and cannot be addressed by a per-thread override/],
@@ -1197,7 +1251,7 @@ test("a plugin hook server missing from the host, or an unreadable hooks file, f
     ] })],
   })
   for (const [id, code, message] of [
-    ["absent-server@local", "unknown_mcp_server", /codexPlugins entry "absent-server@local" requires MCP server "ghost", which is not in this host's Codex MCP inventory/],
+    ["absent-server@local", "unknown_mcp_server", /codexPlugins entry "absent-server@local" requires MCP server "ghost", which is not in the Codex MCP inventory for \/tmp\/work/],
     ["missing-file@local", "plugin_inventory_failed", /cannot read the manifest or hooks of Codex plugin "missing-file@local": .*ENOENT.*hooks\.json/],
     ["bad-file@local", "plugin_inventory_failed", /"bad-file@local": .*hooks\.json is not valid JSON/],
   ] as const) {
@@ -1214,7 +1268,7 @@ test("a fresh app-server gets the service tier at launch, not on thread/start", 
   const freshStarts: any[] = []
   const fresh = toolWorker(freshStarts, { serviceTier: "flex" })
   await fresh.worker.runAgent(spec(), ctx())
-  assert.deepEqual(configValues((fresh.worker as any).appServerArgs)[0], "service_tier=flex")
+  assert.deepEqual(configValues((fresh.worker as any).appServerArgs).slice(0, 2), ["thread_unload_delay_secs=0", "service_tier=flex"])
   assert.ok(!("serviceTier" in freshStarts[0]))
   await fresh.worker.shutdown()
 })
@@ -1375,6 +1429,7 @@ test("concurrent root turns cannot cross-correlate child-role evidence", async (
 
 test("CodexWorker starts Codex provider threads as ephemeral by default", async () => {
   const threadStarts: any[] = []
+  const unsubscribeRequests: any[] = []
   const { worker } = makeServedWorker(
     (_req, reply) => {
       reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
@@ -1383,6 +1438,7 @@ test("CodexWorker starts Codex provider threads as ephemeral by default", async 
     {
       onServerReq: (_child, req) => {
         if (req.method === "thread/start") threadStarts.push(req.params)
+        if (req.method === "thread/unsubscribe") unsubscribeRequests.push(req.params)
       },
     },
   )
@@ -1391,8 +1447,23 @@ test("CodexWorker starts Codex provider threads as ephemeral by default", async 
   await worker.runAgent(spec(), ctx())
   assert.equal(threadStarts.length, 1)
   assert.equal(threadStarts[0].ephemeral, true)
+  assert.deepEqual(unsubscribeRequests, [{ threadId: "thread-1" }])
   // Every unit pins classic compaction regardless of the host's context_management flag.
   assert.deepEqual(threadStarts[0].config, { "features.context_management": false })
+  await worker.shutdown()
+})
+
+test("CodexWorker reports an ephemeral thread release error without failing its agent", async () => {
+  const context = ctx()
+  const { worker } = makeServedWorker(
+    (_req, reply) => {
+      reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
+      reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
+    },
+    { onServerReq: (child, req) => { if (req.method === "thread/unsubscribe") child.failUnsubscribe = true } },
+  )
+  assert.equal((await worker.runAgent(spec(), context)).text, "done")
+  assert.ok(context.events.some((event) => event.kind === "tool-result" && event.name === "codex-thread-cleanup" && event.isError))
   await worker.shutdown()
 })
 
@@ -2108,25 +2179,29 @@ test("M30: a pre-v2 app-server (initialize ok, thread/start unknown) fails loudl
 // ===========================================================================
 
 test("turn/completed with status=failed → AgentError with codex code + retryable", async () => {
+  const releases: string[] = []
   const { worker } = makeServedWorker((_req, reply) => {
     reply({
       jsonrpc: "2.0",
       method: "turn/completed",
       params: { threadId: "thread-1", turn: { status: "failed", error: { message: "overloaded", codexErrorInfo: { serverOverloaded: {} } } } },
     })
-  })
+  }, { onServerReq: (_child, req) => { if (req.method === "thread/unsubscribe") releases.push(req.params.threadId) } })
   await assert.rejects(
     worker.runAgent(spec(), ctx()),
     (e) => e instanceof AgentError && e.code === "serverOverloaded" && e.retryable === true,
   )
+  assert.deepEqual(releases, ["thread-1"])
   await worker.shutdown()
 })
 
 test("turn/completed status=interrupted → AgentInterrupted", async () => {
+  const releases: string[] = []
   const { worker } = makeServedWorker((_req, reply) => {
     reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "interrupted" } } })
-  })
+  }, { onServerReq: (_child, req) => { if (req.method === "thread/unsubscribe") releases.push(req.params.threadId) } })
   await assert.rejects(worker.runAgent(spec(), ctx()), (e) => e instanceof AgentInterrupted)
+  assert.deepEqual(releases, ["thread-1"])
   await worker.shutdown()
 })
 

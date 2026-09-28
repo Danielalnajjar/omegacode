@@ -98,9 +98,9 @@ user input, stream item/turn notifications, read the result off `turn/completed`
   `cwd?`, `approvalPolicy?`, `sandboxPolicy?` (`SandboxPolicy`), `model?`, `serviceTier?`, `effort?`
   (`ReasoningEffort`), `summary?`, `personality?`, `collaborationMode?`, and **`outputSchema?`**
   (Responses-API structured output — the key to `agent({schema})`).
-- `turn/interrupt` (cancel an in-flight turn). *(That is the full set the shipped worker calls —
-  `initialize`, `thread/start`, `turn/start`, `turn/interrupt`. The protocol's `turn/steer`,
-  `thread/resume`, `thread/unsubscribe`, `thread/archive`, and `model/list` are **not used**.)*
+- `turn/interrupt` (cancel an in-flight turn); `thread/unsubscribe` (release an ephemeral
+  thread after its agent); `thread/delete` (remove a temporary durable child-role subtree).
+  *(The protocol's `turn/steer`, `thread/resume`, `thread/archive`, and `model/list` are **not used**.)*
 
 **`UserInput`** is a discriminated union: `{type:"text", text, text_elements}` |
 `{type:"image", url}` | `{type:"localImage", path}` | `{type:"skill", name, path}` |
@@ -370,9 +370,9 @@ small registry of live workers and lazily starts each provider the first time it
 - Named execution profiles own the app-server's startup surface. `workflow-research-v1` enables only
   `btca`, `executor_research`, `grok_search`, and `mintlify`, disables every other inventoried MCP
   server (including full `executor`), and fails before spawn if any allowlisted server is missing.
-- An unprofiled app-server disables every stdio and HTTP MCP server in the host config (inventory
-  read with plugins off, since plugin-provided servers have no host transport to merge onto) with
-  one `mcp_servers={name={enabled=false},...}` launch value that keeps each host transport. It
+- An unprofiled app-server disables every stdio and HTTP MCP server in a project-neutral config
+  inventory (read with plugins off, since plugin-provided servers have no host transport to merge
+  onto) with one `mcp_servers={name={enabled=false},...}` launch value that keeps each host transport. It
   turns off the process-spawning plugin/app/browser feature gates the host knows, and leaves web
   search and image generation alone. Codex 0.156.1 applies `thread/start.config` after the launch
   `-c` overrides in the same layer, splitting each key on `.`, so `codexMcpServers` and
@@ -387,14 +387,18 @@ small registry of live workers and lazily starts each provider the first time it
   account, not one plugin's. The MCP servers its hooks call (`mcp_tool` handlers in the manifest
   `hooks` paths or inline objects, else `hooks/hooks.json`) are enabled for that thread, as
   `PLUGIN_REQUIREMENTS` does for what a manifest cannot express (computer-use's `node_repl`); one
-  missing from the host MCP inventory is `unknown_mcp_server`. Remote plugins are rejected because
+  missing from the agent cwd's MCP inventory is `unknown_mcp_server`. Remote plugins are rejected because
   `features.remote_plugin` swaps the host's local `openai-curated` plugins for their remote twins.
   An unreadable manifest or hooks file is `plugin_inventory_failed`. The
   installed-plugin inventory is the union of `codex plugin list --json` and one
   `codex plugin list --marketplace <name> --json` per configured marketplace, because the default
   listing omits whole marketplaces (0.156.1 drops `openai-curated`). A
   parent `mcp_servers` or `plugins` value would replace the launch table. Profiles keep inert
-  transports for disallowed MCPs and reject plugin opt-ins.
+  transports for disallowed host MCPs and reject plugin opt-ins. Each thread also inventories its
+  own cwd once per distinct cwd per worker. Project-only servers get per-thread `enabled` leaves:
+  off unless selected or profile-allowlisted. A project-only dotted name fails before thread/start
+  because Codex cannot address it with a leaf override. The neutral launch inventory prevents a
+  project-only name from producing a launch entry without a transport in another cwd.
 - `runAgent`: `thread/start` (cwd, model, sandbox, approvalPolicy, instructions, optional
   `config.web_search` and tool opt-in leaves, `experimentalRawEvents:
   false`) → `thread/start` returns a `threadId` → `turn/start` (input text, model, effort, sandboxPolicy,
@@ -404,7 +408,9 @@ small registry of live workers and lazily starts each provider the first time it
   `codexChildRole` is set, start only that provider thread as temporarily durable because Codex
   0.149 does not list ephemeral child metadata: paginate all direct children, re-read the matching
   child to verify its exact parent, role, and completed final turn, then `thread/delete` the root subtree after success or
-  failure. Other ephemeral threads end with the per-run app-server process.
+  failure. Other ephemeral threads are unsubscribed after completion, failure, or cancellation;
+  with `thread_unload_delay_secs=0`, OmegaCode waits for `thread/closed` and their MCP connections
+  close while sibling threads and the app-server remain running.
 - Errors from `codexErrorInfo` (`UsageLimitExceeded`/429 → classified retryable; `ContextWindowExceeded`
   → fail). Interrupt via `turn/interrupt`.
 
@@ -870,9 +876,9 @@ methods we use.
    The `worktree` helper is the answer; document that parallel editors must use it.
 6. **Throughput.** One app-server multiplexing many threads may bottleneck; the process pool (§8) is the
    escape hatch — measure before building it.
-7. **Long turns / cancellation.** SIGINT maps to `turn/interrupt` (shipped). The per-turn stall
-   watchdog and `thread/archive` cleanup are future directions — **not shipped** (§6.1, §6.5);
-   today threads live as long as the per-run app-server process.
+7. **Long turns / cancellation.** SIGINT maps to `turn/interrupt`; the per-turn stall watchdog
+   and per-agent thread release ship. Ephemeral threads unsubscribe and close on agent exit;
+   temporary durable child-role subtrees are deleted (§6.1, §6.5).
 8. **Cost.** A wide fan-out can spend quickly. *(An earlier draft said "no budget ceiling in v1" —
    the guards since shipped: the `--budget` output-token ceiling (§8), the lifetime agent cap, and the
    fan-out cap.)* Resume directly mitigates this too: a failed wide run is re-run for the price of only
@@ -894,6 +900,10 @@ methods we use.
    (§7, §9), not by re-applying changes. The one true footgun — a journaled result that is no longer
    valid because the *world* changed (files moved, a dependency updated) — is the author's call; resume
    is opt-in (`--resume <runId>`), so running without it always forces a clean run.
+12. **Unidentified per-turn helper.** Lean turns (not bare `thread/start`) briefly spawn a `SkyComputerUseClient` process
+    with a `python3.13` child (about 100 ms, 14 MB), even with Chronicle, memories, plugins,
+    computer use, and hooks off. It is not a held MCP child. Which Codex path spawns it, and can
+    a lean override disable it if its lifetime grows?
 
 ---
 

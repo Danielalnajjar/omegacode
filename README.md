@@ -47,7 +47,8 @@ refute each finding, a synthesizer merges what survives — then run it and repo
 journaled and resumable, and `omegacode serve` opens a live dashboard of every agent as it works.
 When the Codex provider is used, the provider-side Codex worker threads are started as ephemeral
 threads so they do not persist as normal Codex Desktop sidebar sessions; OmegaCode's own run
-directory remains the durable record.
+directory remains the durable record. Each provider thread releases its MCP processes when its
+agent ends, while the app-server stays available for sibling agents.
 
 ## What a workflow looks like
 
@@ -103,7 +104,7 @@ Provider-native options stay deliberately provider-specific:
   `{ "schemaVersion": 1, "codexPermissions": true }` before preparing credentials or running.
   This static check reports OmegaCode bridge support; it does not probe the installed Codex or profile.
   These options affect resume identity and are rejected when paired with another provider.
-- Codex: `codexMcpServers: ["btca"]` enables named MCP servers from the host Codex config for one
+- Codex: `codexMcpServers: ["btca"]` enables named MCP servers from the agent cwd's Codex config for one
   thread; `codexPlugins: ["build-ios-apps@openai-curated"]` enables only the listed installed
   plugins for one thread and switches every other installed plugin off there. Plugin ids come
   from the host's inventory across every configured marketplace (`codex plugin marketplace list
@@ -111,7 +112,7 @@ Provider-native options stay deliberately provider-specific:
   `computer-use@openai-bundled` also enables the `node_repl` server it runs through, and a plugin
   whose manifest hooks call an MCP server (`browser@openai-bundled` calls `node_repl`) enables that
   server. Unknown names, names containing `.` (Codex request overrides cannot address them), a hook
-  server missing from the host MCP inventory, remote plugins, and plugins whose manifest declares
+  server missing from that cwd's MCP inventory, remote plugins, and plugins whose manifest declares
   apps fail before `thread/start`: Codex's remote-plugin gate
   replaces the host's local curated plugins, and its app gate exposes every app connected to the
   ChatGPT account rather than one plugin's. Without these options every MCP server and the process-spawning

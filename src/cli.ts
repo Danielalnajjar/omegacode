@@ -53,7 +53,6 @@ const BOOLEAN_FLAGS = new Set([
   "help",
   "project",
   "force",
-  "codex-no-app-server-proxy",
 ])
 
 /**
@@ -452,15 +451,6 @@ async function cmdRun(flags: Flags): Promise<void> {
   }
   const budget = numberFlag(flags, "budget")
   if (budget !== undefined) overrides.budget = budget
-  const codexAppServerSocket = str(flags["codex-app-server-socket"])
-  if (codexAppServerSocket !== undefined) {
-    if (codexAppServerSocket.length === 0) throw new UsageError("--codex-app-server-socket requires a path")
-    overrides.codexAppServerSocket = resolve(codexAppServerSocket)
-  }
-  if (flags["codex-no-app-server-proxy"] === true) {
-    if (codexAppServerSocket !== undefined) throw new UsageError("--codex-app-server-socket and --codex-no-app-server-proxy cannot be combined")
-    overrides.codexNoAppServerProxy = true
-  }
   const codexThreadStartConcurrency = positiveIntFlag(flags, "codex-thread-start-concurrency")
   if (codexThreadStartConcurrency !== undefined) overrides.codexThreadStartConcurrency = codexThreadStartConcurrency
 
@@ -634,8 +624,6 @@ function buildDetachedChildArgs(
   appendValue(out, "concurrency", opts.overrides.concurrency)
   appendValue(out, "agent-timeout-ms", opts.overrides.agentTimeoutMs)
   appendValue(out, "budget", opts.overrides.budget)
-  appendValue(out, "codex-app-server-socket", opts.overrides.codexAppServerSocket)
-  if (opts.overrides.codexNoAppServerProxy) out.push("--codex-no-app-server-proxy")
   appendValue(out, "codex-thread-start-concurrency", opts.overrides.codexThreadStartConcurrency)
   return out
 }
@@ -927,8 +915,6 @@ Usage:
       Codex workers start with MCP servers and plugins disabled. Enable per agent with
       codexMcpServers: ["server-name"] or codexPlugins: ["plugin-id@marketplace"].
       --codex-thread-start-concurrency <N> cap simultaneous thread initialization, not model turns (default 16)
-      --codex-app-server-socket <path>     opt into proxying Codex workers through an existing app-server socket
-      --codex-no-app-server-proxy          force a fresh stdio app-server even when env selects a proxy socket
       --resume <runId>                     replay unchanged prefix, re-run the rest
       --fake                               run with a fake worker (no real agents)
       --typesafe                           allow host-only Jev evaluations (disabled under --fake)
@@ -942,10 +928,7 @@ Usage:
   (with --json the URL is in the JSON \`url\` field and the \`view:\` line is suppressed).
   Foreground \`run --json\` prints terminal JSON after completion. Detached \`run --detach --json\`
   prints launch JSON immediately; use \`wait --json\` for terminal detached JSON.
-  Codex workers use a fresh stdio app-server per OmegaCode run by default. Use
-  --codex-app-server-socket or OMEGACODE_CODEX_APP_SERVER_SOCKET only when intentionally sharing
-  an existing app-server daemon across runs; every thread then carries the lean disables for the
-  MCP servers and features in this host's Codex config.
+  Codex workers use a fresh stdio app-server per OmegaCode run.
 
   omegacode serve [--port 4123] [--host h] [--idle-shutdown]   Live read-only web viewer of all runs
   omegacode status <runId> [--json]             Read native status from events.jsonl + heartbeat

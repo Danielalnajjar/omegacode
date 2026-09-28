@@ -181,8 +181,7 @@ a TypeSafe flag remain off. Legacy journals without a fake flag retain their
 historical fake/live selection behavior; they cannot gain TypeSafe permission.
 
 The host alone reads `TYPESAFE_API_KEY`; SDK and spawned worker environments strip
-it case-insensitively. An already-running external Codex app-server must be started
-without that key by its owner: a socket client cannot sanitize the server's environment.
+it case-insensitively.
 Evaluation input must be finite JSON, with string/object/array state and instructions.
 The complete snapshot, questions and requested model remain bound to replay even
 with an explicit key. `jev-latest` (default) and `jev-preview` may resolve to a

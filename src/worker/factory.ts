@@ -13,7 +13,6 @@ export interface FactoryOpts {
   /** Use the in-process FakeWorker for every provider (smoke tests, --fake). */
   fake?: boolean
   codexBin?: string
-  codexAppServerSocket?: string
   codexThreadStartConcurrency?: number
   claudeModel?: string
   /** Path to the claude-code executable (forwarded to the SDK). */
@@ -44,7 +43,6 @@ export class DefaultWorkerFactory implements WorkerFactory {
       case "codex":
         return new CodexWorker({
           bin: this.opts.codexBin,
-          appServerSocket: this.opts.codexAppServerSocket,
           threadStartConcurrency: this.opts.codexThreadStartConcurrency,
           serviceTier,
           executionProfile: codexExecutionProfile,

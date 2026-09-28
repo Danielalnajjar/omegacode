@@ -46,10 +46,6 @@ export interface RunOverrides {
   piBin?: string
   museBin?: string
   grokBin?: string
-  /** Use `codex app-server proxy --sock <path>` for Codex workers. */
-  codexAppServerSocket?: string
-  /** Force Codex workers to spawn their own stdio app-server, even if env selects a shared socket. */
-  codexNoAppServerProxy?: boolean
   /** Bound concurrent Codex thread initialization without reducing model-turn concurrency. */
   codexThreadStartConcurrency?: number
 }
@@ -156,7 +152,6 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     piBin: opts.overrides?.piBin ?? process.env.PI_BIN,
     museBin: opts.overrides?.museBin ?? process.env.MUSE_BIN,
     grokBin: opts.overrides?.grokBin ?? process.env.GROK_BIN,
-    codexAppServerSocket: resolveCodexAppServerSocket(opts.overrides),
     codexThreadStartConcurrency: opts.overrides?.codexThreadStartConcurrency,
     // Claude-specific factory defaults (L5). Only forwarded when the provider is claude-code; a
     // per-call opts.model still overrides via AgentSpec.model.
@@ -226,22 +221,6 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   }
 
   return { runId, result, status, agentCounts: countAgentStates(agentStates.values()), error, evaluationUsage: runtime.evaluationAccounting() }
-}
-
-function resolveCodexAppServerSocket(overrides: RunOverrides | undefined): string | undefined {
-  if (overrides?.codexNoAppServerProxy) return undefined
-  if (overrides?.codexAppServerSocket !== undefined) return overrides.codexAppServerSocket
-  if (envFlag("OMEGACODE_CODEX_NO_APP_SERVER_PROXY") === true) return undefined
-  const configured = process.env.OMEGACODE_CODEX_APP_SERVER_SOCKET
-  if (configured !== undefined) return configured.length > 0 ? configured : undefined
-  return undefined
-}
-
-function envFlag(name: string): boolean | undefined {
-  const raw = process.env[name]
-  if (raw === undefined) return undefined
-  const normalized = raw.toLowerCase()
-  return normalized !== "0" && normalized !== "false" && normalized !== "no"
 }
 
 async function writePreflightFailure(runId: string, workflowFile: string, err: unknown): Promise<void> {

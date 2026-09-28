@@ -824,6 +824,10 @@ test("agent() validates Codex tool opt-ins before any worker runs", async () => 
     assert.deepEqual([...b.worker.calls.at(-1)!.codexPlugins!], ["computer-use@openai-bundled"])
     await runBody(b, `return await agent("research", { codexExecutionProfile: "workflow-research-v1", codexMcpServers: ["btca"] })`)
     assert.deepEqual([...b.worker.calls.at(-1)!.codexMcpServers!], ["btca"])
+    // The worker runs after an await; a later mutation must not change the tools the key hashed.
+    await runBody(b, `const tools = ["btca"]; const pending = agent("reused", { codexMcpServers: tools, codexPlugins: tools }); tools.push("executor"); return await pending`)
+    assert.deepEqual([...b.worker.calls.at(-1)!.codexMcpServers!], ["btca"])
+    assert.deepEqual([...b.worker.calls.at(-1)!.codexPlugins!], ["btca"])
   } finally {
     b.cleanup()
   }

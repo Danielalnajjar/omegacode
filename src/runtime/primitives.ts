@@ -286,8 +286,10 @@ export class Runtime {
       codexChildRole: opts?.codexChildRole,
       codexWebSearch: opts?.codexWebSearch,
       codexNetworkAccess: opts?.codexNetworkAccess,
-      codexMcpServers: opts?.codexMcpServers,
-      codexPlugins: opts?.codexPlugins,
+      // Copied: the key is hashed now but the worker reads these after an await. A non-array stays
+      // as given so the check below rejects it rather than spreading a string into letters.
+      codexMcpServers: Array.isArray(opts?.codexMcpServers) ? [...opts.codexMcpServers] : opts?.codexMcpServers,
+      codexPlugins: Array.isArray(opts?.codexPlugins) ? [...opts.codexPlugins] : opts?.codexPlugins,
       codexPermissions: opts?.codexPermissions,
     }
     if (spec.codexPermissions !== undefined) {

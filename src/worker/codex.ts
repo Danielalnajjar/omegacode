@@ -440,6 +440,8 @@ export class CodexWorker implements Worker {
   private readonly readPluginInventory: (bin: string) => Promise<string[]>
   private mcpInventory: Promise<string> | null = null
   private pluginInventory: Promise<readonly string[]> | null = null
+  /** Lean disables every thread/start carries when a proxy relays to a shared daemon. */
+  private sharedServerLeanConfig: Record<string, boolean> = {}
   private readonly logProfileWarning: (message: string) => void
   private readonly spawnChild?: SpawnChild
   private readonly requestTimeoutMs: number
@@ -655,11 +657,12 @@ export class CodexWorker implements Worker {
     }
   }
 
-  /** Leaf-valued thread/start overrides that turn on this agent's opted-in tools. Codex splits
+  /** Leaf-valued thread/start overrides that turn on this agent's opted-in tools, over the lean
+   *  disables when the daemon is shared. Codex splits
    *  request override paths on "." without TOML quoting, so names containing "." cannot be addressed.
    *  A parent `mcp_servers` or `plugins` table would replace the launch table instead of merging. */
   private async resolveThreadToolConfig(spec: AgentSpec): Promise<Record<string, boolean>> {
-    const config: Record<string, boolean> = {}
+    const config: Record<string, boolean> = { ...this.sharedServerLeanConfig }
     const plugins = spec.codexPlugins ?? []
     const mcpServers = [...new Set([
       ...spec.codexMcpServers ?? [],
@@ -929,6 +932,16 @@ export class CodexWorker implements Worker {
       })
     }
 
+    if (this.appServerSocket !== undefined) {
+      // A proxy relays bytes to a daemon that loaded its config already, so launch `-c` values never
+      // reach it. The lean policy rides on every thread/start instead, as leaves the opt-ins overwrite.
+      this.sharedServerLeanConfig = Object.fromEntries([
+        ...featureOverrides.map(({ key, value }) => [key, value]),
+        ...leanMcpServerNamesToDisable.map((name) => [`mcp_servers.${threadOverrideSegment("MCP server", name)}.enabled`, false]),
+      ])
+      leanMcpServerNamesToDisable = []
+      featureOverrides = []
+    }
     this.appServerArgs = buildCodexAppServerArgs({
       appServerSocket: this.appServerSocket,
       leanMcpServerNamesToDisable,

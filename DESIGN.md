@@ -381,7 +381,9 @@ small registry of live workers and lazily starts each provider the first time it
   installed-plugin inventory is the union of `codex plugin list --json` and one
   `codex plugin list --marketplace <name> --json` per configured marketplace, because the default
   listing omits whole marketplaces (0.156.1 drops `openai-curated`). A
-  parent `mcp_servers` or `plugins` value would replace the launch table. Profiles keep inert
+  parent `mcp_servers` or `plugins` value would replace the launch table. `app-server proxy` only
+  relays bytes, so a shared-socket worker sends the same feature and `mcp_servers.<name>.enabled`
+  disables as leaves on every `thread/start`, with the opt-ins overwriting them. Profiles keep inert
   transports for disallowed MCPs and reject plugin opt-ins.
 - `runAgent`: `thread/start` (cwd, model, sandbox, approvalPolicy, instructions, optional
   `config.web_search` and tool opt-in leaves, `experimentalRawEvents:

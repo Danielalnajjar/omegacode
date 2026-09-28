@@ -944,9 +944,8 @@ Usage:
   prints launch JSON immediately; use \`wait --json\` for terminal detached JSON.
   Codex workers use a fresh stdio app-server per OmegaCode run by default. Use
   --codex-app-server-socket or OMEGACODE_CODEX_APP_SERVER_SOCKET only when intentionally sharing
-  an existing app-server daemon across runs. CodeDB, plugins, apps, and native multi-agent
-  capability remain enabled; the default suppression targets only configured, enabled stdio
-  instances of onepassword, node_repl, and paos-recall-mcp for fresh worker app-servers.
+  an existing app-server daemon across runs; every thread then carries the lean disables for the
+  MCP servers and features in this host's Codex config.
 
   omegacode serve [--port 4123] [--host h] [--idle-shutdown]   Live read-only web viewer of all runs
   omegacode status <runId> [--json]             Read native status from events.jsonl + heartbeat

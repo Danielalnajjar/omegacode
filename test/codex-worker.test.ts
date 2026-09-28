@@ -448,6 +448,7 @@ function makeServedWorker(
   opts: {
     bin?: string
     appServerArgs?: string[]
+    appServerSocket?: string
     serviceTier?: string
     readMcpInventory?: (bin: string) => Promise<string>
     readPluginInventory?: (bin: string) => Promise<string[]>
@@ -469,6 +470,7 @@ function makeServedWorker(
   const worker = new CodexWorker({
     bin: opts.bin,
     appServerArgs: opts.appServerArgs,
+    appServerSocket: opts.appServerSocket,
     serviceTier: opts.serviceTier,
     readMcpInventory: opts.readMcpInventory ?? HERMETIC_INVENTORY.readMcpInventory,
     readPluginInventory: opts.readPluginInventory ?? (async () => [JSON.stringify({ installed: [] })]),
@@ -1102,6 +1104,56 @@ test("unknown or unaddressable Codex tool names fail before thread/start", async
   }
   assert.equal(threadStarts.length, 0)
   await worker.shutdown()
+})
+
+test("a shared app-server socket gets the lean policy on every thread/start, under the opt-ins", async () => {
+  const threadStarts: any[] = []
+  const { worker } = toolWorker(threadStarts, {
+    appServerSocket: "/tmp/shared-codex.sock",
+    readMcpInventory: async () => JSON.stringify([mcpInventoryEntry("btca"), mcpInventoryEntry("node_repl"), mcpInventoryEntry("executor", { type: "streamable_http" })]),
+  })
+  await worker.runAgent(spec(), ctx())
+  await worker.runAgent(spec({ codexMcpServers: ["btca"], codexPlugins: ["computer-use@openai-bundled"] }), ctx())
+  // The proxy only relays bytes, so launch `-c` values would never reach the daemon.
+  assert.deepEqual((worker as any).appServerArgs, ["app-server", "proxy", "--sock", "/tmp/shared-codex.sock"])
+  const lean = {
+    ...Object.fromEntries(["plugins", "plugin_sharing", "remote_plugin", "apps", "enable_mcp_apps", "computer_use", "browser_use", "browser_use_external", "in_app_browser"].map((name) => [`features.${name}`, false])),
+    "mcp_servers.btca.enabled": false,
+    "mcp_servers.node_repl.enabled": false,
+    "mcp_servers.executor.enabled": false,
+  }
+  assert.deepEqual(threadStarts[0].config, { "features.context_management": false, ...lean })
+  assert.deepEqual(threadStarts[1].config, {
+    "features.context_management": false,
+    ...lean,
+    "features.plugins": true,
+    "features.computer_use": true,
+    "mcp_servers.btca.enabled": true,
+    "mcp_servers.node_repl.enabled": true,
+    "plugins.computer-use@openai-bundled.enabled": true,
+    "plugins.computer-history@openai-bundled.enabled": false,
+    "plugins.messages@openai-bundled.enabled": false,
+    "plugins.build-ios-apps@openai-curated.enabled": false,
+  })
+  await worker.shutdown()
+})
+
+test("a shared app-server socket rejects a host MCP server no thread override can disable", async () => {
+  let spawned = false
+  const worker = new CodexWorker({
+    appServerSocket: "/tmp/shared-codex.sock",
+    readMcpInventory: async () => JSON.stringify([mcpInventoryEntry("dotted.server")]),
+    readFeatureInventory: HERMETIC_INVENTORY.readFeatureInventory,
+    spawnChild: () => {
+      spawned = true
+      return new FakeChild() as any
+    },
+  })
+  await assert.rejects(
+    worker.runAgent(spec(), ctx()),
+    (error: unknown) => error instanceof AgentError && error.code === "unsupported_option" && /"dotted.server" contains "\."/.test(error.message),
+  )
+  assert.equal(spawned, false)
 })
 
 test("a plugin inventory failure is non-retryable and happens before thread/start", async () => {

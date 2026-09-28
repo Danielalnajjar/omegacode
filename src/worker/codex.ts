@@ -349,6 +349,15 @@ export function selectCodexFeatureOverrides(
   return { selected, skippedKeys }
 }
 
+/** An inventory read whose codex binary is missing or not executable. Node rejects execFile with a
+ *  string errno on a "spawn <bin>" syscall; a codex that ran and failed carries a numeric exit code
+ *  and its stderr in the message, so the message alone cannot tell the two apart. */
+function isMissingBinaryError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const { code, syscall } = error as NodeJS.ErrnoException
+  return (code === "ENOENT" || code === "EACCES") && typeof syscall === "string" && syscall.startsWith("spawn")
+}
+
 async function readCodexMcpInventory(bin: string): Promise<string> {
   // With plugins on, the list also names plugin-provided servers. Those have no host transport,
   // so a launch override naming one fails config load; plugins are selected with codexPlugins.
@@ -891,6 +900,7 @@ export class CodexWorker implements Worker {
         leanMcpServerNamesToDisable = selectCodexLeanMcpServerNames(inventory)
       }
     } catch (error) {
+      if (isMissingBinaryError(error)) throw this.spawnError(error, "mcp list")
       const message = error instanceof Error ? error.message : String(error)
       throw new AgentError({
         provider: PROVIDER,
@@ -909,6 +919,7 @@ export class CodexWorker implements Worker {
         this.logProfileWarning(`[omegacode] Codex ${profile ? `execution profile ${profile.name}` : "lean worker"} skipped unknown features: ${selected.skippedKeys.join(", ")}`)
       }
     } catch (error) {
+      if (isMissingBinaryError(error)) throw this.spawnError(error, "features list")
       const message = error instanceof Error ? error.message : String(error)
       throw new AgentError({
         provider: PROVIDER,
@@ -932,7 +943,7 @@ export class CodexWorker implements Worker {
   /** Classify any spawn/process error. A missing or non-executable binary
    *  (ENOENT, Windows .cmd shim, "not recognized") is a CONFIG error, not a
    *  transient one — retrying never helps, so it is non-retryable. (L2) */
-  private spawnError(err: unknown): AgentError {
+  private spawnError(err: unknown, command = "app-server"): AgentError {
     const message = err instanceof Error ? err.message : String(err)
     const code = err instanceof StdioTransportError ? err.code : "spawn_failed"
     const notFound = /ENOENT|not found|not recognized|EACCES/i.test(message)
@@ -940,8 +951,8 @@ export class CodexWorker implements Worker {
       provider: PROVIDER,
       code: notFound ? "binary_not_found" : code,
       message: notFound
-        ? `cannot execute "${this.bin} app-server" — is the codex CLI installed and on PATH? (${message})`
-        : `failed to spawn ${this.bin} app-server: ${message}`,
+        ? `cannot execute "${this.bin} ${command}" — is the codex CLI installed and on PATH? (${message})`
+        : `failed to spawn ${this.bin} ${command}: ${message}`,
       retryable: !notFound,
     })
   }

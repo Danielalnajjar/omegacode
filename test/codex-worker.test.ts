@@ -434,6 +434,13 @@ test("JsonRpcStdioClient: dispatches notifications and server requests", () => {
 // CodexWorker — happy path
 // ===========================================================================
 
+// Inventory seams for workers launched without appServerArgs, so a test never spawns (or reads the
+// config of) whatever codex is installed on the host.
+const HERMETIC_INVENTORY = {
+  readMcpInventory: async () => "[]",
+  readFeatureInventory: async () => "plugins stable true\nplugin_sharing stable true\nremote_plugin stable true\napps stable true\nenable_mcp_apps stable true\ncomputer_use stable true\nbrowser_use stable true\nbrowser_use_external stable true\nin_app_browser stable true",
+}
+
 // Helper that attaches the scripted server BEFORE the worker spawns, by
 // intercepting spawnChild. Avoids the attach-after-spawn race.
 function makeServedWorker(
@@ -463,10 +470,10 @@ function makeServedWorker(
     bin: opts.bin,
     appServerArgs: opts.appServerArgs,
     serviceTier: opts.serviceTier,
-    readMcpInventory: opts.readMcpInventory ?? (async () => "[]"),
+    readMcpInventory: opts.readMcpInventory ?? HERMETIC_INVENTORY.readMcpInventory,
     readPluginInventory: opts.readPluginInventory ?? (async () => [JSON.stringify({ installed: [] })]),
     executionProfile: opts.executionProfile,
-    readFeatureInventory: opts.readFeatureInventory ?? (async () => "plugins stable true\nplugin_sharing stable true\nremote_plugin stable true\napps stable true\nenable_mcp_apps stable true\ncomputer_use stable true\nbrowser_use stable true\nbrowser_use_external stable true\nin_app_browser stable true"),
+    readFeatureInventory: opts.readFeatureInventory ?? HERMETIC_INVENTORY.readFeatureInventory,
     logProfileWarning: opts.logProfileWarning,
     requestTimeoutMs: opts.requestTimeoutMs,
     turnStallTimeoutMs: opts.turnStallTimeoutMs,
@@ -1206,6 +1213,7 @@ test("concurrent root turns cannot cross-correlate child-role evidence", async (
   let nextThread = 0
   const pendingRoots: string[] = []
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       child = new FakeChild()
       child.onWrite = (req: any) => {
@@ -1299,6 +1307,7 @@ test("CodexWorker gates thread/start without reducing concurrent model turns", a
   let activeStarts = 0
   let maxActiveStarts = 0
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     threadStartConcurrency: 2,
     spawnChild: () => {
       child = new FakeChild()
@@ -1332,6 +1341,7 @@ test("CodexWorker gates thread/start without reducing concurrent model turns", a
 
 test("CodexWorker does not retry an ambiguously timed-out thread/start", async () => {
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     requestTimeoutMs: 10,
     spawnChild: () => {
       const child = new FakeChild()
@@ -1351,6 +1361,7 @@ test("CodexWorker does not retry an ambiguously timed-out thread/start", async (
 
 test("CodexWorker classifies app-server ingress overload as retryable", async () => {
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       const child = new FakeChild()
       child.onWrite = (req: any) => {
@@ -1535,6 +1546,7 @@ test("H2: error notification without threadId settles all live turns", async () 
 test("H1: child crash mid-turn rejects runAgent (no hang)", async () => {
   let theChild!: FakeChild
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       theChild = new FakeChild()
       theChild.onWrite = (req: any) => {
@@ -1559,6 +1571,7 @@ test("M1: after a crash with a stale partial frame, the worker recovers on the n
   // resolved. Now framing state dies with its transport.
   let spawnCount = 0
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       const child = new FakeChild()
       const isFirst = spawnCount++ === 0
@@ -1607,6 +1620,7 @@ async function approvalDecision(sandbox: AgentSpec["sandbox"], method: string): 
   let child!: FakeChild
   const decisions: unknown[] = []
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       child = new FakeChild()
       child.onWrite = (req: any) => {
@@ -1654,6 +1668,7 @@ async function orphanApprovalReply(method: string): Promise<unknown> {
   let child!: FakeChild
   const replies: unknown[] = []
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       child = new FakeChild()
       child.onWrite = (req: any) => {
@@ -1764,6 +1779,7 @@ test("M3: copyFile path used when savedPath present, awaited before settle", asy
 test("M30: non-object initialize result fails the handshake (no silent hang)", async () => {
   let child!: FakeChild
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       child = new FakeChild()
       child.onWrite = (req: any) => {
@@ -1909,6 +1925,7 @@ test("M30: turn/completed with an unreadable threadId settles ALL live turns wit
 test("M30: initialize result WITHOUT a userAgent fails the handshake (not an app-server)", async () => {
   let child!: FakeChild
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       child = new FakeChild()
       child.onWrite = (req: any) => {
@@ -1930,6 +1947,7 @@ test("M30: a pre-v2 app-server (initialize ok, thread/start unknown) fails loudl
   // never a hang.
   let child!: FakeChild
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       child = new FakeChild()
       child.onWrite = (req: any) => {
@@ -1977,7 +1995,7 @@ test("turn/completed status=interrupted → AgentInterrupted", async () => {
 test("pre-aborted signal throws AgentInterrupted before spawning", async () => {
   const ac = new AbortController()
   ac.abort()
-  const worker = new CodexWorker({ spawnChild: () => new FakeChild() as any })
+  const worker = new CodexWorker({ ...HERMETIC_INVENTORY, spawnChild: () => new FakeChild() as any })
   await assert.rejects(worker.runAgent(spec(), ctx(ac.signal)), (e) => e instanceof AgentInterrupted)
   await worker.shutdown()
 })
@@ -1997,6 +2015,7 @@ test("abort mid-turn interrupts and settles", async () => {
 test("L2: async ENOENT spawn error → non-retryable binary_not_found", async () => {
   let child!: FakeChild
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       child = new FakeChild()
       // emit the ENOENT the way Node does for a missing binary (async 'error')
@@ -2013,6 +2032,7 @@ test("L2: async ENOENT spawn error → non-retryable binary_not_found", async ()
 
 test("L2: sync spawn throw → non-retryable binary_not_found", async () => {
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       throw new Error("spawn codex ENOENT")
     },
@@ -2024,10 +2044,52 @@ test("L2: sync spawn throw → non-retryable binary_not_found", async () => {
   await worker.shutdown()
 })
 
+test("L2: a missing codex binary fails the default MCP inventory read as non-retryable binary_not_found", async () => {
+  const worker = new CodexWorker({
+    bin: join(tmpdir(), "omegacode-missing-codex", "codex"),
+    spawnChild: () => { throw new Error("must not launch the app-server") },
+  })
+  await assert.rejects(
+    worker.runAgent(spec(), ctx()),
+    (e) => e instanceof AgentError && e.code === "binary_not_found" && e.retryable === false && /mcp list/.test(e.message),
+  )
+  await worker.shutdown()
+})
+
+test("L2: a non-executable codex binary fails the default feature inventory read as non-retryable binary_not_found", { skip: process.platform === "win32" }, async () => {
+  const bin = join(await mkdtemp(join(tmpdir(), "codex-noexec-")), "codex")
+  await writeFile(bin, "#!/bin/sh\n", { mode: 0o644 })
+  const worker = new CodexWorker({
+    bin,
+    readMcpInventory: HERMETIC_INVENTORY.readMcpInventory,
+    spawnChild: () => { throw new Error("must not launch the app-server") },
+  })
+  await assert.rejects(
+    worker.runAgent(spec(), ctx()),
+    (e) => e instanceof AgentError && e.code === "binary_not_found" && e.retryable === false && /features list/.test(e.message),
+  )
+  await worker.shutdown()
+})
+
+test("an inventory read where codex ran and failed stays mcp_inventory_failed even when stderr says not found", async () => {
+  const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
+    // execFile's shape for a child that exited nonzero: numeric exit code, stderr in the message.
+    readMcpInventory: async () => { throw Object.assign(new Error("Command failed: codex mcp list --json\nconfig profile not found"), { code: 1 }) },
+    spawnChild: () => { throw new Error("must not launch the app-server") },
+  })
+  await assert.rejects(
+    worker.runAgent(spec(), ctx()),
+    (e) => e instanceof AgentError && e.code === "mcp_inventory_failed" && e.retryable === false,
+  )
+  await worker.shutdown()
+})
+
 test("unknown server-initiated request gets an empty result (server not left blocking)", async () => {
   let child!: FakeChild
   const replies: any[] = []
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       child = new FakeChild()
       child.onWrite = (req: any) => {
@@ -2053,6 +2115,7 @@ test("unknown server-initiated request gets an empty result (server not left blo
 test("thread/start with no thread id → AgentError", async () => {
   let child!: FakeChild
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       child = new FakeChild()
       child.onWrite = (req: any) => {

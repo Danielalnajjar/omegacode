@@ -64,6 +64,10 @@ interface AgentOptsBase {
   codexWebSearch?: CodexWebSearch
   /** Codex sandbox network access for read-only/workspace-write turns. */
   codexNetworkAccess?: boolean
+  /** Codex-only MCP server names to enable for this thread. */
+  codexMcpServers?: string[]
+  /** Codex-only installed plugin ids to enable for this thread. */
+  codexPlugins?: string[]
   /** Codex named permission profile; caller owns filesystem/network policy. */
   codexPermissions?: string
 }
@@ -91,6 +95,8 @@ export interface AgentSpec {
   codexChildRole?: string
   codexWebSearch?: CodexWebSearch
   codexNetworkAccess?: boolean
+  codexMcpServers?: string[]
+  codexPlugins?: string[]
   /** Codex named permission profile; caller owns filesystem/network policy. */
   codexPermissions?: string
 }

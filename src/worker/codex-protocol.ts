@@ -190,9 +190,10 @@ export type ThreadStartParams = {
   model?: string
   approvalPolicy: CodexAskForApproval
   developerInstructions?: string
+  serviceTier?: string
   experimentalRawEvents: boolean
   ephemeral?: boolean
-  config: { "features.context_management": false; web_search?: "disabled" | "cached" | "live" }
+  config: { "features.context_management": false; web_search?: "disabled" | "cached" | "live" } & Record<string, boolean | "disabled" | "cached" | "live" | undefined>
 } & ({ permissions: string; sandbox?: never } | { sandbox: CodexSandboxMode; permissions?: never })
 
 export interface CodexTextUserInput {

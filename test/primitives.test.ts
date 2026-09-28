@@ -796,6 +796,43 @@ test("random() varies with the run seed but is stable for the same seed", async 
   assert.notEqual(await run(7), await run(8)) // run-distinct
 })
 
+test("agent() validates Codex tool opt-ins before any worker runs", async () => {
+  const b = build()
+  try {
+    await assert.rejects(runBody(b, `return await agent("x", { codexMcpServers: "btca" })`), /codexMcpServers must be an array of non-empty names/)
+    await assert.rejects(runBody(b, `return await agent("x", { codexPlugins: [""] })`), /codexPlugins must be an array of non-empty names/)
+    await assert.rejects(
+      runBody(b, `return await agent("x", { provider: "claude-code", model: "claude-fable-5", codexMcpServers: ["btca"] })`),
+      (error: unknown) => error instanceof AgentError && error.code === "unsupported_option" && /codexMcpServers, and codexPlugins are codex-only/.test(error.message),
+    )
+    await assert.rejects(
+      runBody(b, `return await agent("x", { codexExecutionProfile: "workflow-research-v1", codexPlugins: ["computer-use@openai-bundled"] })`),
+      /codexPlugins cannot be used with Codex execution profile workflow-research-v1/,
+    )
+    await assert.rejects(
+      runBody(b, `return await agent("x", { codexExecutionProfile: "workflow-research-v1", codexMcpServers: ["btca", "executor"] })`),
+      /workflow-research-v1 does not allow codexMcpServers "executor"/,
+    )
+    await assert.rejects(
+      runBody(b, `return await agent("x", { codexExecutionProfile: "workflow-plan-v1", codexMcpServers: ["btca"] })`),
+      /workflow-plan-v1 does not allow codexMcpServers "btca"/,
+    )
+    assert.equal(b.worker.calls.length, 0)
+    await runBody(b, `return await agent("ok", { codexMcpServers: ["btca"], codexPlugins: ["computer-use@openai-bundled"] })`)
+    // Workflow arrays come from the sandbox realm; copy them before comparing structure.
+    assert.deepEqual([...b.worker.calls.at(-1)!.codexMcpServers!], ["btca"])
+    assert.deepEqual([...b.worker.calls.at(-1)!.codexPlugins!], ["computer-use@openai-bundled"])
+    await runBody(b, `return await agent("research", { codexExecutionProfile: "workflow-research-v1", codexMcpServers: ["btca"] })`)
+    assert.deepEqual([...b.worker.calls.at(-1)!.codexMcpServers!], ["btca"])
+    // The worker runs after an await; a later mutation must not change the tools the key hashed.
+    await runBody(b, `const tools = ["btca"]; const pending = agent("reused", { codexMcpServers: tools, codexPlugins: tools }); tools.push("executor"); return await pending`)
+    assert.deepEqual([...b.worker.calls.at(-1)!.codexMcpServers!], ["btca"])
+    assert.deepEqual([...b.worker.calls.at(-1)!.codexPlugins!], ["btca"])
+  } finally {
+    b.cleanup()
+  }
+})
+
 test("H14: agent() rejects invalid provider/sandbox/effort/approval/serviceTier/profile values at spec resolution", async () => {
   // Workflow bodies are untyped JS: an unvalidated `sandbox: "readonly"` (typo for "read-only")
   // falls off the worker policy switches and is treated as writable — read-only silently bypassed.

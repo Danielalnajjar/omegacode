@@ -112,8 +112,6 @@ describe("parseArgs — boolean flags never consume the next token (M18)", () =>
   test("codex worker process flags are boolean and do not swallow the workflow path", () => {
     const f = parseArgs([
       "run",
-      "--codex-disable-local-mcps",
-      "--codex-enable-local-mcps",
       "--codex-no-app-server-proxy",
       "wf.js",
       "--codex-app-server-socket",
@@ -121,8 +119,6 @@ describe("parseArgs — boolean flags never consume the next token (M18)", () =>
       "--codex-thread-start-concurrency",
       "12",
     ])
-    assert.equal(f["codex-disable-local-mcps"], true)
-    assert.equal(f["codex-enable-local-mcps"], true)
     assert.equal(f["codex-no-app-server-proxy"], true)
     assert.equal(f["codex-app-server-socket"], "/tmp/codex.sock")
     assert.equal(f["codex-thread-start-concurrency"], "12")
@@ -550,13 +546,6 @@ describe("CLI end-to-end (--fake)", () => {
     const r = await runCli(["run", wf, "--budget", "abc", "--fake", "--no-serve"], { OMEGACODE_HOME: home })
     assert.equal(r.code, 1)
     assert.match(r.stderr, /--budget must be a non-negative number/)
-  })
-
-  test("conflicting Codex local-MCP flags are rejected cleanly", async () => {
-    const r = await runCli(["run", wf, "--codex-disable-local-mcps", "--codex-enable-local-mcps", "--fake", "--no-serve"], { OMEGACODE_HOME: home })
-    assert.equal(r.code, 1)
-    assert.match(r.stderr, /cannot be combined/)
-    assert.doesNotMatch(r.stderr, /at \w+ \(/)
   })
 
   test("conflicting Codex app-server proxy flags are rejected cleanly", async () => {

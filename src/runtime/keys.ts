@@ -71,6 +71,8 @@ export interface KeyedFields {
   codexPermissions?: string
   museExecutionProfile?: string
   codexNetworkAccess: boolean | null
+  codexMcpServers?: readonly string[]
+  codexPlugins?: readonly string[]
   worktree: unknown
 }
 
@@ -92,6 +94,8 @@ export function keyedSpec(spec: KeyedSpecInput, worktree: unknown): KeyedFields 
     codexExecutionProfile: spec.codexExecutionProfile,
     codexWebSearch: spec.codexWebSearch ?? null,
     codexNetworkAccess: spec.codexNetworkAccess ?? null,
+    ...(spec.codexMcpServers !== undefined ? { codexMcpServers: spec.codexMcpServers } : {}),
+    ...(spec.codexPlugins !== undefined ? { codexPlugins: spec.codexPlugins } : {}),
     ...(spec.codexPermissions !== undefined ? { codexPermissions: spec.codexPermissions } : {}),
     ...(spec.museExecutionProfile !== undefined ? { museExecutionProfile: spec.museExecutionProfile } : {}),
     worktree: worktree ?? null,
@@ -115,6 +119,8 @@ export interface KeyedSpecInput {
   codexExecutionProfile?: string
   codexWebSearch?: string
   codexNetworkAccess?: boolean
+  codexMcpServers?: readonly string[]
+  codexPlugins?: readonly string[]
   codexPermissions?: string
   museExecutionProfile?: string
 }

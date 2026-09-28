@@ -1,9 +1,9 @@
 import { after, test } from "node:test"
 import assert from "node:assert/strict"
 import { EventEmitter } from "node:events"
-import { mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { existsSync } from "node:fs"
 
 import {
@@ -15,7 +15,9 @@ import {
   buildCodexAppServerArgs,
   renderTomlDynamicKeySegment,
   selectCodexFeatureOverrides,
-  selectCodexMcpServersToDisable,
+  selectCodexLeanMcpServerNames,
+  parseCodexPluginInventory,
+  parseCodexPluginMarketplaceNames,
   selectCodexProfileMcpServersToDisable,
   selectMissingAllowedMcpServerNames,
 } from "../src/worker/codex.js"
@@ -159,64 +161,80 @@ test("buildCodexAppServerArgs prefers an explicit per-worker service tier", () =
   assert.deepEqual(buildCodexAppServerArgs({ serviceTier: "fast" }), ["-c", "service_tier=fast", "app-server"])
 })
 
-test("buildCodexAppServerArgs preserves the legacy dotted local MCP overrides exactly", () => {
-  assert.deepEqual(buildCodexAppServerArgs({ disabledLocalMcpServerNames: ["onepassword", "paos-recall-mcp"] }), [
-    "-c",
-    "mcp_servers.onepassword.enabled=false",
-    "-c",
-    "mcp_servers.paos-recall-mcp.enabled=false",
-    "app-server",
+test("lean launch disables every inventoried server in one transport-preserving table", () => {
+  assert.deepEqual(buildCodexAppServerArgs({ leanMcpServerNamesToDisable: ["onepassword", "paos-recall-mcp", "dotted.server"] }), [
+    "-c", 'mcp_servers={onepassword={enabled=false},paos-recall-mcp={enabled=false},"dotted.server"={enabled=false}}', "app-server",
   ])
 })
 
 test("buildCodexAppServerArgs can proxy through an existing app-server socket", () => {
   assert.deepEqual(buildCodexAppServerArgs({ appServerSocket: "/tmp/codex.sock" }), ["app-server", "proxy", "--sock", "/tmp/codex.sock"])
+  // A proxy relays bytes, so a launch service tier would never reach the daemon.
+  assert.deepEqual(buildCodexAppServerArgs({ appServerSocket: "/tmp/codex.sock", serviceTier: "flex" }), ["app-server", "proxy", "--sock", "/tmp/codex.sock"])
 })
 
-test("buildCodexAppServerArgs combines resolved local-MCP disablement with app-server proxy", () => {
-  assert.deepEqual(buildCodexAppServerArgs({ disabledLocalMcpServerNames: ["onepassword", "node_repl"], appServerSocket: "/tmp/codex.sock" }), [
-    "-c",
-    "mcp_servers.onepassword.enabled=false",
-    "-c",
-    "mcp_servers.node_repl.enabled=false",
-    "app-server",
-    "proxy",
-    "--sock",
-    "/tmp/codex.sock",
-  ])
-})
-
-test("selectCodexMcpServersToDisable returns configured enabled stdio targets in policy order", () => {
+test("lean inventory includes stdio, HTTP, legacy SSE, and already-disabled servers", () => {
   const inventory = JSON.stringify([
     mcpInventoryEntry("paos-recall-mcp"),
     mcpInventoryEntry("openaiDeveloperDocs", { type: "streamable_http" }),
     mcpInventoryEntry("node_repl"),
     mcpInventoryEntry("onepassword"),
+    // The lean leaf keeps the host transport, so a transport no profile could replace is still disabled.
+    mcpInventoryEntry("legacy-sse", { type: "sse" }),
   ])
-  assert.deepEqual(selectCodexMcpServersToDisable(inventory), ["onepassword", "node_repl", "paos-recall-mcp"])
+  assert.deepEqual(selectCodexLeanMcpServerNames(inventory), ["paos-recall-mcp", "openaiDeveloperDocs", "node_repl", "onepassword", "legacy-sse"])
+  assert.deepEqual(selectCodexLeanMcpServerNames(JSON.stringify([mcpInventoryEntry("off", { enabled: false })])), ["off"])
 })
 
-test("selectCodexMcpServersToDisable ignores absent, disabled, and non-stdio targets", () => {
-  const inventory = JSON.stringify([
-    mcpInventoryEntry("onepassword"),
-    mcpInventoryEntry("node_repl", { enabled: false }),
-    mcpInventoryEntry("paos-recall-mcp", { type: "streamable_http" }),
-  ])
-  assert.deepEqual(selectCodexMcpServersToDisable(inventory), ["onepassword"])
-  assert.deepEqual(selectCodexMcpServersToDisable("[]"), [])
-})
-
-test("selectCodexMcpServersToDisable rejects inventory schema drift", () => {
-  assert.throws(() => selectCodexMcpServersToDisable("{"), /invalid JSON/)
-  assert.throws(() => selectCodexMcpServersToDisable("{}"), /non-array inventory/)
+test("lean MCP selection rejects inventory schema drift", () => {
+  assert.throws(() => selectCodexLeanMcpServerNames("{"), /invalid JSON/)
+  assert.throws(() => selectCodexLeanMcpServerNames("{}"), /non-array inventory/)
   assert.throws(
-    () => selectCodexMcpServersToDisable(JSON.stringify([{ name: "onepassword", enabled: true }])),
+    () => selectCodexLeanMcpServerNames(JSON.stringify([{ name: "onepassword", enabled: true }])),
     /no transport type/,
   )
   assert.throws(
-    () => selectCodexMcpServersToDisable(JSON.stringify([mcpInventoryEntry("onepassword"), mcpInventoryEntry("onepassword")])),
+    () => selectCodexLeanMcpServerNames(JSON.stringify([mcpInventoryEntry("onepassword"), mcpInventoryEntry("onepassword")])),
     /duplicate name/,
   )
+})
+
+test("plugin inventory accepts only installed plugin ids", () => {
+  assert.deepEqual(parseCodexPluginInventory([JSON.stringify({ installed: [
+    { pluginId: "computer-use@openai-bundled", source: { source: "local", path: "/plugins/computer-use" } },
+    { pluginId: "github@openai-curated-remote", source: { source: "remote", id: "plugin_connector_1p_x" } },
+  ] })]), [
+    { id: "computer-use@openai-bundled", root: "/plugins/computer-use", remote: false },
+    { id: "github@openai-curated-remote", remote: true },
+  ])
+  assert.throws(() => parseCodexPluginInventory(["{}"]), /no installed plugin inventory/)
+  assert.throws(() => parseCodexPluginInventory(["{"]), /invalid JSON/)
+  assert.throws(() => parseCodexPluginInventory([JSON.stringify({ installed: [{ enabled: true }] })]), /entry 0 has no valid pluginId/)
+})
+
+test("plugin inventory unions the default listing with every marketplace listing", () => {
+  const listing = (...ids: string[]) => JSON.stringify({ installed: ids.map((pluginId) => ({ pluginId, enabled: true })), available: [] })
+  // The default listing omits openai-curated; per-marketplace listings repeat plugins it already has.
+  assert.deepEqual(parseCodexPluginInventory([
+    listing("computer-use@openai-bundled", "github@openai-curated-remote"),
+    listing("computer-use@openai-bundled"),
+    listing("build-ios-apps@openai-curated", "linear@openai-curated"),
+    listing(),
+  ]).map((plugin) => plugin.id), ["computer-use@openai-bundled", "github@openai-curated-remote", "build-ios-apps@openai-curated", "linear@openai-curated"])
+  assert.throws(
+    () => parseCodexPluginInventory([listing("build-ios-apps@openai-curated", "build-ios-apps@openai-curated")]),
+    /duplicate id "build-ios-apps@openai-curated"/,
+  )
+  assert.throws(() => parseCodexPluginInventory([listing(), "{}"]), /no installed plugin inventory/)
+})
+
+test("marketplace inventory yields every configured marketplace name", () => {
+  assert.deepEqual(parseCodexPluginMarketplaceNames(JSON.stringify({ marketplaces: [
+    { name: "openai-bundled", root: "/b" },
+    { name: "openai-curated", root: "/c" },
+  ] })), ["openai-bundled", "openai-curated"])
+  assert.throws(() => parseCodexPluginMarketplaceNames("[]"), /no marketplace inventory/)
+  assert.throws(() => parseCodexPluginMarketplaceNames(JSON.stringify({ marketplaces: [{ root: "/x" }] })), /entry 0 has no valid name/)
 })
 
 test("profile MCP selection carries transports for inventory minus the allowlist", () => {
@@ -426,6 +444,13 @@ test("JsonRpcStdioClient: dispatches notifications and server requests", () => {
 // CodexWorker — happy path
 // ===========================================================================
 
+// Inventory seams for workers launched without appServerArgs, so a test never spawns (or reads the
+// config of) whatever codex is installed on the host.
+const HERMETIC_INVENTORY = {
+  readMcpInventory: async () => "[]",
+  readFeatureInventory: async () => "plugins stable true\nplugin_sharing stable true\nremote_plugin stable true\napps stable true\nenable_mcp_apps stable true\ncomputer_use stable true\nbrowser_use stable true\nbrowser_use_external stable true\nin_app_browser stable true",
+}
+
 // Helper that attaches the scripted server BEFORE the worker spawns, by
 // intercepting spawnChild. Avoids the attach-after-spawn race.
 function makeServedWorker(
@@ -433,9 +458,10 @@ function makeServedWorker(
   opts: {
     bin?: string
     appServerArgs?: string[]
-    disableLocalMcps?: boolean
+    appServerSocket?: string
     serviceTier?: string
     readMcpInventory?: (bin: string) => Promise<string>
+    readPluginInventory?: (bin: string) => Promise<string[]>
     executionProfile?: CodexExecutionProfileName
     readFeatureInventory?: (bin: string) => Promise<string>
     logProfileWarning?: (message: string) => void
@@ -454,11 +480,12 @@ function makeServedWorker(
   const worker = new CodexWorker({
     bin: opts.bin,
     appServerArgs: opts.appServerArgs,
-    disableLocalMcps: opts.disableLocalMcps,
+    appServerSocket: opts.appServerSocket,
     serviceTier: opts.serviceTier,
-    readMcpInventory: opts.readMcpInventory,
+    readMcpInventory: opts.readMcpInventory ?? HERMETIC_INVENTORY.readMcpInventory,
+    readPluginInventory: opts.readPluginInventory ?? (async () => [JSON.stringify({ installed: [] })]),
     executionProfile: opts.executionProfile,
-    readFeatureInventory: opts.readFeatureInventory,
+    readFeatureInventory: opts.readFeatureInventory ?? HERMETIC_INVENTORY.readFeatureInventory,
     logProfileWarning: opts.logProfileWarning,
     requestTimeoutMs: opts.requestTimeoutMs,
     turnStallTimeoutMs: opts.turnStallTimeoutMs,
@@ -511,7 +538,7 @@ function tick(): Promise<void> {
   return new Promise((r) => setImmediate(r))
 }
 
-test("lean worker discovers configured stdio targets once before app-server launch", async () => {
+test("lean worker inventories every MCP transport and disables process features before launch", async () => {
   let inventoryReads = 0
   const { worker } = makeServedWorker(
     (_req, reply) => {
@@ -520,7 +547,6 @@ test("lean worker discovers configured stdio targets once before app-server laun
     },
     {
       bin: "/custom/codex",
-      disableLocalMcps: true,
       serviceTier: "default",
       readMcpInventory: async (bin) => {
         inventoryReads += 1
@@ -530,6 +556,7 @@ test("lean worker discovers configured stdio targets once before app-server laun
           mcpInventoryEntry("onepassword"),
           mcpInventoryEntry("node_repl"),
           mcpInventoryEntry("openaiDeveloperDocs", { type: "streamable_http" }),
+          mcpInventoryEntry("legacy-sse", { type: "sse" }),
         ])
       },
     },
@@ -539,25 +566,17 @@ test("lean worker discovers configured stdio targets once before app-server laun
   await worker.runAgent(spec(), ctx())
   assert.equal(inventoryReads, 1)
   const launchedArgs = (worker as any).appServerArgs as string[]
-  assert.deepEqual(launchedArgs, [
-    "-c",
+  assert.deepEqual(configValues(launchedArgs), [
     "service_tier=default",
-    "-c",
-    "mcp_servers.onepassword.enabled=false",
-    "-c",
-    "mcp_servers.node_repl.enabled=false",
-    "-c",
-    "mcp_servers.paos-recall-mcp.enabled=false",
-    "app-server",
+    "mcp_servers={paos-recall-mcp={enabled=false},onepassword={enabled=false},node_repl={enabled=false},openaiDeveloperDocs={enabled=false},legacy-sse={enabled=false}}",
+    ...["plugins", "plugin_sharing", "remote_plugin", "apps", "enable_mcp_apps", "computer_use", "browser_use", "browser_use_external", "in_app_browser"].map((name) => `features.${name}=false`),
   ])
-  assert.ok(!launchedArgs.some((arg) => /features\.(?:plugins|multi_agent)/.test(arg)))
   await worker.shutdown()
 })
 
-test("lean worker inventory failure is pre-launch and names the existing opt-out", async () => {
+test("lean worker inventory failure is pre-launch with no global opt-out", async () => {
   let spawned = false
   const worker = new CodexWorker({
-    disableLocalMcps: true,
     readMcpInventory: async () => {
       throw new Error("inventory timed out")
     },
@@ -572,8 +591,7 @@ test("lean worker inventory failure is pre-launch and names the existing opt-out
       error instanceof AgentError &&
       error.code === "mcp_inventory_failed" &&
       error.retryable === false &&
-      /--codex-enable-local-mcps/.test(error.message) &&
-      /OMEGACODE_CODEX_DISABLE_LOCAL_MCPS=0/.test(error.message),
+      /cannot inspect Codex MCP configuration/.test(error.message),
   )
   assert.equal(spawned, false)
 })
@@ -631,8 +649,6 @@ test("execution profiles build their exact known feature and MCP override sets",
       },
       {
         executionProfile,
-        // A profile owns MCP policy; the legacy flag must not narrow the research roster behavior.
-        disableLocalMcps: executionProfile === "workflow-research-v1",
         readMcpInventory: async () => inventory,
         readFeatureInventory: async () => {
           featureReads += 1
@@ -914,10 +930,9 @@ test("abort settles promptly while shared initialization continues", async () =>
   await worker.shutdown()
 })
 
-test("local-MCP opt-out and explicit app-server args bypass inventory", async () => {
+test("explicit app-server args bypass inventory", async () => {
   for (const options of [
-    { disableLocalMcps: false, serviceTier: "default", expected: ["-c", "service_tier=default", "app-server"] },
-    { disableLocalMcps: true, appServerArgs: ["app-server", "custom"], expected: ["app-server", "custom"] },
+    { appServerArgs: ["app-server", "custom"], expected: ["app-server", "custom"] },
   ]) {
     const { worker } = makeServedWorker(
       (_req, reply) => {
@@ -930,7 +945,7 @@ test("local-MCP opt-out and explicit app-server args bypass inventory", async ()
           throw new Error("inventory must be bypassed")
         },
         readFeatureInventory: async () => {
-          throw new Error("feature inventory must be bypassed without a profile")
+          throw new Error("feature inventory must be bypassed with explicit args")
         },
       },
     )
@@ -1005,6 +1020,306 @@ test("CodexWorker maps web search to thread config and network access to the tur
   assert.equal(turnStarts[0].sandboxPolicy.networkAccess, true)
   assert.deepEqual(turnStarts[0].sandboxPolicy, { type: "readOnly", networkAccess: true })
   await worker.shutdown()
+})
+
+/** A `codex plugin list` entry for a local plugin whose root holds `manifest` and any extra files. */
+async function localPlugin(pluginId: string, manifest: unknown, files: Record<string, string> = {}) {
+  const root = await mkdtemp(join(tmpdir(), "codex-plugin-"))
+  await mkdir(join(root, ".codex-plugin"))
+  await writeFile(join(root, ".codex-plugin", "plugin.json"), JSON.stringify(manifest))
+  for (const [name, contents] of Object.entries(files)) {
+    await mkdir(dirname(join(root, name)), { recursive: true })
+    await writeFile(join(root, name), contents)
+  }
+  return { pluginId, source: { source: "local", path: root } }
+}
+
+function toolWorker(threadStarts: any[], over: Parameters<typeof makeServedWorker>[1] = {}) {
+  return makeServedWorker(
+    (_req, reply) => {
+      reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
+      reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
+    },
+    {
+      readMcpInventory: async () => JSON.stringify([
+        mcpInventoryEntry("btca"),
+        mcpInventoryEntry("paos-recall-mcp"),
+        mcpInventoryEntry("node_repl"),
+        mcpInventoryEntry("dotted.server"),
+        mcpInventoryEntry("executor", { type: "streamable_http" }),
+      ]),
+      readPluginInventory: async () => [
+        JSON.stringify({ installed: [
+          await localPlugin("computer-use@openai-bundled", { name: "computer-use", skills: "./skills/" }),
+          await localPlugin("computer-history@openai-bundled", { name: "computer-history", skills: "./skills/", mcpServers: "./.mcp.json" }),
+          await localPlugin("messages@openai-bundled", { name: "messages", mcpServers: "./.mcp.json" }),
+        ] }),
+        JSON.stringify({ installed: [
+          await localPlugin("build-ios-apps@openai-curated", { name: "build-ios-apps", skills: "./skills/", mcpServers: "./.mcp.json" }),
+        ] }),
+      ],
+      onServerReq: (_child, req) => {
+        if (req.method === "thread/start") threadStarts.push(req.params)
+      },
+      ...over,
+    },
+  )
+}
+
+test("per-agent Codex tool opt-ins become leaf thread/start overrides for that thread only", async () => {
+  const threadStarts: any[] = []
+  const { worker } = toolWorker(threadStarts)
+  await worker.runAgent(spec({ codexMcpServers: ["paos-recall-mcp", "executor"] }), ctx())
+  await worker.runAgent(spec({ codexPlugins: ["computer-history@openai-bundled"] }), ctx())
+  await worker.runAgent(spec({ codexPlugins: ["computer-use@openai-bundled"] }), ctx())
+  await worker.runAgent(spec({ codexPlugins: ["build-ios-apps@openai-curated"] }), ctx())
+  await worker.runAgent(spec(), ctx())
+  assert.deepEqual(threadStarts.map((start) => start.config), [
+    {
+      "features.context_management": false,
+      "mcp_servers.paos-recall-mcp.enabled": true,
+      "mcp_servers.executor.enabled": true,
+    },
+    {
+      "features.context_management": false,
+      "features.plugins": true,
+      "plugins.computer-use@openai-bundled.enabled": false,
+      "plugins.computer-history@openai-bundled.enabled": true,
+      "plugins.messages@openai-bundled.enabled": false,
+      "plugins.build-ios-apps@openai-curated.enabled": false,
+    },
+    {
+      "features.context_management": false,
+      "features.plugins": true,
+      "plugins.computer-use@openai-bundled.enabled": true,
+      "plugins.computer-history@openai-bundled.enabled": false,
+      "plugins.messages@openai-bundled.enabled": false,
+      "plugins.build-ios-apps@openai-curated.enabled": false,
+      "features.computer_use": true,
+      "mcp_servers.node_repl.enabled": true,
+    },
+    {
+      "features.context_management": false,
+      "features.plugins": true,
+      "plugins.computer-use@openai-bundled.enabled": false,
+      "plugins.computer-history@openai-bundled.enabled": false,
+      "plugins.messages@openai-bundled.enabled": false,
+      "plugins.build-ios-apps@openai-curated.enabled": true,
+    },
+    { "features.context_management": false },
+  ])
+  // A parent table would replace the launch-time mcp_servers table instead of merging into it.
+  for (const start of threadStarts) assert.ok(!("mcp_servers" in start.config) && !("plugins" in start.config))
+  await worker.shutdown()
+})
+
+test("unknown or unaddressable Codex tool names fail before thread/start", async () => {
+  const threadStarts: any[] = []
+  const { worker } = toolWorker(threadStarts)
+  for (const [over, code, message] of [
+    [{ codexMcpServers: ["btca", "missing"] }, "unknown_mcp_server", /codexMcpServers names MCP server "missing", which is not in this host's Codex MCP inventory/],
+    [{ codexPlugins: ["build-ios-apps@openai-curated-remote"] }, "unknown_plugin", /codexPlugins names "build-ios-apps@openai-curated-remote", which is not an installed Codex plugin/],
+    [{ codexPlugins: ["build-web-apps@openai-curated"] }, "unknown_plugin", /codexPlugins names "build-web-apps@openai-curated"/],
+    [{ codexMcpServers: ["dotted.server"] }, "unsupported_option", /"dotted.server" contains "\." and cannot be addressed by a per-thread override/],
+  ] as const) {
+    await assert.rejects(
+      worker.runAgent(spec(over), ctx()),
+      (error: unknown) => error instanceof AgentError && error.code === code && error.retryable === false && message.test(error.message),
+    )
+  }
+  assert.equal(threadStarts.length, 0)
+  await worker.shutdown()
+})
+
+test("plugins that need the app or remote-plugin gate, or have no readable manifest, fail before thread/start", async () => {
+  const threadStarts: any[] = []
+  const apps = JSON.stringify({ apps: { vercel: { id: "connector_vercel" } } })
+  const noManifest = await localPlugin("broken@local", {})
+  const { worker } = toolWorker(threadStarts, {
+    readPluginInventory: async () => [JSON.stringify({ installed: [
+      await localPlugin("vercel@openai-curated", { name: "vercel", skills: "./skills/", apps: "./.app.json" }, { ".app.json": apps }),
+      // Codex reads a root .app.json when the manifest names no apps file.
+      await localPlugin("convex@openai-curated", { name: "convex" }, { ".app.json": apps }),
+      await localPlugin("linear@openai-curated", { name: "linear", mcpServers: "./.mcp.json", apps: "./.app.json" }),
+      { pluginId: "github@openai-curated-remote", source: { source: "remote", id: "plugin_connector_1p_github" } },
+      { ...noManifest, source: { source: "local", path: join(noManifest.source.path, "missing") } },
+      { pluginId: "pathless@local", source: { source: "local" } },
+    ] })],
+  })
+  for (const [id, code, message] of [
+    ["vercel@openai-curated", "unsupported_plugin", /codexPlugins names "vercel@openai-curated", whose manifest declares apps; a lean thread cannot enable features\.apps for one plugin/],
+    ["convex@openai-curated", "unsupported_plugin", /"convex@openai-curated", whose manifest declares apps/],
+    ["linear@openai-curated", "unsupported_plugin", /"linear@openai-curated", whose manifest declares apps/],
+    ["github@openai-curated-remote", "unsupported_plugin", /"github@openai-curated-remote", a remote plugin; a lean thread cannot enable features\.remote_plugin/],
+    ["broken@local", "plugin_inventory_failed", /cannot read the manifest or hooks of Codex plugin "broken@local": .*ENOENT/],
+    ["pathless@local", "plugin_inventory_failed", /gives no local source path for "pathless@local"/],
+  ] as const) {
+    await assert.rejects(
+      worker.runAgent(spec({ codexPlugins: [id] }), ctx()),
+      (error: unknown) => error instanceof AgentError && error.code === code && error.retryable === false && message.test(error.message),
+    )
+  }
+  assert.equal(threadStarts.length, 0)
+  await worker.shutdown()
+})
+
+/** A hooks file whose events call each server through an `mcp_tool` handler, beside a command hook. */
+function mcpToolHooks(...servers: string[]) {
+  return {
+    hooks: {
+      Stop: servers.map((server) => ({ hooks: [{ type: "mcp_tool", server, tool: "turn_ended" }] })),
+      SessionStart: [{ hooks: [{ type: "command", command: "echo ready" }] }],
+    },
+  }
+}
+
+test("MCP servers a selected plugin's hooks call are enabled for that thread only", async () => {
+  const threadStarts: any[] = []
+  const { worker } = toolWorker(threadStarts, {
+    readPluginInventory: async () => [JSON.stringify({ installed: [
+      await localPlugin("browser@openai-bundled", { name: "browser", hooks: mcpToolHooks("node_repl") }),
+      await localPlugin("filed@local", { name: "filed", hooks: "./hooks.json" }, { "hooks.json": JSON.stringify(mcpToolHooks("btca")) }),
+      await localPlugin("several@local", { name: "several", hooks: ["./a.json", mcpToolHooks("paos-recall-mcp")] }, { "a.json": JSON.stringify(mcpToolHooks("btca", "node_repl")) }),
+      // Codex reads hooks/hooks.json when the manifest names no hooks.
+      await localPlugin("defaulted@local", { name: "defaulted" }, { "hooks/hooks.json": JSON.stringify(mcpToolHooks("executor")) }),
+      await localPlugin("commands@local", { name: "commands", hooks: { hooks: { Stop: [{ hooks: [{ type: "command", command: "true" }] }] } } }),
+    ] })],
+  })
+  const servers = async (plugins: string[]) => {
+    await worker.runAgent(spec({ codexPlugins: plugins }), ctx())
+    const config = threadStarts.at(-1).config
+    return Object.keys(config).filter((key) => key.startsWith("mcp_servers.") && config[key] === true)
+  }
+  assert.deepEqual(await servers(["browser@openai-bundled"]), ["mcp_servers.node_repl.enabled"])
+  assert.deepEqual(await servers(["filed@local"]), ["mcp_servers.btca.enabled"])
+  assert.deepEqual(await servers(["several@local"]), ["mcp_servers.btca.enabled", "mcp_servers.node_repl.enabled", "mcp_servers.paos-recall-mcp.enabled"])
+  assert.deepEqual(await servers(["defaulted@local"]), ["mcp_servers.executor.enabled"])
+  assert.deepEqual(await servers(["commands@local"]), [])
+  await worker.runAgent(spec(), ctx())
+  assert.deepEqual(threadStarts.at(-1).config, { "features.context_management": false })
+  await worker.shutdown()
+})
+
+test("a plugin hook server missing from the host, or an unreadable hooks file, fails before thread/start", async () => {
+  const threadStarts: any[] = []
+  const { worker } = toolWorker(threadStarts, {
+    readPluginInventory: async () => [JSON.stringify({ installed: [
+      await localPlugin("absent-server@local", { name: "absent-server", hooks: mcpToolHooks("node_repl", "ghost") }),
+      await localPlugin("missing-file@local", { name: "missing-file", hooks: "./hooks.json" }),
+      await localPlugin("bad-file@local", { name: "bad-file" }, { "hooks/hooks.json": "{" }),
+    ] })],
+  })
+  for (const [id, code, message] of [
+    ["absent-server@local", "unknown_mcp_server", /codexPlugins entry "absent-server@local" requires MCP server "ghost", which is not in this host's Codex MCP inventory/],
+    ["missing-file@local", "plugin_inventory_failed", /cannot read the manifest or hooks of Codex plugin "missing-file@local": .*ENOENT.*hooks\.json/],
+    ["bad-file@local", "plugin_inventory_failed", /"bad-file@local": .*hooks\.json is not valid JSON/],
+  ] as const) {
+    await assert.rejects(
+      worker.runAgent(spec({ codexPlugins: [id] }), ctx()),
+      (error: unknown) => error instanceof AgentError && error.code === code && error.retryable === false && message.test(error.message),
+    )
+  }
+  assert.equal(threadStarts.length, 0)
+  await worker.shutdown()
+})
+
+test("a shared app-server socket carries the service tier on every thread/start; a fresh app-server gets it at launch", async () => {
+  const socketStarts: any[] = []
+  const socket = toolWorker(socketStarts, {
+    appServerSocket: "/tmp/shared-codex.sock",
+    serviceTier: "flex",
+    readMcpInventory: async () => JSON.stringify([mcpInventoryEntry("node_repl")]),
+  })
+  await socket.worker.runAgent(spec(), ctx())
+  await socket.worker.runAgent(spec({ codexPlugins: ["computer-use@openai-bundled"] }), ctx())
+  assert.deepEqual((socket.worker as any).appServerArgs, ["app-server", "proxy", "--sock", "/tmp/shared-codex.sock"])
+  assert.deepEqual(socketStarts.map((start) => start.serviceTier), ["flex", "flex"])
+  await socket.worker.shutdown()
+
+  const freshStarts: any[] = []
+  const fresh = toolWorker(freshStarts, { serviceTier: "flex" })
+  await fresh.worker.runAgent(spec(), ctx())
+  assert.deepEqual(configValues((fresh.worker as any).appServerArgs)[0], "service_tier=flex")
+  assert.ok(!("serviceTier" in freshStarts[0]))
+  await fresh.worker.shutdown()
+})
+
+test("a shared app-server socket gets the lean policy on every thread/start, under the opt-ins", async () => {
+  const threadStarts: any[] = []
+  const { worker } = toolWorker(threadStarts, {
+    appServerSocket: "/tmp/shared-codex.sock",
+    readMcpInventory: async () => JSON.stringify([mcpInventoryEntry("btca"), mcpInventoryEntry("node_repl"), mcpInventoryEntry("executor", { type: "streamable_http" })]),
+  })
+  await worker.runAgent(spec(), ctx())
+  await worker.runAgent(spec({ codexMcpServers: ["btca"], codexPlugins: ["computer-use@openai-bundled"] }), ctx())
+  // The proxy only relays bytes, so launch `-c` values would never reach the daemon.
+  assert.deepEqual((worker as any).appServerArgs, ["app-server", "proxy", "--sock", "/tmp/shared-codex.sock"])
+  const lean = {
+    ...Object.fromEntries(["plugins", "plugin_sharing", "remote_plugin", "apps", "enable_mcp_apps", "computer_use", "browser_use", "browser_use_external", "in_app_browser"].map((name) => [`features.${name}`, false])),
+    "mcp_servers.btca.enabled": false,
+    "mcp_servers.node_repl.enabled": false,
+    "mcp_servers.executor.enabled": false,
+  }
+  assert.deepEqual(threadStarts[0].config, { "features.context_management": false, ...lean })
+  assert.deepEqual(threadStarts[1].config, {
+    "features.context_management": false,
+    ...lean,
+    "features.plugins": true,
+    "features.computer_use": true,
+    "mcp_servers.btca.enabled": true,
+    "mcp_servers.node_repl.enabled": true,
+    "plugins.computer-use@openai-bundled.enabled": true,
+    "plugins.computer-history@openai-bundled.enabled": false,
+    "plugins.messages@openai-bundled.enabled": false,
+    "plugins.build-ios-apps@openai-curated.enabled": false,
+  })
+  await worker.shutdown()
+})
+
+test("a shared app-server socket rejects a host MCP server no thread override can disable", async () => {
+  let spawned = false
+  const worker = new CodexWorker({
+    appServerSocket: "/tmp/shared-codex.sock",
+    readMcpInventory: async () => JSON.stringify([mcpInventoryEntry("dotted.server")]),
+    readFeatureInventory: HERMETIC_INVENTORY.readFeatureInventory,
+    spawnChild: () => {
+      spawned = true
+      return new FakeChild() as any
+    },
+  })
+  await assert.rejects(
+    worker.runAgent(spec(), ctx()),
+    (error: unknown) => error instanceof AgentError && error.code === "unsupported_option" && /"dotted.server" contains "\."/.test(error.message),
+  )
+  assert.equal(spawned, false)
+})
+
+test("a plugin inventory failure is non-retryable and happens before thread/start", async () => {
+  const threadStarts: any[] = []
+  const { worker } = toolWorker(threadStarts, {
+    readPluginInventory: async () => [JSON.stringify({ installed: [] }), "{"],
+  })
+  await assert.rejects(
+    worker.runAgent(spec({ codexPlugins: ["build-ios-apps@openai-curated"] }), ctx()),
+    (error: unknown) => error instanceof AgentError && error.code === "plugin_inventory_failed" && error.retryable === false && /invalid JSON/.test(error.message),
+  )
+  assert.equal(threadStarts.length, 0)
+  await worker.shutdown()
+})
+
+test("execution profiles reject plugins and non-allowlisted MCP opt-ins before launch", async () => {
+  let spawned = false
+  const worker = new CodexWorker({
+    executionProfile: "workflow-research-v1",
+    readMcpInventory: async () => { throw new Error("inventory must not be read") },
+    spawnChild: () => {
+      spawned = true
+      throw new Error("must not spawn")
+    },
+  })
+  await assert.rejects(worker.runAgent(spec({ codexPlugins: ["computer-use@openai-bundled"] }), ctx()), /codexPlugins cannot be used with Codex execution profile workflow-research-v1/)
+  await assert.rejects(worker.runAgent(spec({ codexMcpServers: ["executor"] }), ctx()), /does not allow codexMcpServers "executor"/)
+  assert.equal(spawned, false)
 })
 
 test("CodexWorker proves the exact listed child role and deletes the temporary durable subtree", async () => {
@@ -1088,6 +1403,7 @@ test("concurrent root turns cannot cross-correlate child-role evidence", async (
   let nextThread = 0
   const pendingRoots: string[] = []
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       child = new FakeChild()
       child.onWrite = (req: any) => {
@@ -1181,6 +1497,7 @@ test("CodexWorker gates thread/start without reducing concurrent model turns", a
   let activeStarts = 0
   let maxActiveStarts = 0
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     threadStartConcurrency: 2,
     spawnChild: () => {
       child = new FakeChild()
@@ -1214,6 +1531,7 @@ test("CodexWorker gates thread/start without reducing concurrent model turns", a
 
 test("CodexWorker does not retry an ambiguously timed-out thread/start", async () => {
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     requestTimeoutMs: 10,
     spawnChild: () => {
       const child = new FakeChild()
@@ -1233,6 +1551,7 @@ test("CodexWorker does not retry an ambiguously timed-out thread/start", async (
 
 test("CodexWorker classifies app-server ingress overload as retryable", async () => {
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       const child = new FakeChild()
       child.onWrite = (req: any) => {
@@ -1417,6 +1736,7 @@ test("H2: error notification without threadId settles all live turns", async () 
 test("H1: child crash mid-turn rejects runAgent (no hang)", async () => {
   let theChild!: FakeChild
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       theChild = new FakeChild()
       theChild.onWrite = (req: any) => {
@@ -1435,12 +1755,36 @@ test("H1: child crash mid-turn rejects runAgent (no hang)", async () => {
   await worker.shutdown()
 })
 
+test("an app-server that exits with \"not found\" on stderr stays a retryable process_exited", async () => {
+  let theChild!: FakeChild
+  const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
+    spawnChild: () => {
+      theChild = new FakeChild()
+      theChild.onWrite = (req: any) => {
+        if (req.method === "initialize") return theChild.pushLine({ jsonrpc: "2.0", id: req.id, result: INIT_OK })
+        if (req.method === "thread/start") {
+          theChild.stderr.emit("data", "Error: model not found\n")
+          queueMicrotask(() => theChild.emitExit(1, null))
+        }
+      }
+      return theChild as any
+    },
+  })
+  await assert.rejects(
+    worker.runAgent(spec(), ctx()),
+    (e) => e instanceof AgentError && e.code === "process_exited" && e.retryable === true && /model not found/.test(e.message),
+  )
+  await worker.shutdown()
+})
+
 test("M1: after a crash with a stale partial frame, the worker recovers on the next runAgent", async () => {
   // Old bug: stdoutBuf was a worker field surviving process death, so the
   // restarted handshake parsed a corrupted first frame and initialize never
   // resolved. Now framing state dies with its transport.
   let spawnCount = 0
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       const child = new FakeChild()
       const isFirst = spawnCount++ === 0
@@ -1489,6 +1833,7 @@ async function approvalDecision(sandbox: AgentSpec["sandbox"], method: string): 
   let child!: FakeChild
   const decisions: unknown[] = []
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       child = new FakeChild()
       child.onWrite = (req: any) => {
@@ -1536,6 +1881,7 @@ async function orphanApprovalReply(method: string): Promise<unknown> {
   let child!: FakeChild
   const replies: unknown[] = []
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       child = new FakeChild()
       child.onWrite = (req: any) => {
@@ -1646,6 +1992,7 @@ test("M3: copyFile path used when savedPath present, awaited before settle", asy
 test("M30: non-object initialize result fails the handshake (no silent hang)", async () => {
   let child!: FakeChild
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       child = new FakeChild()
       child.onWrite = (req: any) => {
@@ -1791,6 +2138,7 @@ test("M30: turn/completed with an unreadable threadId settles ALL live turns wit
 test("M30: initialize result WITHOUT a userAgent fails the handshake (not an app-server)", async () => {
   let child!: FakeChild
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       child = new FakeChild()
       child.onWrite = (req: any) => {
@@ -1812,6 +2160,7 @@ test("M30: a pre-v2 app-server (initialize ok, thread/start unknown) fails loudl
   // never a hang.
   let child!: FakeChild
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       child = new FakeChild()
       child.onWrite = (req: any) => {
@@ -1859,7 +2208,7 @@ test("turn/completed status=interrupted → AgentInterrupted", async () => {
 test("pre-aborted signal throws AgentInterrupted before spawning", async () => {
   const ac = new AbortController()
   ac.abort()
-  const worker = new CodexWorker({ spawnChild: () => new FakeChild() as any })
+  const worker = new CodexWorker({ ...HERMETIC_INVENTORY, spawnChild: () => new FakeChild() as any })
   await assert.rejects(worker.runAgent(spec(), ctx(ac.signal)), (e) => e instanceof AgentInterrupted)
   await worker.shutdown()
 })
@@ -1879,6 +2228,7 @@ test("abort mid-turn interrupts and settles", async () => {
 test("L2: async ENOENT spawn error → non-retryable binary_not_found", async () => {
   let child!: FakeChild
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       child = new FakeChild()
       // emit the ENOENT the way Node does for a missing binary (async 'error')
@@ -1895,6 +2245,7 @@ test("L2: async ENOENT spawn error → non-retryable binary_not_found", async ()
 
 test("L2: sync spawn throw → non-retryable binary_not_found", async () => {
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       throw new Error("spawn codex ENOENT")
     },
@@ -1906,10 +2257,52 @@ test("L2: sync spawn throw → non-retryable binary_not_found", async () => {
   await worker.shutdown()
 })
 
+test("L2: a missing codex binary fails the default MCP inventory read as non-retryable binary_not_found", async () => {
+  const worker = new CodexWorker({
+    bin: join(tmpdir(), "omegacode-missing-codex", "codex"),
+    spawnChild: () => { throw new Error("must not launch the app-server") },
+  })
+  await assert.rejects(
+    worker.runAgent(spec(), ctx()),
+    (e) => e instanceof AgentError && e.code === "binary_not_found" && e.retryable === false && /mcp list/.test(e.message),
+  )
+  await worker.shutdown()
+})
+
+test("L2: a non-executable codex binary fails the default feature inventory read as non-retryable binary_not_found", { skip: process.platform === "win32" }, async () => {
+  const bin = join(await mkdtemp(join(tmpdir(), "codex-noexec-")), "codex")
+  await writeFile(bin, "#!/bin/sh\n", { mode: 0o644 })
+  const worker = new CodexWorker({
+    bin,
+    readMcpInventory: HERMETIC_INVENTORY.readMcpInventory,
+    spawnChild: () => { throw new Error("must not launch the app-server") },
+  })
+  await assert.rejects(
+    worker.runAgent(spec(), ctx()),
+    (e) => e instanceof AgentError && e.code === "binary_not_found" && e.retryable === false && /features list/.test(e.message),
+  )
+  await worker.shutdown()
+})
+
+test("an inventory read where codex ran and failed stays mcp_inventory_failed even when stderr says not found", async () => {
+  const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
+    // execFile's shape for a child that exited nonzero: numeric exit code, stderr in the message.
+    readMcpInventory: async () => { throw Object.assign(new Error("Command failed: codex mcp list --json\nconfig profile not found"), { code: 1 }) },
+    spawnChild: () => { throw new Error("must not launch the app-server") },
+  })
+  await assert.rejects(
+    worker.runAgent(spec(), ctx()),
+    (e) => e instanceof AgentError && e.code === "mcp_inventory_failed" && e.retryable === false,
+  )
+  await worker.shutdown()
+})
+
 test("unknown server-initiated request gets an empty result (server not left blocking)", async () => {
   let child!: FakeChild
   const replies: any[] = []
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       child = new FakeChild()
       child.onWrite = (req: any) => {
@@ -1935,6 +2328,7 @@ test("unknown server-initiated request gets an empty result (server not left blo
 test("thread/start with no thread id → AgentError", async () => {
   let child!: FakeChild
   const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
     spawnChild: () => {
       child = new FakeChild()
       child.onWrite = (req: any) => {

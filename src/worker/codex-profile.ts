@@ -70,3 +70,17 @@ export function resolveCodexExecutionProfile(name: string): CodexExecutionProfil
   const profile = PROFILE_DEFINITIONS[name as CodexExecutionProfileName]
   return profile
 }
+
+/** Why a profile rejects an agent's per-thread tool selection, or undefined when it is allowed.
+ *  A profile's app-server is a hard boundary: plugins stay off and only allowlisted MCPs exist. */
+export function codexProfileToolSelectionError(
+  name: string,
+  selection: { codexMcpServers?: readonly string[]; codexPlugins?: readonly string[] },
+): string | undefined {
+  const profile = resolveCodexExecutionProfile(name)
+  if (selection.codexPlugins?.length) return `codexPlugins cannot be used with Codex execution profile ${profile.name}`
+  const allowed = profile.mcp === "none" ? [] : profile.mcp.allowedServerNames
+  const disallowed = (selection.codexMcpServers ?? []).filter((server) => !allowed.includes(server))
+  if (disallowed.length === 0) return undefined
+  return `Codex execution profile ${profile.name} does not allow codexMcpServers ${disallowed.map((server) => `"${server}"`).join(", ")}${allowed.length ? `; allowed: ${allowed.join(", ")}` : ""}`
+}

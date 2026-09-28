@@ -50,8 +50,6 @@ export interface RunOverrides {
   codexAppServerSocket?: string
   /** Force Codex workers to spawn their own stdio app-server, even if env selects a shared socket. */
   codexNoAppServerProxy?: boolean
-  /** Disable user-configured local MCPs in Codex worker app-servers. */
-  codexDisableLocalMcps?: boolean
   /** Bound concurrent Codex thread initialization without reducing model-turn concurrency. */
   codexThreadStartConcurrency?: number
 }
@@ -159,7 +157,6 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     museBin: opts.overrides?.museBin ?? process.env.MUSE_BIN,
     grokBin: opts.overrides?.grokBin ?? process.env.GROK_BIN,
     codexAppServerSocket: resolveCodexAppServerSocket(opts.overrides),
-    codexDisableLocalMcps: opts.overrides?.codexDisableLocalMcps ?? envFlag("OMEGACODE_CODEX_DISABLE_LOCAL_MCPS") ?? true,
     codexThreadStartConcurrency: opts.overrides?.codexThreadStartConcurrency,
     // Claude-specific factory defaults (L5). Only forwarded when the provider is claude-code; a
     // per-call opts.model still overrides via AgentSpec.model.

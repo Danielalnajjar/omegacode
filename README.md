@@ -103,6 +103,21 @@ Provider-native options stay deliberately provider-specific:
   `{ "schemaVersion": 1, "codexPermissions": true }` before preparing credentials or running.
   This static check reports OmegaCode bridge support; it does not probe the installed Codex or profile.
   These options affect resume identity and are rejected when paired with another provider.
+- Codex: `codexMcpServers: ["btca"]` enables named MCP servers from the host Codex config for one
+  thread; `codexPlugins: ["build-ios-apps@openai-curated"]` enables only the listed installed
+  plugins for one thread and switches every other installed plugin off there. Plugin ids come
+  from the host's inventory across every configured marketplace (`codex plugin marketplace list
+  --json`, then `codex plugin list --marketplace <name> --json`), and differ between hosts.
+  `computer-use@openai-bundled` also enables the `node_repl` server it runs through, and a plugin
+  whose manifest hooks call an MCP server (`browser@openai-bundled` calls `node_repl`) enables that
+  server. Unknown names, names containing `.` (Codex request overrides cannot address them), a hook
+  server missing from the host MCP inventory, remote plugins, and plugins whose manifest declares
+  apps fail before `thread/start`: Codex's remote-plugin gate
+  replaces the host's local curated plugins, and its app gate exposes every app connected to the
+  ChatGPT account rather than one plugin's. Without these options every MCP server and the process-spawning
+  plugin/app/browser features are off; web search and image generation keep their host settings.
+  Execution profiles keep their dedicated app-server boundary: MCP names must be
+  profile-allowlisted, and plugins are rejected.
 - Codex's `workflow-research-v1` execution profile exposes only `btca`, `executor_research`,
   `grok_search`, and `mintlify`. It explicitly disables the full `executor` server and fails before
   worker launch if any allowlisted server is absent from the host inventory.

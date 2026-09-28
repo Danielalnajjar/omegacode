@@ -68,6 +68,10 @@ declare global {
     codexWebSearch?: OmegacodeCodexWebSearch
     /** Codex sandbox network access for read-only/workspace-write turns. */
     codexNetworkAccess?: boolean
+    /** Codex MCP server names to enable for only this agent thread. */
+    codexMcpServers?: string[]
+    /** Installed Codex plugin ids to enable for only this agent thread. */
+    codexPlugins?: string[]
     /** Caller-owned Codex named filesystem/network permission profile. */
     codexPermissions?: string
   }

@@ -634,6 +634,7 @@ test("execution profiles build their exact known feature and MCP override sets",
   ])
   for (const executionProfile of ["workflow-bulk-v1", "workflow-plan-v1", "workflow-research-v1"] as const) {
     let featureReads = 0
+    const threadStarts: any[] = []
     const { worker } = makeServedWorker(
       (_req, reply) => {
         reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
@@ -648,12 +649,19 @@ test("execution profiles build their exact known feature and MCP override sets",
             .map((override) => `${override.slice("features.".length).split("=")[0]} stable true`)
             .join("\n")
         },
+        onServerReq: (_child, req) => {
+          if (req.method === "thread/start") threadStarts.push(req.params)
+        },
       },
     )
 
     await worker.runAgent(spec(), ctx())
     await worker.runAgent(spec(), ctx())
     assert.equal(featureReads, 1)
+    assert.deepEqual(
+      threadStarts.map((start) => start.config.mcp_optional_startup_grace_ms),
+      executionProfile === "workflow-research-v1" ? [0, 0] : [undefined, undefined],
+    )
     const expectedMcp = executionProfile === "workflow-research-v1"
       ? 'mcp_servers={context7={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},executor={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},node_repl={command="",enabled=false},btca={enabled=true},executor_research={enabled=true},grok_search={enabled=true},mintlify={enabled=true}}'
       : 'mcp_servers={btca={command="",enabled=false},context7={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},executor={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},executor_research={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},grok_search={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},mintlify={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},node_repl={command="",enabled=false}}'

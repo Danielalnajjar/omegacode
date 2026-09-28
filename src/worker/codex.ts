@@ -769,8 +769,11 @@ export class CodexWorker implements Worker {
         config[`mcp_servers.${threadOverrideSegment("MCP server", name)}.enabled`] = true
       }
     }
-    // Wait for opted-in tools before Codex snapshots the first turn's tool catalog.
-    if (plugins.length || mcpServers.length) config.mcp_optional_startup_grace_ms = 0
+    // Wait for opted-in tools and profile MCPs before Codex snapshots the first turn's tool catalog.
+    const profileMcp = this.executionProfile === undefined ? "none" : resolveCodexExecutionProfile(this.executionProfile).mcp
+    if (plugins.length || mcpServers.length || (profileMcp !== "none" && profileMcp.allowedServerNames.length)) {
+      config.mcp_optional_startup_grace_ms = 0
+    }
     return config
   }
 

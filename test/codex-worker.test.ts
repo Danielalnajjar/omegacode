@@ -1565,6 +1565,29 @@ test("H1: child crash mid-turn rejects runAgent (no hang)", async () => {
   await worker.shutdown()
 })
 
+test("an app-server that exits with \"not found\" on stderr stays a retryable process_exited", async () => {
+  let theChild!: FakeChild
+  const worker = new CodexWorker({
+    ...HERMETIC_INVENTORY,
+    spawnChild: () => {
+      theChild = new FakeChild()
+      theChild.onWrite = (req: any) => {
+        if (req.method === "initialize") return theChild.pushLine({ jsonrpc: "2.0", id: req.id, result: INIT_OK })
+        if (req.method === "thread/start") {
+          theChild.stderr.emit("data", "Error: model not found\n")
+          queueMicrotask(() => theChild.emitExit(1, null))
+        }
+      }
+      return theChild as any
+    },
+  })
+  await assert.rejects(
+    worker.runAgent(spec(), ctx()),
+    (e) => e instanceof AgentError && e.code === "process_exited" && e.retryable === true && /model not found/.test(e.message),
+  )
+  await worker.shutdown()
+})
+
 test("M1: after a crash with a stale partial frame, the worker recovers on the next runAgent", async () => {
   // Old bug: stdoutBuf was a worker field surviving process death, so the
   // restarted handshake parsed a corrupted first frame and initialize never

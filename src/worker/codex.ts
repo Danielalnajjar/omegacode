@@ -1400,8 +1400,9 @@ export class CodexWorker implements Worker {
     if (err instanceof StdioTransportError) {
       // A missing/non-executable binary surfacing through any transport path is a
       // non-retryable config error (handshake request rejected by the async
-      // ENOENT 'error' event). (L2)
-      if (/ENOENT|not found|not recognized|EACCES/i.test(err.message)) return this.spawnError(err)
+      // ENOENT 'error' event). (L2) An exit is never one: the binary ran, and its
+      // message carries the app-server's stderr, which may itself say "not found".
+      if (err.code !== "process_exited" && /ENOENT|not found|not recognized|EACCES/i.test(err.message)) return this.spawnError(err)
       // Timeouts and dropped writes are retryable transport faults.
       return new AgentError({ provider: PROVIDER, code: err.code, message: err.message, retryable: true })
     }

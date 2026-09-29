@@ -7,10 +7,10 @@
 export const meta = {
   name: "second-opinion",
   description:
-    "Cheap consensus check — Codex and Claude answer at low effort; agreement returns a merged answer, disagreement escalates both to deep effort and adjudicates.",
+    "Cheap consensus check — Codex answers at medium effort and Claude at low effort, and a medium-effort comparator checks agreement; agreement returns a merged answer, disagreement escalates both to deep effort and adjudicates.",
   defaultSandbox: "read-only",
   phases: [
-    { title: "Ask", detail: "both providers answer independently at low effort" },
+    { title: "Ask", detail: "both providers answer independently at their cheapest effort" },
     { title: "Compare", detail: "do the answers materially agree?" },
     { title: "Escalate", detail: "deep reconsideration of the disagreements — only on a split" },
     { title: "Answer", detail: "merge the consensus, or adjudicate the split" },
@@ -18,8 +18,8 @@ export const meta = {
 }
 
 const PROVIDERS = [
-  { provider: "codex", model: "gpt-6.1-sol", name: "Codex" },
-  { provider: "claude-code", model: "claude-fable-5-1", name: "Claude" },
+  { provider: "codex", model: "gpt-6.1-sol", effort: "medium", name: "Codex" },
+  { provider: "claude-code", model: "claude-fable-5-1", effort: "low", name: "Claude" },
 ]
 
 const question =
@@ -39,7 +39,7 @@ const ANSWER_SCHEMA = {
 }
 
 // ---------------------------------------------------------------------------
-// Ask — identical prompts, low effort, blind to each other.
+// Ask — identical prompts, cheapest effort, blind to each other.
 // ---------------------------------------------------------------------------
 phase("Ask")
 log(`asking both providers: ${question}`)
@@ -51,7 +51,7 @@ const asked = (
         `Answer this question concretely and commit to a position:\n\n${question}\n\n` +
           `If it concerns the repository you are in, ground your answer in the actual code. Give ` +
           `your answer plus the key points it rests on.`,
-        { provider: p.provider, model: p.model, effort: "low", label: `ask: ${p.name}`, phase: "Ask", schema: ANSWER_SCHEMA },
+        { provider: p.provider, model: p.model, effort: p.effort, label: `ask: ${p.name}`, phase: "Ask", schema: ANSWER_SCHEMA },
       ).then((a) => ({ name: p.name, provider: p.provider, model: p.model, answer: a.answer, keyPoints: a.keyPoints })),
     ),
   )
@@ -77,7 +77,7 @@ const cmp = await agent(
     `Do they reach the same substantive conclusion? Ignore wording, structure, and depth — flag ` +
     `only material disagreements that would change what the asker does.`,
   {
-    effort: "low",
+    effort: "medium",
     label: "compare",
     phase: "Compare",
     schema: {
@@ -98,7 +98,7 @@ if (agree) {
     `Two independent analyses of this question reached the same conclusion. Merge them into one ` +
       `answer — keep the strongest specifics of each, no filler.\n\nQuestion:\n${question}\n\n` +
       `${asked.map((a) => `Answer (${a.name}):\n${a.answer}`).join("\n\n")}`,
-    { effort: "low", label: "merge", phase: "Answer" },
+    { effort: "medium", label: "merge", phase: "Answer" },
   )
   return { answer: merged, agreed: true, escalated: false, answers: asked }
 }

@@ -6,7 +6,7 @@ import { readdirSync, readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { test } from "node:test"
 
-const CODEX_MODEL = "gpt-6-sol"
+const CODEX_MODEL = "gpt-6.1-sol"
 const root = fileURLToPath(new URL("..", import.meta.url))
 const files = [
   ...["builtins", "examples"].flatMap((dir) =>

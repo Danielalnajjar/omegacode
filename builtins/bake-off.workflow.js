@@ -17,7 +17,7 @@ export const meta = {
 }
 
 const CONTENDERS = [
-  { provider: "codex", model: "gpt-6-sol", name: "Codex" },
+  { provider: "codex", model: "gpt-6.1-sol", name: "Codex" },
   { provider: "claude-code", model: "claude-fable-5-1", name: "Claude" },
 ]
 

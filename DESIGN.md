@@ -733,8 +733,8 @@ findings ranked first, unique catches attributed via `foundBy`, disagreements ca
 (both implement the same task in isolated worktrees with per-run neutral branch names, blind A/B judges
 from both providers score the committed diffs, tie-break on splits, both branches preserved);
 `provider-debate` (propose → attack → rebut for 1-5 rounds, attacker and proposer on opposite providers,
-then a judge rules on survived/conceded/open); and `second-opinion` (both answer at low effort, a cheap
-comparator checks substantive agreement — agree merges and returns, disagree escalates both to xhigh with
+then a judge rules on survived/conceded/open); and `second-opinion` (Codex answers at medium effort and Claude at low, a
+medium-effort comparator checks substantive agreement — agree merges and returns, disagree escalates both to xhigh with
 the other's answer in hand, then an adjudicator decides; a failed comparator counts as disagreement).
 
 ---

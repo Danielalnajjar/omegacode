@@ -7,7 +7,7 @@
 export const meta = {
   name: "second-opinion",
   description:
-    "Cheap consensus check — Codex answers at medium effort and Claude at low effort; agreement returns a merged answer, disagreement escalates both to deep effort and adjudicates.",
+    "Cheap consensus check — Codex answers at medium effort and Claude at low effort, and a medium-effort comparator checks agreement; agreement returns a merged answer, disagreement escalates both to deep effort and adjudicates.",
   defaultSandbox: "read-only",
   phases: [
     { title: "Ask", detail: "both providers answer independently at their cheapest effort" },
@@ -21,9 +21,6 @@ const PROVIDERS = [
   { provider: "codex", model: "gpt-6.1-sol", effort: "medium", name: "Codex" },
   { provider: "claude-code", model: "claude-fable-5-1", effort: "low", name: "Claude" },
 ]
-
-// GPT-6.1 Sol never runs below medium.
-const CHEAP_EFFORT = runtime.provider === "codex" ? "medium" : "low"
 
 const question =
   typeof args === "string" && args.trim()
@@ -80,7 +77,7 @@ const cmp = await agent(
     `Do they reach the same substantive conclusion? Ignore wording, structure, and depth — flag ` +
     `only material disagreements that would change what the asker does.`,
   {
-    effort: CHEAP_EFFORT,
+    effort: "medium",
     label: "compare",
     phase: "Compare",
     schema: {
@@ -101,7 +98,7 @@ if (agree) {
     `Two independent analyses of this question reached the same conclusion. Merge them into one ` +
       `answer — keep the strongest specifics of each, no filler.\n\nQuestion:\n${question}\n\n` +
       `${asked.map((a) => `Answer (${a.name}):\n${a.answer}`).join("\n\n")}`,
-    { effort: CHEAP_EFFORT, label: "merge", phase: "Answer" },
+    { effort: "medium", label: "merge", phase: "Answer" },
   )
   return { answer: merged, agreed: true, escalated: false, answers: asked }
 }

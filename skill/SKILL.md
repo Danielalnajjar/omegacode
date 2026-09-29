@@ -336,7 +336,7 @@ The other four are omegacode-original multi-provider workflows — designs where
 - **`multi-provider-review`** — `omegacode run multi-provider-review [--args '{"target": "..."}']`: Codex and Claude each review the entire feature/branch independently (identical prompts, blind to each other), then a synthesis agent merges both — consensus findings ranked first, unique catches attributed, disagreements called out. Target defaults to the current branch vs its merge-base with the default branch.
 - **`bake-off`** — `omegacode run bake-off --args '"<task>"'`: both providers implement the same task in isolated worktrees (committed work only), blind A/B judges from both providers score the diffs, a tie-break settles splits, and the report names what to graft from the loser. Both branches are preserved.
 - **`provider-debate`** — `omegacode run provider-debate --args '"<question>"'` (or `'{"question": "...", "rounds": 2, "proposer": "codex"}'`): one provider proposes, the other attacks, N rounds of rebuttal, then a judge rules — recommendation, survived/conceded points, open questions.
-- **`second-opinion`** — `omegacode run second-opinion --args '"<question>"'`: both providers answer at low effort; if they agree the merged answer returns cheap, if they disagree both escalate to xhigh effort with the other's answer in hand and an adjudicator decides.
+- **`second-opinion`** — `omegacode run second-opinion --args '"<question>"'`: Codex answers at medium effort and Claude at low effort; if they agree the merged answer returns cheap, if they disagree both escalate to xhigh effort with the other's answer in hand and an adjudicator decides.
 
 ## Running a workflow for a user (from an agent)
 

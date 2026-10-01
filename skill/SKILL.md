@@ -315,7 +315,7 @@ omegacode serve [--port 4123] [--host h]      Live read-only web viewer of all r
 omegacode runs [--prune --keep <N>]           List runs (or prune old ones)
 omegacode workflows [--json]                  List saved/named workflows (project, user, builtin)
 omegacode save <file.workflow.js> [--project] [--force]   Save a workflow under its meta.name
-omegacode validate <file.workflow.js | name>  Parse + check meta without running
+omegacode validate <file.workflow.js | name>  Check meta and compile the body without running
 omegacode doctor                              Check provider availability, versions, and data dir
 omegacode install-skill [--claude] [--agents] Install this skill into agent skill dirs
 ```

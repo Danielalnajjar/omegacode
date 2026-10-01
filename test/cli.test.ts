@@ -513,6 +513,19 @@ describe("CLI end-to-end (--fake)", () => {
     assert.match(r.stderr, /invalid provider "open-code"/)
   })
 
+  test("validate compiles the body: an unterminated template literal fails, a valid workflow passes", async () => {
+    const bad = join(home, "unterminated-template.workflow.js")
+    writeFileSync(bad, `export const meta = { name: "bad-body", description: "stray backtick" }\nconst x = \`unterminated\nreturn x\n`)
+    const r = await runCli(["validate", bad], { OMEGACODE_HOME: home })
+    assert.equal(r.code, 1)
+    assert.match(r.stderr, /Unexpected end of input/)
+    assert.doesNotMatch(r.stdout, /^ok:/m)
+
+    const ok = await runCli(["validate", wf], { OMEGACODE_HOME: home })
+    assert.equal(ok.code, 0, ok.stderr)
+    assert.match(ok.stdout, /^ok: "smoke"/m)
+  })
+
   test("invalid --sandbox (typo for read-only) is rejected (H14)", async () => {
     const r = await runCli(["run", wf, "--sandbox", "readonly", "--fake", "--no-serve"], { OMEGACODE_HOME: home })
     assert.equal(r.code, 1)

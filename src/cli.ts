@@ -6,7 +6,7 @@ import { homedir } from "node:os"
 import { dirname, join, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { newRunId, runWorkflow, type RunOverrides } from "./runtime/run.js"
-import { parseWorkflow, WorkflowSyntaxError } from "./runtime/sandbox.js"
+import { compileWorkflowBody, parseWorkflow, WorkflowSyntaxError } from "./runtime/sandbox.js"
 import { listWorkflows, resolveWorkflowName, WorkflowNotFoundError } from "./runtime/registry.js"
 import { dataRoot, Journal, JournalNotFoundError, listRunIds, ResumePreconditionError, runDir } from "./runtime/journal.js"
 import { expectedLogPath, isValidRunId, loadRunStatus, type RunStatusSnapshot } from "./runtime/run-store.js"
@@ -732,8 +732,9 @@ async function cmdValidate(flags: Flags): Promise<void> {
     process.exitCode = 1
     return
   }
-  const source = readFileSync(resolveFileOrName(file), "utf8")
-  const { meta } = parseWorkflow(source)
+  const absFile = resolveFileOrName(file)
+  const { meta, body } = parseWorkflow(readFileSync(absFile, "utf8"))
+  compileWorkflowBody(body, absFile)
   console.log(`ok: "${meta.name}" — ${meta.description}`)
   if (meta.phases) console.log("phases: " + meta.phases.map((p) => p.title).join(" → "))
 }
@@ -937,7 +938,7 @@ Usage:
   omegacode runs [--prune --keep <N>] [--prune-stale]   List runs (--prune old, --prune-stale dead)
   omegacode workflows [--json]                  List saved/named workflows (project, user, builtin)
   omegacode save <file.workflow.js> [--project] [--force]   Save a workflow under its meta.name
-  omegacode validate <file.workflow.js | name>  Parse + check meta without running
+  omegacode validate <file.workflow.js | name>  Check meta and compile the body without running
   omegacode capabilities [--json]               Report integration support without provider/auth probes
   omegacode doctor                              Check provider availability, versions, and data dir
   omegacode guide                               Print the full authoring guide (the skill text)

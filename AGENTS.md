@@ -1,0 +1,3 @@
+# omegacode
+
+- One review round per pull request, plan, or in-session review is the default, because a change here reaches only Daniel's own machines, tools, and instructions and puts nobody else's data at risk. Request another round only when the previous one found a problem that would lose data, expose a credential, cost money, or break something that runs unattended, or when the fix since then is more than about 200 executable non-test lines. Each round rereads the whole change and finds rarer cases, so re-reviewing small fixes never ends. A skill that runs its own review loop, such as babysit-pr, keeps its own round limit.

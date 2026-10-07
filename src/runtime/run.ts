@@ -26,7 +26,6 @@ import { TerminalRenderer } from "./progress.js"
 import { runInSandbox } from "./sandbox.js"
 import { countAgentStates, isValidRunId, type AgentCounts } from "./run-store.js"
 import { resolveRunModes } from "./run-modes.js"
-import type { EvaluationAccounting } from "../evaluation-types.js"
 
 export interface RunOverrides {
   provider?: ProviderId
@@ -58,7 +57,6 @@ export interface RunOptions {
   runId?: string
   resumeRunId?: string
   fake?: boolean
-  typesafe?: boolean
   /** Suppress the terminal renderer (still writes events.jsonl). */
   quiet?: boolean
   /** Extra event listener (e.g. an embedded UI). */
@@ -77,7 +75,6 @@ export interface RunOutcome {
   status: "completed" | "failed" | "interrupted"
   agentCounts: AgentCounts
   error?: string
-  evaluationUsage?: EvaluationAccounting
 }
 
 /** How often a live run refreshes its heartbeat file (see the deadman switch below). */
@@ -133,7 +130,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   opts.onStart?.(runId)
   const journal = new Journal(runId)
   if (!loaded.meta) {
-    journal.append({ type: "meta", runId, workflowFile: filePath, fileHash, args: opts.args ?? null, seed, createdAt: baseTimeMs, keyVersion: KEY_VERSION, typesafe: modes.typesafe, fake: modes.fake, agentTimeoutMs: defaults.agentTimeoutMs })
+    journal.append({ type: "meta", runId, workflowFile: filePath, fileHash, args: opts.args ?? null, seed, createdAt: baseTimeMs, keyVersion: KEY_VERSION, fake: modes.fake, agentTimeoutMs: defaults.agentTimeoutMs })
   }
 
   const renderer = new TerminalRenderer({ enabled: !opts.quiet })
@@ -188,7 +185,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   let status: RunOutcome["status"] = "completed"
   let result: unknown
   let error: string | undefined
-  const runtime = new Runtime({ runId, typesafe: modes.typesafe && !modes.fake, defaults, factory, journal, loaded, events, args: opts.args, seed, baseTimeMs, signal: ac.signal, declaredPhases: parsed.meta.phases })
+  const runtime = new Runtime({ runId, defaults, factory, journal, loaded, events, args: opts.args, seed, baseTimeMs, signal: ac.signal, declaredPhases: parsed.meta.phases })
   try {
     // The abort signal MUST reach the sandbox (M13 wiring): the vm timeout bounds only synchronous
     // execution, so without it `await new Promise(() => {})` in a workflow body would hang this
@@ -220,7 +217,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     await events.close()
   }
 
-  return { runId, result, status, agentCounts: countAgentStates(agentStates.values()), error, evaluationUsage: runtime.evaluationAccounting() }
+  return { runId, result, status, agentCounts: countAgentStates(agentStates.values()), error }
 }
 
 async function writePreflightFailure(runId: string, workflowFile: string, err: unknown): Promise<void> {

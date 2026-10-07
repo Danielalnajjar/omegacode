@@ -25,7 +25,6 @@ import type { Worker, WorkerContext, WorkerProgress } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
 import { GROK_ISOLATED_FLAGS, isolatedGrokLaunch, loadGrokIsolation, prepareGrokShellHome, type GrokIsolation } from "./grok-isolation.js"
 import { githubTokenReader, hasGithubToken, type ReadGithubToken } from "./github-token.js"
-import { providerEnv } from "./provider-env.js"
 import { assertValidSchema, parseJsonLoose, parseValidJson } from "./schema.js"
 import {
   captureStdout,
@@ -253,7 +252,7 @@ export class GrokWorker implements Worker {
   }
 
   private env(): NodeJS.ProcessEnv {
-    return { ...providerEnv(), GROK_DISABLE_AUTOUPDATER: "1" }
+    return { ...process.env, GROK_DISABLE_AUTOUPDATER: "1" }
   }
 
   private baseArgs(spec: AgentSpec, launch: Launch, opts: { resume?: string; noTools?: boolean }): string[] {

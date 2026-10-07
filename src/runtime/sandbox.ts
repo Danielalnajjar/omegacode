@@ -229,7 +229,6 @@ export async function runInSandbox(opts: RunInSandboxOptions): Promise<unknown> 
   if (opts.signal?.aborted) throw new WorkflowAbortedError()
   const sandbox: Record<string, unknown> = {
     agent: opts.globals.agent,
-    evaluate: opts.globals.evaluate,
     parallel: opts.globals.parallel,
     pipeline: opts.globals.pipeline,
     phase: opts.globals.phase,

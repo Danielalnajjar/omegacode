@@ -3,7 +3,6 @@
 // The caller's token travels to those children as GH_TOKEN instead.
 import type { ProviderId } from "../dsl/types.js"
 import { AgentInterrupted } from "./index.js"
-import { providerEnv } from "./provider-env.js"
 import { captureStdout, type SpawnProcess } from "./subprocess-jsonl.js"
 
 export type ReadGithubToken = (signal: AbortSignal) => Promise<string | undefined>
@@ -12,7 +11,7 @@ export type ReadGithubToken = (signal: AbortSignal) => Promise<string | undefine
 export function githubTokenReader(provider: ProviderId, spawnProcess?: SpawnProcess): ReadGithubToken {
   return async (signal) => {
     try {
-      const token = (await captureStdout({ provider, bin: "gh", args: ["auth", "token"], env: providerEnv(), signal, spawnProcess })).trim()
+      const token = (await captureStdout({ provider, bin: "gh", args: ["auth", "token"], signal, spawnProcess })).trim()
       return token || undefined
     } catch (err) {
       if (err instanceof AgentInterrupted) throw err

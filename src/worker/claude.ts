@@ -16,7 +16,6 @@ import type { PreparedAgentCall, Worker, WorkerContext } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
 import { isolatedClaudeOptions, loadClaudeIsolation } from "./claude-isolation.js"
 import { prepareClaudeProfile, resolveClaudeProfile, type ClaudeProfileResolver } from "./claude-profile.js"
-import { providerEnv } from "./provider-env.js"
 import { DEFAULT_STALL_TIMEOUT_MS } from "./subprocess-jsonl.js"
 import { assertValidSchema, toClaudeOutputFormat } from "./schema.js"
 
@@ -104,7 +103,7 @@ export class ClaudeWorker implements Worker {
 
   async prepareAgentCall(spec: AgentSpec, ctx: WorkerContext): Promise<PreparedAgentCall> {
     this.preflight(spec, ctx)
-    const prepared = await prepareClaudeProfile(spec, ctx.signal, this.opts.profileResolver ?? resolveClaudeProfile, providerEnv(this.opts.baseEnv))
+    const prepared = await prepareClaudeProfile(spec, ctx.signal, this.opts.profileResolver ?? resolveClaudeProfile, this.opts.baseEnv ?? process.env)
     ctx.onProgress({ kind: "claude-profile", label: prepared.label })
     return (attemptSpec, attemptContext) => this.runAgentWithEnv(attemptSpec, attemptContext, prepared.env)
   }
@@ -147,7 +146,7 @@ export class ClaudeWorker implements Worker {
         : { settingSources: [] }),
       permissionMode: "default",
       abortController: abort,
-      env: providerEnv(env),
+      env: { ...(env ?? process.env) },
       canUseTool: (toolName: string, input: Record<string, unknown>): Promise<PermissionResult> => {
         const verdict = checkTool(spec.sandbox, spec.cwd, toolName, input)
         if (verdict) return Promise.resolve({ behavior: "deny", message: verdict })

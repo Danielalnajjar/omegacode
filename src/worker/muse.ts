@@ -8,7 +8,6 @@ import { addUsage, emptyUsage, type AgentResult, type AgentSpec, type AgentUsage
 import { AgentError, AgentInterrupted, type Worker, type WorkerContext } from "./index.js"
 import { githubTokenReader, hasGithubToken, type ReadGithubToken } from "./github-token.js"
 import { MUSE_PROFILE_MCP_SERVERS, type MuseExecutionProfileName } from "./muse-profile.js"
-import { providerEnv } from "./provider-env.js"
 import { assertValidSchema, parseJsonLoose, parseValidJson, validate } from "./schema.js"
 import { captureStdout, exitError, runJsonlSubprocess, versionAtLeast, type SpawnProcess } from "./subprocess-jsonl.js"
 
@@ -238,7 +237,7 @@ export class MuseWorker implements Worker {
 
   private ensureVersion(signal: AbortSignal): Promise<void> {
     if (!this.versionCheck) {
-      this.versionCheck = captureStdout({ provider: PROVIDER, bin: this.bin, args: ["--version"], env: providerEnv(), signal, spawnProcess: this.spawnProcess })
+      this.versionCheck = captureStdout({ provider: PROVIDER, bin: this.bin, args: ["--version"], signal, spawnProcess: this.spawnProcess })
         .then((version) => {
           if (!versionAtLeast(version, MUSE_MIN_VERSION)) {
             throw new AgentError({ provider: PROVIDER, code: "provider_outdated", message: `Muse ${version || "(unknown version)"} is below minimum ${MUSE_MIN_VERSION}; upgrade the Muse CLI` })
@@ -263,7 +262,7 @@ function extractionPrompt(spec: AgentSpec, workingText: string, errors: string):
 
 /** Only settings are copied; all other entries, including auth, remain source-owned symlinks. */
 function privateConfigEnv(scratch: string, readOnly: boolean, profile?: MuseExecutionProfileName): NodeJS.ProcessEnv {
-  const env = providerEnv()
+  const env = { ...process.env }
   const source = resolve(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "muse")
   let settingsText = "{}"
   try { settingsText = readFileSync(join(source, "settings.json"), "utf8") } catch (err) {

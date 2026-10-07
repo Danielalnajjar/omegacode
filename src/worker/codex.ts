@@ -17,7 +17,6 @@ import { AgentError, AgentInterrupted } from "./index.js"
 import { codexProfileToolSelectionError, resolveCodexExecutionProfile, type CodexExecutionProfileName } from "./codex-profile.js"
 import { toCodexOutputSchema, parseJsonLoose, parseValidJson } from "./schema.js"
 import { JsonRpcStdioClient, StdioTransportError, JsonRpcResponseError, type SpawnChild } from "./jsonrpc-stdio.js"
-import { providerEnv } from "./provider-env.js"
 import {
   encodeNotification,
   encodeRequest,
@@ -428,7 +427,6 @@ async function readCodexMcpInventory(bin: string, cwd: string): Promise<string> 
   // so a launch override naming one fails config load; plugins are selected with codexPlugins.
   const { stdout } = await exec(bin, ["-c", "features.plugins=false", "mcp", "list", "--json"], {
     cwd,
-    env: providerEnv(),
     encoding: "utf8",
     timeout: MCP_INVENTORY_TIMEOUT_MS,
     maxBuffer: 4 * 1024 * 1024,
@@ -438,7 +436,6 @@ async function readCodexMcpInventory(bin: string, cwd: string): Promise<string> 
 
 async function readCodexFeatureInventory(bin: string): Promise<string> {
   const { stdout } = await exec(bin, ["features", "list"], {
-    env: providerEnv(),
     encoding: "utf8",
     timeout: FEATURE_INVENTORY_TIMEOUT_MS,
     maxBuffer: 4 * 1024 * 1024,
@@ -448,7 +445,7 @@ async function readCodexFeatureInventory(bin: string): Promise<string> {
 
 async function readCodexPluginInventory(bin: string): Promise<string[]> {
   const list = async (args: string[]) => (await exec(bin, ["plugin", ...args, "--json"], {
-    env: providerEnv(), encoding: "utf8", timeout: PLUGIN_INVENTORY_TIMEOUT_MS,
+    encoding: "utf8", timeout: PLUGIN_INVENTORY_TIMEOUT_MS,
     maxBuffer: 4 * 1024 * 1024,
   })).stdout
   const marketplaces = parseCodexPluginMarketplaceNames(await list(["marketplace", "list"]))

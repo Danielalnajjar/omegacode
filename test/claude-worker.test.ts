@@ -291,8 +291,8 @@ test("claudeAgent selects a user-level SDK agent without loading project or loca
   assert.deepEqual(calls[1]!.options.settingSources, [])
 })
 
-test("profile and ordinary SDK calls isolate host TypeSafe credentials", async t => {
-  setTestEnv(t, { ORDINARY: "kept", TYPESAFE_API_KEY: "test-only" })
+test("profile and ordinary SDK calls each receive their own environment", async t => {
+  setTestEnv(t, { ORDINARY: "kept" })
   const calls: QueryCall[] = []
   let resolutions = 0
   const worker = new ClaudeWorker({

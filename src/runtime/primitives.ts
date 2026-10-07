@@ -10,7 +10,6 @@
 // finish in. now()/random() also draw from per-branch substreams.
 
 import { AsyncLocalStorage } from "node:async_hooks"
-import { Evaluator } from "../evaluation.js"
 import type {
   AgentOpts,
   AgentResult,
@@ -85,7 +84,6 @@ export function checkProviderModelPair(provider: string | undefined, model: stri
 
 export interface RuntimeOpts {
   runId: string
-  typesafe?: boolean
   defaults: RunDefaults
   factory: WorkerFactory
   journal: Journal
@@ -150,11 +148,6 @@ export class Runtime {
   // (launched without `await`) can't turn into an unhandledRejection crash after "completed".
   private readonly inFlight = new Set<Promise<unknown>>()
   totalUsage = emptyUsage()
-  private evaluator?: Evaluator
-
-  evaluationAccounting() {
-    return this.evaluator?.accounting()
-  }
 
   constructor(private readonly o: RuntimeOpts) {
     this.sem = new Semaphore(o.defaults.concurrency)
@@ -175,14 +168,6 @@ export class Runtime {
   }
 
   globals(): WorkflowGlobals {
-    const evaluator = this.evaluator ??= new Evaluator({ enabled: this.o.typesafe === true, signal: this.o.signal,
-      cached: this.o.loaded.evaluations ?? new Map(),
-      save: (key, result) => this.o.journal.append({ type: "evaluation", key, result }),
-      attempts: this.o.loaded.evaluationAttempts,
-      saveAttempt: bytes => this.o.journal.append({ type: "evaluation-attempt", bytes }),
-      ledger: this.o.loaded.evaluationLedger,
-      saveUsage: (attempt, model, usage) => this.o.journal.append({ type: "evaluation-usage", attempt, model, usage }),
-    })
     const total = this.o.defaults.budget
     const budget = Object.freeze({
       total,
@@ -190,17 +175,6 @@ export class Runtime {
       remaining: () => (total == null ? Infinity : Math.max(0, total - this.totalUsage.outputTokens)),
     })
     return {
-      evaluate: (request, opts) => {
-        const p = evaluator.evaluate(request, opts)
-        this.inFlight.add(p)
-        const done = () => this.inFlight.delete(p)
-        p.then(done, () => {
-          done()
-          // Keep even unawaited failures visible without logging request or remote error text.
-          this.log("evaluation failed; no answer is available")
-        })
-        return p
-      },
       agent: this.agent.bind(this) as WorkflowGlobals["agent"],
       parallel: this.parallel.bind(this),
       pipeline: this.pipeline.bind(this),

@@ -214,6 +214,10 @@ export class ClaudeWorker implements Worker {
           break
         }
         const message = step.value
+        if (isolationFile && message.type === "system" && message.subtype === "init" && message.plugins.length > 0) {
+          // The preflight's no-plugins check, repeated on the live launch.
+          throw new AgentError({ provider: "claude-code", code: "isolation_plugins_loaded", message: `isolated Claude loaded plugins: ${message.plugins.map(plugin => plugin.name).join(", ")}` })
+        }
         if (message.type === "result") {
           anyResult = message
           if (message.origin?.kind !== "task-notification") primaryResult = message

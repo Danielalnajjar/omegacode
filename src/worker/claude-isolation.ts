@@ -21,6 +21,13 @@ export interface ClaudeIsolation {
 }
 export const ISOLATED_TOOLS = ["Read", "Grep", "Glob", "Bash", "Edit", "Write"]
 export const FORBIDDEN_TOOLS = ["Agent", "Task", "WebFetch", "WebSearch", "Skill", "NotebookEdit", "ToolSearch"]
+// Plugins built into Claude Code load without any setting source; cc-plugin-agents-md,
+// for one, adds the workspace AGENTS.md as project instructions. These are the ids
+// Claude Code 2.1.288 registers, each turned off through flag settings. A built-in
+// added by a later release still appears in the init inventory, which both the
+// preflight and the isolated worker reject.
+export const BUILTIN_PLUGINS = ["cc-plugin-sec-default", "cc-plugin-agents-md", "cc-plugin-telemetry", "cc-plugin-plugin-authoring", "cc-plugin-mods-guide",
+  "cc-plugin-tips", "cc-plugin-mermaid", "cc-plugin-responsive-mode", "cc-plugin-diff", "cc-plugin-you-should-know", "cc-plugin-claude-test"]
 const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'"
 export function loadClaudeIsolation(path: string, cwd?: string): ClaudeIsolation {
   if (process.platform !== "darwin") throw new Error("Claude isolation requires macOS Seatbelt")
@@ -99,7 +106,7 @@ export function isolatedClaudeOptions(config: ClaudeIsolation): Partial<Options>
     // Ask rules are evaluated before automatic read approval and therefore make
     // this callback mandatory. No user hooks, shell profile, or MCP is needed.
     settings:{permissions:{ask:[...ISOLATED_TOOLS]},disableAllHooks:true,disableBundledSkills:true,autoMemoryEnabled:false,
-      allowedMcpServers:[],deniedMcpServers:[{serverName:"*"}]},
+      allowedMcpServers:[],deniedMcpServers:[{serverName:"*"}],enabledPlugins:Object.fromEntries(BUILTIN_PLUGINS.map(name=>[`${name}@builtin`,false]))},
     extraArgs:{"disable-slash-commands":null,"no-chrome":null},
     canUseTool:async(tool,input)=>isolatedToolPermission(config,tool,input),
   }

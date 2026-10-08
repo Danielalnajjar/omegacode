@@ -4,7 +4,7 @@ import {mkdtempSync,mkdirSync,writeFileSync,symlinkSync,rmSync,realpathSync} fro
 import {tmpdir} from "node:os"
 import {join} from "node:path"
 import { execFileSync, spawn } from "node:child_process"
-import {isolatedToolPermission,isolatedClaudeOptions,loadClaudeIsolation,type ClaudeIsolation} from "../src/worker/claude-isolation.js"
+import {isolatedToolPermission,isolatedClaudeOptions,loadClaudeIsolation,BUILTIN_PLUGINS,type ClaudeIsolation} from "../src/worker/claude-isolation.js"
 function fixture(t:test.TestContext){
  const root=realpathSync(mkdtempSync(join(tmpdir(),"claude-isolation-test-")))
  t.after(()=>rmSync(root,{recursive:true,force:true}))
@@ -55,6 +55,11 @@ test("all tool calls must pass callback; host surfaces and delegation unavailabl
  assert.equal(options.strictMcpConfig,true)
  assert.equal(options.sandbox?.enabled,false)
  assert.equal((options.settings as {disableAllHooks:boolean}).disableAllHooks,true)
+ const enabledPlugins=(options.settings as {enabledPlugins:Record<string,boolean>}).enabledPlugins
+ assert.equal(enabledPlugins["cc-plugin-agents-md@builtin"],false)
+ assert.equal(enabledPlugins["cc-plugin-plugin-authoring@builtin"],false)
+ assert.deepEqual(Object.keys(enabledPlugins),BUILTIN_PLUGINS.map(name=>`${name}@builtin`))
+ assert.ok(Object.values(enabledPlugins).every(enabled=>enabled===false))
  for(const tool of ["Agent","Task","WebFetch","WebSearch","Skill","mcp__x__y","NotebookEdit"])assert.equal(gate(tool,{}).behavior,"deny")
  assert.equal(gate("Bash",{command:"true",run_in_background:true}).behavior,"deny")
  assert.equal(gate("Bash",{command:"true",dangerouslyDisableSandbox:true}).behavior,"deny")

@@ -484,6 +484,21 @@ test("isolated Claude run passes the isolated tools and permits SDK StructuredOu
   assert.deepEqual(options.tools, ISOLATED_TOOLS)
 })
 
+test("isolated Claude run fails when the init inventory carries a plugin", { skip: process.platform !== "darwin" }, async t => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "claude-worker-isolation-")))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  for (const name of ["workspace", "inputs", "scratch"]) mkdirSync(join(root, name))
+  const workspace = join(root, "workspace")
+  const file = join(root, "isolation.json")
+  writeFileSync(file, JSON.stringify({ schemaVersion: "claude-isolation.v1", workspace, inputs: join(root, "inputs"), scratch: join(root, "scratch"),
+    readRoots: [], blockedRoots: [root], writable: true }))
+  setTestEnv(t, { ...process.env, OMEGACODE_CLAUDE_ISOLATION_CONFIG: file })
+  const init = { type: "system", subtype: "init", plugins: [{ name: "cc-plugin-new", path: "builtin", source: "cc-plugin-new@builtin" }] }
+  const worker = new ClaudeWorker({ queryFn: scripted([init, resultMsg()]) })
+  await assert.rejects(worker.runAgent(spec({ cwd: workspace }), ctx()),
+    (err: unknown) => err instanceof AgentError && err.code === "isolation_plugins_loaded" && err.message.includes("cc-plugin-new"))
+})
+
 // ===========================================================================
 // progress mapping
 // ===========================================================================

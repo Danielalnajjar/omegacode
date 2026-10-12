@@ -409,7 +409,6 @@ test("Muse research profile keeps only its servers, re-enabled, with ${VAR} expa
       executor_research: { type: "streamable-http", url: "https://executor.example/mcp", headers: { Authorization: "Bearer ${OMEGACODE_TEST_EXECUTOR_KEY}" }, enabled: false },
       btca: { type: "stdio", command: "btca", env: { PATH: "/bin" }, enabled: false },
       grok_search: { type: "stdio", command: "node", args: ["grok.js"] },
-      mintlify: { type: "streamable-http", url: "https://index.mintlify.com", enabled: false },
     }
     const settings = { mcpServers: { onepassword: { command: "never" }, ...research } }
     writeFileSync(join(root, "muse", "settings.json"), JSON.stringify(settings))
@@ -422,7 +421,6 @@ test("Muse research profile keeps only its servers, re-enabled, with ${VAR} expa
           executor_research: { type: "streamable-http", url: "https://executor.example/mcp", headers: { Authorization: "Bearer secret-key" } },
           btca: { type: "stdio", command: "btca", env: { PATH: "/bin" } },
           grok_search: research.grok_search,
-          mintlify: { type: "streamable-http", url: "https://index.mintlify.com" },
         })
         p.pushLine(terminal()); p.end(0)
       }], { readGithubToken: async () => "gho_test" })
@@ -444,7 +442,7 @@ test("Muse research profile keeps only its servers, re-enabled, with ${VAR} expa
     writeFileSync(join(root, "muse", "settings.json"), JSON.stringify({ mcpServers: { btca: research.btca } }))
     const missing = harness([versionOk], { readGithubToken: async () => "gho_test" })
     await assert.rejects(missing.worker.runAgent(spec({ sandbox: "danger-full-access", museExecutionProfile: "workflow-research-v1" }), ctx()), (err: unknown) =>
-      rejects("invalid_config")(err) && /executor_research, grok_search, mintlify/.test((err as Error).message))
+      rejects("invalid_config")(err) && /executor_research, grok_search/.test((err as Error).message))
     assert.equal(missing.spawned.length, 1)
   } finally {
     if (previous === undefined) delete process.env.XDG_CONFIG_HOME

@@ -368,7 +368,7 @@ small registry of live workers and lazily starts each provider the first time it
 - Spawn `codex app-server` (one process per run, multiplexes threads — a pool is the throughput escape
   hatch, §8); newline-delimited JSON-RPC framing; `initialize`/`initialized` handshake.
 - Named execution profiles own the app-server's startup surface. `workflow-research-v1` enables only
-  `btca`, `executor_research`, `grok_search`, and `mintlify`, disables every other inventoried MCP
+  `btca`, `executor_research`, and `grok_search`, disables every other inventoried MCP
   server (including full `executor`), and fails before spawn if any allowlisted server is missing.
 - An unprofiled app-server disables every stdio and HTTP MCP server in a project-neutral config
   inventory (read with plugins off, since plugin-provided servers have no host transport to merge

@@ -643,7 +643,6 @@ test("execution profiles build their exact known feature and MCP override sets",
     mcpInventoryEntry("executor", { type: "streamable_http" }),
     mcpInventoryEntry("executor_research", { enabled: false, type: "streamable_http" }),
     mcpInventoryEntry("grok_search", { type: "streamable_http" }),
-    mcpInventoryEntry("mintlify", { type: "streamable_http" }),
     mcpInventoryEntry("node_repl"),
   ])
   for (const executionProfile of ["workflow-bulk-v1", "workflow-plan-v1", "workflow-research-v1"] as const) {
@@ -677,8 +676,8 @@ test("execution profiles build their exact known feature and MCP override sets",
       executionProfile === "workflow-research-v1" ? [0, 0] : [undefined, undefined],
     )
     const expectedMcp = executionProfile === "workflow-research-v1"
-      ? 'mcp_servers={context7={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},executor={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},node_repl={command="",enabled=false},btca={enabled=true},executor_research={enabled=true},grok_search={enabled=true},mintlify={enabled=true}}'
-      : 'mcp_servers={btca={command="",enabled=false},context7={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},executor={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},executor_research={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},grok_search={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},mintlify={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},node_repl={command="",enabled=false}}'
+      ? 'mcp_servers={context7={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},executor={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},node_repl={command="",enabled=false},btca={enabled=true},executor_research={enabled=true},grok_search={enabled=true}}'
+      : 'mcp_servers={btca={command="",enabled=false},context7={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},executor={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},executor_research={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},grok_search={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},node_repl={command="",enabled=false}}'
     assert.deepEqual(configValues((worker as any).appServerArgs), ["thread_unload_delay_secs=0", expectedMcp, ...PROFILE_FEATURE_ARGS[executionProfile]])
     await worker.shutdown()
   }
@@ -692,7 +691,6 @@ test("research profile fails before worker launch when executor_research is abse
     readMcpInventory: async () => JSON.stringify([
       mcpInventoryEntry("btca"),
       mcpInventoryEntry("grok_search", { type: "streamable_http" }),
-      mcpInventoryEntry("mintlify", { type: "streamable_http" }),
     ]),
     readFeatureInventory: async () => {
       featureReads += 1

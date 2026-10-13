@@ -38,8 +38,8 @@ export class JsonRpcResponseError extends Error {
   }
 }
 
-/** Spawns the child. Overridable in tests with a scripted fake process. */
-export type SpawnChild = () => ChildProcessWithoutNullStreams
+/** Spawns the child with the client's environment. Overridable in tests with a scripted fake process. */
+export type SpawnChild = (env: NodeJS.ProcessEnv | undefined) => ChildProcessWithoutNullStreams
 
 export interface JsonRpcStdioOptions {
   /** Spawn the underlying child. Defaults to `spawn(bin, args, {cwd, env, stdio})`. */
@@ -48,6 +48,8 @@ export interface JsonRpcStdioOptions {
   args?: string[]
   /** Working directory for the default spawn; omitted to inherit the parent's cwd. */
   cwd?: string
+  /** Child environment; omitted to inherit the parent's. */
+  env?: NodeJS.ProcessEnv
   /** Per-request timeout in ms (0/undefined disables). Rejects the request and is retryable. */
   requestTimeoutMs?: number
   /** Max stderr bytes retained for crash diagnostics (ring buffer). */
@@ -77,6 +79,7 @@ export class JsonRpcStdioClient {
   private dead = false
 
   private readonly spawnChild: SpawnChild
+  private readonly env?: NodeJS.ProcessEnv
   private readonly requestTimeoutMs: number
   private readonly stderrLimit: number
   private readonly onServerRequest?: (id: JsonRpcId, method: string, params: unknown) => void
@@ -86,7 +89,8 @@ export class JsonRpcStdioClient {
   constructor(opts: JsonRpcStdioOptions = {}) {
     const bin = opts.bin ?? "codex"
     const args = opts.args ?? ["app-server"]
-    this.spawnChild = opts.spawnChild ?? (() => spawn(bin, args, { cwd: opts.cwd, stdio: ["pipe", "pipe", "pipe"] }))
+    this.spawnChild = opts.spawnChild ?? ((env) => spawn(bin, args, { cwd: opts.cwd, env, stdio: ["pipe", "pipe", "pipe"] }))
+    this.env = opts.env
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 0
     this.stderrLimit = opts.stderrLimit ?? DEFAULT_STDERR_LIMIT
     this.onServerRequest = opts.onServerRequest
@@ -104,7 +108,7 @@ export class JsonRpcStdioClient {
     if (this.child) return
     let child: ChildProcessWithoutNullStreams
     try {
-      child = this.spawnChild()
+      child = this.spawnChild(this.env)
     } catch (err) {
       throw new StdioTransportError("spawn_failed", `failed to spawn child: ${errMessage(err)}`)
     }

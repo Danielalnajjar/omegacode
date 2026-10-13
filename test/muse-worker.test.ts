@@ -453,6 +453,35 @@ test("Muse research profile keeps only its servers, re-enabled, with ${VAR} expa
   }
 })
 
+test("Muse research profile environment lacks EXECUTOR_API_KEY while other runs keep it", { skip: process.platform === "win32" }, async () => {
+  const root = mkdtempSync(join(tmpdir(), "muse-research-env-"))
+  const previous = process.env.XDG_CONFIG_HOME
+  const previousKey = process.env.EXECUTOR_API_KEY
+  try {
+    process.env.XDG_CONFIG_HOME = root
+    process.env.EXECUTOR_API_KEY = "exp_fake_test_key"
+    mkdirSync(join(root, "muse"))
+    writeFileSync(join(root, "muse", "settings.json"), JSON.stringify({ mcpServers: {
+      executor_research: { type: "streamable-http", url: "https://executor.example/mcp", headers: { Authorization: "${EXECUTOR_API_KEY}" } },
+      btca: { type: "stdio", command: "btca" },
+      grok_search: { type: "stdio", command: "node", args: ["grok.js"] },
+    } }))
+    for (const museExecutionProfile of [undefined, "workflow-research-v1"] as const) {
+      const { worker, spawned } = harness([versionOk, (p) => { p.pushLine(terminal()); p.end(0) }], { readGithubToken: async () => "gho_test" })
+      await worker.runAgent(spec({ museExecutionProfile }), ctx())
+      assert.equal(spawned[1]!.env!.PATH, process.env.PATH)
+      assert.equal(spawned[1]!.env!.EXECUTOR_API_KEY, museExecutionProfile ? undefined : "exp_fake_test_key")
+    }
+    assert.equal(process.env.EXECUTOR_API_KEY, "exp_fake_test_key")
+  } finally {
+    if (previous === undefined) delete process.env.XDG_CONFIG_HOME
+    else process.env.XDG_CONFIG_HOME = previous
+    if (previousKey === undefined) delete process.env.EXECUTOR_API_KEY
+    else process.env.EXECUTOR_API_KEY = previousKey
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 // Regression: malformed source settings fail as the worker's own error, before any executable is invoked.
 test("Muse malformed source settings is invalid_config", async () => {
   const root = mkdtempSync(join(tmpdir(), "muse-bad-config-"))

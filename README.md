@@ -121,7 +121,9 @@ Provider-native options stay deliberately provider-specific:
   profile-allowlisted, and plugins are rejected.
 - Codex's `workflow-research-v1` execution profile exposes only `btca`, `executor_research`,
   and `grok_search`. It explicitly disables the full `executor` server and fails before
-  worker launch if any allowlisted server is absent from the host inventory.
+  worker launch if any allowlisted server is absent from the host inventory. Its app-server
+  starts without `EXECUTOR_API_KEY`, so the worker's shell never holds the full-access Executor
+  key; `executor_research` signs in with OAuth to a research-only connection.
 
 ## CLI
 

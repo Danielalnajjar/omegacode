@@ -263,6 +263,8 @@ function extractionPrompt(spec: AgentSpec, workingText: string, errors: string):
 /** Only settings are copied; all other entries, including auth, remain source-owned symlinks. */
 function privateConfigEnv(scratch: string, readOnly: boolean, profile?: MuseExecutionProfileName): NodeJS.ProcessEnv {
   const env = { ...process.env }
+  // Research workers read untrusted web content, so they never inherit the full-access Executor key.
+  if (profile === "workflow-research-v1") delete env.EXECUTOR_API_KEY
   const source = resolve(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "muse")
   let settingsText = "{}"
   try { settingsText = readFileSync(join(source, "settings.json"), "utf8") } catch (err) {

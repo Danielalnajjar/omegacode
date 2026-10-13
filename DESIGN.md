@@ -370,6 +370,7 @@ small registry of live workers and lazily starts each provider the first time it
 - Named execution profiles own the app-server's startup surface. `workflow-research-v1` enables only
   `btca`, `executor_research`, and `grok_search`, disables every other inventoried MCP
   server (including full `executor`), and fails before spawn if any allowlisted server is missing.
+  Its app-server environment drops `EXECUTOR_API_KEY`; `executor_research` signs in with OAuth.
 - An unprofiled app-server disables every stdio and HTTP MCP server in a project-neutral config
   inventory (read with plugins off, since plugin-provided servers have no host transport to merge
   onto) with one `mcp_servers={name={enabled=false},...}` launch value that keeps each host transport. It

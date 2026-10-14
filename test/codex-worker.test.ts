@@ -479,6 +479,7 @@ function makeServedWorker(
     threadListResult?: unknown | ((params: any) => unknown)
     threadReadResult?: unknown | ((params: any) => unknown)
     onServerReq?: (child: FakeChild, req: any) => void
+    onSpawn?: (env: NodeJS.ProcessEnv | undefined) => void
   } = {},
 ): { worker: CodexWorker; getChild: () => FakeChild } {
   let child!: FakeChild
@@ -495,7 +496,8 @@ function makeServedWorker(
     requestTimeoutMs: opts.requestTimeoutMs,
     turnStallTimeoutMs: opts.turnStallTimeoutMs,
     threadEphemeral: opts.threadEphemeral,
-    spawnChild: () => {
+    spawnChild: (env) => {
+      opts.onSpawn?.(env)
       child = new FakeChild()
       const threadId = opts.threadId ?? "thread-1"
       child.onWrite = (req: any) => {
@@ -680,6 +682,38 @@ test("execution profiles build their exact known feature and MCP override sets",
       : 'mcp_servers={btca={command="",enabled=false},context7={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},executor={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},executor_research={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},grok_search={url="http://127.0.0.1:9/omegacode-managed-disabled",enabled=false},node_repl={command="",enabled=false}}'
     assert.deepEqual(configValues((worker as any).appServerArgs), ["thread_unload_delay_secs=0", expectedMcp, ...PROFILE_FEATURE_ARGS[executionProfile]])
     await worker.shutdown()
+  }
+})
+
+test("research profile app-server environment lacks EXECUTOR_API_KEY while other profiles keep it", async () => {
+  const inventory = JSON.stringify([
+    mcpInventoryEntry("btca"),
+    mcpInventoryEntry("executor_research", { enabled: false, type: "streamable_http" }),
+    mcpInventoryEntry("grok_search", { type: "streamable_http" }),
+  ])
+  const previousKey = process.env.EXECUTOR_API_KEY
+  process.env.EXECUTOR_API_KEY = "exp_fake_test_key"
+  try {
+    for (const executionProfile of [undefined, "workflow-bulk-v1", "workflow-plan-v1", "workflow-research-v1"] as const) {
+      let spawnEnv: NodeJS.ProcessEnv | undefined
+      const { worker } = makeServedWorker(
+        (_req, reply) => {
+          reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
+          reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
+        },
+        { executionProfile, readMcpInventory: async () => inventory, onSpawn: (env) => (spawnEnv = env) },
+      )
+      await worker.runAgent(spec(), ctx())
+      await worker.shutdown()
+      // Compare key lists: Windows stores PATH as Path, which only process.env reads case-insensitively.
+      const otherKeys = (env: NodeJS.ProcessEnv) => Object.keys(env).filter((key) => key !== "EXECUTOR_API_KEY").sort()
+      assert.deepEqual(otherKeys(spawnEnv ?? {}), otherKeys(process.env))
+      assert.equal(spawnEnv?.EXECUTOR_API_KEY, executionProfile === "workflow-research-v1" ? undefined : "exp_fake_test_key")
+    }
+    assert.equal(process.env.EXECUTOR_API_KEY, "exp_fake_test_key")
+  } finally {
+    if (previousKey === undefined) delete process.env.EXECUTOR_API_KEY
+    else process.env.EXECUTOR_API_KEY = previousKey
   }
 })
 

@@ -422,6 +422,13 @@ function isMissingBinaryError(error: unknown): boolean {
   return (code === "ENOENT" || code === "EACCES") && typeof syscall === "string" && syscall.startsWith("spawn")
 }
 
+/** Research workers read untrusted web content, so they never inherit the full-access Executor key. */
+function codexAppServerEnv(profile: CodexExecutionProfileName | undefined): NodeJS.ProcessEnv {
+  const env = { ...process.env }
+  if (profile === "workflow-research-v1") delete env.EXECUTOR_API_KEY
+  return env
+}
+
 async function readCodexMcpInventory(bin: string, cwd: string): Promise<string> {
   // With plugins on, the list also names plugin-provided servers. Those have no host transport,
   // so a launch override naming one fails config load; plugins are selected with codexPlugins.
@@ -946,6 +953,7 @@ export class CodexWorker implements Worker {
       // Generated launch overrides describe the neutral inventory, not OmegaCode's project.
       // Explicit args own their startup surface and keep the caller's inherited cwd.
       cwd: this.hasExplicitAppServerArgs ? undefined : this.neutralCwd,
+      env: codexAppServerEnv(this.executionProfile),
       spawnChild: this.spawnChild,
       requestTimeoutMs: this.requestTimeoutMs,
       onServerRequest: (id, method, params) => this.handleServerRequest(id, method, params),

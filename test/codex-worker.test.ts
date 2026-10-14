@@ -705,7 +705,9 @@ test("research profile app-server environment lacks EXECUTOR_API_KEY while other
       )
       await worker.runAgent(spec(), ctx())
       await worker.shutdown()
-      assert.equal(spawnEnv?.PATH, process.env.PATH)
+      // Compare key lists: Windows stores PATH as Path, which only process.env reads case-insensitively.
+      const otherKeys = (env: NodeJS.ProcessEnv) => Object.keys(env).filter((key) => key !== "EXECUTOR_API_KEY").sort()
+      assert.deepEqual(otherKeys(spawnEnv ?? {}), otherKeys(process.env))
       assert.equal(spawnEnv?.EXECUTOR_API_KEY, executionProfile === "workflow-research-v1" ? undefined : "exp_fake_test_key")
     }
     assert.equal(process.env.EXECUTOR_API_KEY, "exp_fake_test_key")

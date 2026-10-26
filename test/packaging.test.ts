@@ -73,6 +73,25 @@ function makeOmegaTarball(externalRoot: string, version: string, marker: string)
   return join(packages, `omegacode-${version}.tgz`)
 }
 
+function packedInstallFixture(temp: string) {
+  const expected = join(temp, "expected")
+  const installed = join(temp, "installed")
+  const bin = join(temp, "omegacode")
+  const archive = join(temp, "approved.tgz")
+  mkdirSync(join(expected, "dist"), { recursive: true })
+  writeFileSync(join(expected, "dist", "cli.js"), "#!/usr/bin/env node\n", { mode: 0o755 })
+  writeFileSync(join(expected, "package.json"), "{}\n", { mode: 0o644 })
+  execFileSync("tar", ["-czf", archive, "-C", expected, "."])
+  cpSync(expected, installed, { recursive: true })
+  symlinkSync(join(installed, "dist", "cli.js"), bin)
+  const marker = Buffer.from(`sha512-${createHash("sha512").update(readFileSync(archive)).digest("base64")}`)
+  const verify = (receipt?: string) => execFileSync(process.execPath, [
+    join(root, "scripts", "verify-packed-install.mjs"), expected, installed, bin, archive,
+    ...(receipt ? [receipt] : []),
+  ], { encoding: "utf8", stdio: "pipe" })
+  return { expected, installed, bin, archive, marker, verify }
+}
+
 const bunAvailable = (() => {
   try {
     execFileSync("bun", ["--version"], { stdio: "pipe" })
@@ -594,38 +613,113 @@ describe("verified packed global refresh", () => {
   test("packed-install verifier requires exact bidirectional payload parity and the installed bin", { skip: process.platform === "win32" }, () => {
     const temp = mkdtempSync(join(tmpdir(), "omega-packed-verify-"))
     try {
-      const expected = join(temp, "expected")
-      const installed = join(temp, "installed")
-      const bin = join(temp, "omegacode")
+      const { expected, installed, bin, verify } = packedInstallFixture(temp)
       const receipt = join(temp, "receipt.json")
-      mkdirSync(join(expected, "dist"), { recursive: true })
-      writeFileSync(join(expected, "dist", "cli.js"), "#!/usr/bin/env node\n", { mode: 0o755 })
-      writeFileSync(join(expected, "package.json"), "{}\n", { mode: 0o644 })
-      cpSync(expected, installed, { recursive: true })
-      symlinkSync(join(installed, "dist", "cli.js"), bin)
 
-      const output = execFileSync(process.execPath, [join(root, "scripts", "verify-packed-install.mjs"), expected, installed, bin, receipt], { encoding: "utf8" })
+      const output = verify(receipt)
       assert.equal(JSON.parse(output).ok, true)
       assert.equal(JSON.parse(readFileSync(receipt, "utf8")).entryCount, 3)
+      assert.throws(
+        () => execFileSync(process.execPath, [join(root, "scripts", "verify-packed-install.mjs"), expected, installed, bin], { encoding: "utf8", stdio: "pipe" }),
+        /usage:.*<approved-archive>/,
+      )
 
       const runtimeDependency = join(installed, "node_modules", "runtime-dependency")
       mkdirSync(runtimeDependency, { recursive: true })
       writeFileSync(join(runtimeDependency, "package.json"), "{}\n")
       symlinkSync(join(runtimeDependency, "package.json"), join(runtimeDependency, "current-package.json"))
-      assert.equal(
-        JSON.parse(execFileSync(process.execPath, [join(root, "scripts", "verify-packed-install.mjs"), expected, installed, bin], { encoding: "utf8" })).ok,
-        true,
-      )
+      assert.equal(JSON.parse(verify()).ok, true)
 
       writeFileSync(join(installed, "stale-extra"), "stale\n")
-      assert.throws(
-        () => execFileSync(process.execPath, [join(root, "scripts", "verify-packed-install.mjs"), expected, installed, bin], { encoding: "utf8", stdio: "pipe" }),
-        /installed package payload differs/,
-      )
+      assert.throws(verify, /installed package payload differs/)
     } finally {
       rmSync(temp, { recursive: true, force: true })
     }
   })
+
+  test("packed-install verifier accepts only the archive-matched root Bun marker as metadata", { skip: process.platform === "win32" }, () => {
+    const temp = mkdtempSync(join(tmpdir(), "omega-packed-marker-"))
+    try {
+      const { installed, marker, verify } = packedInstallFixture(temp)
+      const withoutMarker = JSON.parse(verify())
+      writeFileSync(join(installed, ".bun-tag"), marker)
+      const receipt = join(temp, "receipt.json")
+      assert.deepEqual(JSON.parse(verify(receipt)), withoutMarker)
+      assert.deepEqual(JSON.parse(readFileSync(receipt, "utf8")), withoutMarker)
+    } finally {
+      rmSync(temp, { recursive: true, force: true })
+    }
+  })
+
+  for (const mismatch of ["wrong digest", "trailing newline", "another archive"]) {
+    test(`packed-install verifier rejects a Bun marker with ${mismatch}`, { skip: process.platform === "win32" }, () => {
+      const temp = mkdtempSync(join(tmpdir(), "omega-packed-marker-"))
+      try {
+        const { installed, archive, marker, verify } = packedInstallFixture(temp)
+        let invalid = Buffer.from(`sha512-${"A".repeat(86)}==`)
+        if (mismatch === "trailing newline") invalid = Buffer.concat([marker, Buffer.from("\n")])
+        if (mismatch === "another archive") {
+          const otherArchive = join(temp, "other.tgz")
+          cpSync(archive, otherArchive)
+          writeFileSync(otherArchive, Buffer.concat([readFileSync(otherArchive), Buffer.from("different archive bytes")]))
+          invalid = Buffer.from(`sha512-${createHash("sha512").update(readFileSync(otherArchive)).digest("base64")}`)
+        }
+        writeFileSync(join(installed, ".bun-tag"), invalid)
+        assert.throws(verify, /does not match the approved archive integrity/)
+      } finally {
+        rmSync(temp, { recursive: true, force: true })
+      }
+    })
+  }
+
+  for (const type of ["symlink", "dangling symlink", "directory"]) {
+    test(`packed-install verifier rejects a root Bun marker ${type}`, { skip: process.platform === "win32" }, () => {
+      const temp = mkdtempSync(join(tmpdir(), "omega-packed-marker-"))
+      try {
+        const { installed, marker, verify } = packedInstallFixture(temp)
+        const markerPath = join(installed, ".bun-tag")
+        if (type === "directory") {
+          mkdirSync(markerPath)
+        } else {
+          const target = join(temp, "marker-target")
+          if (type === "symlink") writeFileSync(target, marker)
+          symlinkSync(target, markerPath)
+        }
+        assert.throws(verify, /must be a non-symlink regular file/)
+      } finally {
+        rmSync(temp, { recursive: true, force: true })
+      }
+    })
+  }
+
+  test("packed-install verifier rejects a packed root Bun marker collision", { skip: process.platform === "win32" }, () => {
+    const temp = mkdtempSync(join(tmpdir(), "omega-packed-marker-"))
+    try {
+      const { expected, installed, archive, verify } = packedInstallFixture(temp)
+      writeFileSync(join(expected, ".bun-tag"), "package payload\n")
+      execFileSync("tar", ["-czf", archive, "-C", expected, "."])
+      writeFileSync(join(installed, ".bun-tag"), `sha512-${createHash("sha512").update(readFileSync(archive)).digest("base64")}`)
+      assert.throws(verify, /packed package root .bun-tag collides/)
+    } finally {
+      rmSync(temp, { recursive: true, force: true })
+    }
+  })
+
+  for (const change of ["nested extra marker", "extra payload", "changed payload"]) {
+    test(`a valid Bun marker cannot conceal ${change}`, { skip: process.platform === "win32" }, () => {
+      const temp = mkdtempSync(join(tmpdir(), "omega-packed-marker-"))
+      try {
+        const { installed, marker, verify } = packedInstallFixture(temp)
+        writeFileSync(join(installed, ".bun-tag"), marker)
+        const path = change === "nested extra marker" ? join("dist", ".bun-tag")
+          : change === "extra payload" ? "stale-extra" : "package.json"
+        writeFileSync(join(installed, path), "unexpected bytes\n")
+        assert.throws(verify, /installed package payload differs/)
+      } finally {
+        rmSync(temp, { recursive: true, force: true })
+      }
+    })
+  }
 
   test("global refresh verifies isolation before cutover and restores only a started failed cutover", () => {
     const script = read("scripts/refresh-global.sh")
@@ -758,6 +852,9 @@ if (process.argv[2] === "add") {
       })
 
       const packagePath = join(prefix, "install", "global", "node_modules", "omegacode")
+      // Model the legacy checkout-linked layout independently of Bun's current directory-install behavior.
+      rmSync(packagePath, { recursive: true, force: true })
+      symlinkSync(source, packagePath)
       const binPath = join(prefix, "bin", "omegacode")
       const globalPackageJson = join(prefix, "install", "global", "package.json")
       const globalLock = join(prefix, "install", "global", "bun.lock")
@@ -798,6 +895,9 @@ if (process.argv[2] === "add") {
       })
 
       const packagePath = join(prefix, "install", "global", "node_modules", "omegacode")
+      // Model the legacy checkout-linked layout independently of Bun's current directory-install behavior.
+      rmSync(packagePath, { recursive: true, force: true })
+      symlinkSync(source, packagePath)
       const binPath = join(prefix, "bin", "omegacode")
       assert.equal(containsSymlink(packagePath), true, "fixture did not create a checkout-linked Bun package")
 

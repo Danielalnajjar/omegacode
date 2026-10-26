@@ -202,6 +202,7 @@ node scripts/verify-packed-install.mjs \
   "$tmp/extracted/package" \
   "$isolated/install/global/node_modules/omegacode" \
   "$isolated/bin/omegacode" \
+  "$tarball" \
   "$tmp/isolated-receipt.json" >/dev/null
 
 mkdir -p "$(dirname "$lock_dir")"
@@ -243,7 +244,8 @@ fi
 node scripts/verify-packed-install.mjs \
   "$tmp/extracted/package" \
   "$active_prefix/install/global/node_modules/omegacode" \
-  "$active_prefix/bin/omegacode" >/dev/null
+  "$active_prefix/bin/omegacode" \
+  "$stable_tarball" >/dev/null
 committed=1
 
 dirty=""

@@ -4,9 +4,9 @@ import { createHash } from "node:crypto"
 import { lstatSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs"
 import { join, relative, resolve } from "node:path"
 
-const [expectedArg, installedArg, binArg, receiptArg] = process.argv.slice(2)
-if (!expectedArg || !installedArg || !binArg) {
-  process.stderr.write("usage: verify-packed-install.mjs <extracted-package> <installed-package> <bin> [receipt]\n")
+const [expectedArg, installedArg, binArg, archiveArg, receiptArg] = process.argv.slice(2)
+if (!expectedArg || !installedArg || !binArg || !archiveArg) {
+  process.stderr.write("usage: verify-packed-install.mjs <extracted-package> <installed-package> <bin> <approved-archive> [receipt]\n")
   process.exit(2)
 }
 
@@ -18,7 +18,7 @@ function digest(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex")
 }
 
-function inventory(root, { ignoreTopLevelNodeModules = false } = {}) {
+function inventory(root, { ignoreTopLevelNodeModules = false, bunTag } = {}) {
   const rows = []
   const visit = (directory) => {
     for (const name of readdirSync(directory).sort()) {
@@ -26,6 +26,12 @@ function inventory(root, { ignoreTopLevelNodeModules = false } = {}) {
       const path = join(directory, name)
       const info = lstatSync(path)
       const item = relative(root, path)
+      if (directory === root && name === ".bun-tag") {
+        if (!bunTag) throw new Error("packed package root .bun-tag collides with Bun installer metadata")
+        if (!info.isFile()) throw new Error(`${path} must be a non-symlink regular file`)
+        if (!readFileSync(path).equals(bunTag)) throw new Error(`${path} does not match the approved archive integrity`)
+        continue
+      }
       if (info.isSymbolicLink()) throw new Error(`${path} is a symlink; packed package payloads must be self-contained`)
       if (info.isDirectory()) {
         rows.push({ path: item, type: "directory", mode: info.mode & 0o777 })
@@ -42,7 +48,8 @@ function inventory(root, { ignoreTopLevelNodeModules = false } = {}) {
 }
 
 const expected = inventory(expectedRoot)
-const installed = inventory(installedRoot, { ignoreTopLevelNodeModules: true })
+const bunTag = Buffer.from(`sha512-${createHash("sha512").update(readFileSync(archiveArg)).digest("base64")}`)
+const installed = inventory(installedRoot, { ignoreTopLevelNodeModules: true, bunTag })
 if (JSON.stringify(installed) !== JSON.stringify(expected)) {
   const firstDifference = Array.from(
     { length: Math.max(expected.length, installed.length) },

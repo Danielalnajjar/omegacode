@@ -9,7 +9,7 @@ import { newRunId, runWorkflow, type RunOverrides } from "./runtime/run.js"
 import { compileWorkflowBody, parseWorkflow, WorkflowSyntaxError } from "./runtime/sandbox.js"
 import { listWorkflows, resolveWorkflowName, WorkflowNotFoundError } from "./runtime/registry.js"
 import { dataRoot, Journal, JournalNotFoundError, listRunIds, ResumePreconditionError, runDir } from "./runtime/journal.js"
-import { expectedLogPath, isValidRunId, loadRunStatus, type RunStatusSnapshot } from "./runtime/run-store.js"
+import { expectedLogPath, isValidRunId, loadRunStatus, type AgentCounts, type RunStatusSnapshot } from "./runtime/run-store.js"
 import { WorkflowError } from "./runtime/primitives.js"
 import { startViewer } from "./server/serve.js"
 import { AgentError, AgentInterrupted } from "./worker/index.js"
@@ -521,6 +521,7 @@ async function cmdRun(flags: Flags): Promise<void> {
   if (flags.json === true) {
     const url = base ? `${base}#/run/${outcome.runId}` : undefined
     process.stdout.write(JSON.stringify({ runId: outcome.runId, status: outcome.status, agentCounts: outcome.agentCounts, url, result: outcome.result, error: outcome.error }, null, 2) + "\n")
+    if (outcome.status === "completed") warnFailedAgents(outcome.agentCounts, outcome.runId)
   } else if (outcome.status === "completed") {
     const r = outcome.result
     process.stdout.write((typeof r === "string" ? r : JSON.stringify(r, null, 2)) + "\n")
@@ -699,7 +700,14 @@ function isTerminalStatus(status: RunStatusSnapshot["status"]): boolean {
   return status === "completed" || status === "failed" || status === "interrupted" || status === "stale"
 }
 
+/** A run completes past agents that failed inside parallel or pipeline, so its status alone hides them. */
+function warnFailedAgents(counts: AgentCounts, runId: string): void {
+  if (counts.failed === 0) return
+  process.stderr.write(`warning: ${counts.failed} agent(s) failed; unless the workflow handled the failure, their results are null. Rerun only them: repeat the original omegacode run command, including its --args or --args-file and provider flags, with --resume ${runId}\n`)
+}
+
 function writeStatus(snapshot: RunStatusSnapshot, flags: Flags): void {
+  if (snapshot.status === "completed") warnFailedAgents(snapshot.agentCounts, snapshot.runId)
   if (flags.json === true) {
     process.stdout.write(JSON.stringify(snapshot, null, 2) + "\n")
     return

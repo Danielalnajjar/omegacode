@@ -283,10 +283,13 @@ describe("CLI end-to-end (--fake)", () => {
     assert.equal(outcome.status, "completed")
     assert.equal(outcome.result[1], null)
     assert.deepEqual(outcome.agentCounts, { done: 1, failed: 1, unfinished: 0, skipped: 0 })
+    const rerun = `warning: 1 agent(s) failed; unless the workflow handled the failure, their results are null. Rerun only them: repeat the original omegacode run command, including its --args or --args-file and provider flags, with --resume ${outcome.runId}\n`
+    assert.ok(run.stderr.includes(rerun), run.stderr)
 
     const status = await runCli(["status", outcome.runId, "--json"], { OMEGACODE_HOME: home })
     assert.equal(status.code, 0, status.stderr)
     assert.deepEqual(JSON.parse(status.stdout).agentCounts, outcome.agentCounts)
+    assert.equal(status.stderr, rerun)
   })
 
   test("--fake --no-serve --json --start-json emits start event on stderr and final JSON on stdout", async () => {

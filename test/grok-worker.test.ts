@@ -11,6 +11,10 @@ import { AgentError, AgentInterrupted, type WorkerProgress } from "../src/worker
 import type { SpawnProcess } from "../src/worker/subprocess-jsonl.js"
 import type { AgentSpec, Effort } from "../src/dsl/types.js"
 
+// An ambient gh token would replace the stub token and print in a failing assertion.
+delete process.env.GH_TOKEN
+delete process.env.GITHUB_TOKEN
+
 class FakeStdin extends EventEmitter {
   writable = true
   chunks: string[] = []

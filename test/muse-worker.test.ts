@@ -18,11 +18,15 @@ const priorData = process.env.XDG_DATA_HOME
 const priorXdg = process.env.XDG_CONFIG_HOME
 const priorIdle = process.env.TBH_STREAM_IDLE_TIMEOUT_SECS
 const priorFirst = process.env.TBH_STREAM_FIRST_EVENT_TIMEOUT_SECS
+// An ambient gh token would replace the stub token and print in a failing assertion.
+const priorTokens = { GH_TOKEN: process.env.GH_TOKEN, GITHUB_TOKEN: process.env.GITHUB_TOKEN }
 before(() => {
   process.env.XDG_CONFIG_HOME = configRoot
   process.env.XDG_DATA_HOME = configRoot
   delete process.env.TBH_STREAM_IDLE_TIMEOUT_SECS
   delete process.env.TBH_STREAM_FIRST_EVENT_TIMEOUT_SECS
+  delete process.env.GH_TOKEN
+  delete process.env.GITHUB_TOKEN
 })
 after(() => {
   if (priorData === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = priorData
@@ -32,6 +36,7 @@ after(() => {
   else process.env.TBH_STREAM_IDLE_TIMEOUT_SECS = priorIdle
   if (priorFirst === undefined) delete process.env.TBH_STREAM_FIRST_EVENT_TIMEOUT_SECS
   else process.env.TBH_STREAM_FIRST_EVENT_TIMEOUT_SECS = priorFirst
+  for (const [name, value] of Object.entries(priorTokens)) if (value !== undefined) process.env[name] = value
   rmSync(configRoot, { recursive: true, force: true })
 })
 

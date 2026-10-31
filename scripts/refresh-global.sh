@@ -9,6 +9,11 @@
 #   bash scripts/refresh-global.sh --fast   # skip typecheck/test (only when they just ran green)
 set -euo pipefail
 
+# Use the same modes for tar extraction and both Bun installs, independent of
+# the caller (BB shells on WSL use 002). Keep full payload-mode verification.
+caller_umask="$(umask)"
+umask 022
+
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo"
 
@@ -126,6 +131,8 @@ verify_restored_path() {
 
 restore_active() {
   set +e
+  # Reconciliation must recreate pre-existing globals with the caller's modes.
+  umask "$caller_umask"
   rollback_failures=()
   restore_snapshot "initial"
   if [[ ${#rollback_failures[@]} -eq 0 ]] \

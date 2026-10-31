@@ -671,7 +671,9 @@ export class Runtime {
         }
         // A remote agent succeeds only once its commits are in this repository (ADR 0003): a
         // journaled success whose work never arrived would replay as done on every resume.
-        if (remote) collected = await withinDeadline(this.collectRemote(remote, runSpec.provider, agentAbort.signal))
+        // Collection is awaited, not raced: the deadline aborts its transfer, and a publish that
+        // has begun settles before any failure is journaled or a salvage collection starts.
+        if (remote) collected = await this.collectRemote(remote, runSpec.provider, agentAbort.signal)
         const durationMs = Date.now() - startedAt
         this.totalUsage = addUsage(this.totalUsage, attemptUsage)
         const branch = remote ? collected?.branch : worktree?.branch

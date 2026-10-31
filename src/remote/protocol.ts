@@ -1,7 +1,8 @@
 // Wire format between a run and `omegacode remote <command>` on another machine (ADR 0003).
 //
 // Requests: one JSON line on stdin, then the raw bytes the request declares (`payloadBytes`), then,
-// for `run` only, control lines such as {"t":"abort"}. EOF on stdin aborts a `run`.
+// for `run` and `prepare`, control lines such as {"t":"abort"}. The run keeps their stdin open
+// until it has the reply, so EOF there means the run gave up and aborts them.
 // Replies: JSON lines on stdout, each tagged `ocr: PROTOCOL_VERSION` so a stray line from a login
 // shell can never be mistaken for one. A `bytes` line is followed by exactly that many raw bytes.
 // Every call ends with exactly one `done` or `error` line; a stream that ends without one is a lost
@@ -24,6 +25,8 @@ export interface PrepareRequest {
   /** This attempt's worktree name, `<runId>-<index>-<nonce>`; its internal branch is `omegacode/<name>`. */
   name: string
   base: string
+  /** When the run took its branch snapshot; the machine applies a manifest only if it is newer. */
+  generation: number
   /** The run repository's branches: the cache's branches are set to these, so names resolve there. */
   branches: Record<string, string>
   /** Bundle bytes following this line (0 when the machine already has every object). */

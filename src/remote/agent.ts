@@ -25,6 +25,13 @@ const HELLO_TIMEOUT_MS = 30_000
 const RUN_ABORT_GRACE_MS = 15_000
 const ZERO_SHA = "0".repeat(40)
 
+let lastGeneration = 0
+/** A strictly increasing snapshot stamp, so a machine can tell a delayed older manifest apart. */
+function nextGeneration(): number {
+  lastGeneration = Math.max(Date.now(), lastGeneration + 1)
+  return lastGeneration
+}
+
 /**
  * Resolve the declared machines and prove each remote one answers `hello` in-band with this
  * protocol version and the host id it was chosen as. Runs before the first agent starts; every
@@ -120,7 +127,8 @@ export class RemoteCheckout {
       remoteCall({ machine: a.machine, transport: a.transport, command, request, payload, signal, timeoutMs: TRANSFER_TIMEOUT_MS, abortGraceMs: 0 })
     const { tips } = (await call("have", { repoKey: key })) as HaveReply
     const bundleRef = `refs/omegacode/xfer/${name}`
-    const { base, branches, expectedTip, payload } = await a.lock(async () => {
+    const { base, branches, expectedTip, payload, generation } = await a.lock(async () => {
+      const generation = nextGeneration()
       const base = await git(a.gitRoot, ["rev-parse", "HEAD"])
       const listed = await git(a.gitRoot, ["for-each-ref", "--format=%(objectname) %(refname:strip=2)", "refs/heads/"])
       const branches: Record<string, string> = {}
@@ -144,20 +152,29 @@ export class RemoteCheckout {
           if (String(err.stderr).includes("empty bundle")) return false
           throw err
         })
-        return { base, branches, expectedTip, payload: created ? readFileSync(file) : undefined }
+        return { base, branches, expectedTip, generation, payload: created ? readFileSync(file) : undefined }
       } finally {
         await git(a.gitRoot, ["update-ref", "-d", bundleRef]).catch(() => {})
         rmSync(dir, { recursive: true, force: true })
       }
     })
-    const prepared = (await call("prepare", {
-      repoKey: key,
-      name,
-      base,
-      branches,
-      payloadBytes: payload?.length ?? 0,
-      ...(payload ? { payloadSha256: createHash("sha256").update(payload).digest("hex") } : {}),
-    }, payload)) as PrepareReply
+    let prepared: PrepareReply
+    try {
+      prepared = (await call("prepare", {
+        repoKey: key,
+        name,
+        base,
+        generation,
+        branches,
+        payloadBytes: payload?.length ?? 0,
+        ...(payload ? { payloadSha256: createHash("sha256").update(payload).digest("hex") } : {}),
+      }, payload)) as PrepareReply
+    } catch (err) {
+      // The machine may have added the worktree before the reply was lost. Remove it by name; the
+      // helper's repository lock orders this after a prepare that is still finishing there.
+      await cleanupAttempt(a.machine, a.transport, key, name).catch(() => {})
+      throw err
+    }
     return new RemoteCheckout(a, key, name, base, expectedTip, prepared.path)
   }
 
@@ -212,14 +229,12 @@ export class RemoteCheckout {
   }
 
   async cleanup(): Promise<void> {
-    await remoteCall({
-      machine: this.a.machine,
-      transport: this.a.transport,
-      command: "cleanup",
-      request: { repoKey: this.repoKey, name: this.name },
-      timeoutMs: CLEANUP_TIMEOUT_MS,
-    })
+    await cleanupAttempt(this.a.machine, this.a.transport, this.repoKey, this.name)
   }
+}
+
+function cleanupAttempt(machine: RemoteMachine, transport: RemoteTransport, repoKey: string, name: string): Promise<unknown> {
+  return remoteCall({ machine, transport, command: "cleanup", request: { repoKey, name }, timeoutMs: CLEANUP_TIMEOUT_MS })
 }
 
 export interface RemoteWorkerOpts {

@@ -13,7 +13,7 @@ import { runWorkflow } from "../src/runtime/run.ts"
 import { Journal } from "../src/runtime/journal.ts"
 import { MachineError, resolveMachines, type LiveMachine, type MachineSources, type RemoteMachine } from "../src/remote/machines.ts"
 import { planMachines, RemoteWorker } from "../src/remote/agent.ts"
-import type { RemoteTransport } from "../src/remote/client.ts"
+import { remoteCall, type RemoteTransport } from "../src/remote/client.ts"
 import { AgentError } from "../src/worker/index.ts"
 import { parseWorkflow, WorkflowSyntaxError } from "../src/runtime/sandbox.ts"
 
@@ -256,6 +256,49 @@ test("a second agent on the same machine transfers only the missing history", as
     const thin = execFileSync("git", ["bundle", "create", "-", "HEAD", "^HEAD~1"], { cwd: f.repo }).length
     const full = execFileSync("git", ["bundle", "create", "-", "--branches"], { cwd: f.repo }).length
     assert.ok(sizes[0]! < full && sizes[0]! <= thin + 200, `prepare sent ${sizes[0]} bytes; a one-commit bundle is ${thin}, a full one ${full}`)
+  })
+})
+
+test("a delayed older branch manifest neither rewinds nor deletes the machine's branches", async () => {
+  await withFixture(async (f) => {
+    const machine: RemoteMachine = { hostId: "host_far", label: "Far Machine", ssh: "me@far" }
+    const oldTip = git(f.repo, ["rev-parse", "HEAD~1"])
+    const newTip = git(f.repo, ["rev-parse", "HEAD"])
+    // Give the machine every object once, through an ordinary run.
+    const seeded = await runWorkflow({ file: workflow(f, `return await agent("nothing", { machine: "Far" })`), quiet: true, overrides: { cwd: f.repo }, machineSources: f.sources, remoteTransport: f.transport })
+    assert.equal(seeded.status, "completed", seeded.error)
+    const repoKey = readdirSync(join(f.farHome, "remote", "repos"))[0]!.replace(/\.git$/, "")
+    const cache = join(f.farHome, "remote", "repos", `${repoKey}.git`)
+    const prepare = (name: string, generation: number, branches: Record<string, string>) =>
+      remoteCall({ machine, transport: f.transport, command: "prepare", request: { repoKey, name, base: oldTip, generation, branches, payloadBytes: 0 } })
+    await prepare("newer-1", 2_000_000_000_000, { main: newTip, "feat/a": newTip })
+    // The older snapshot predates feat/a and has main one commit back.
+    await prepare("older-1", 1_000_000_000_000, { main: oldTip })
+    assert.equal(git(cache, ["rev-parse", "main"]), newTip)
+    assert.equal(git(cache, ["rev-parse", "feat/a"]), newTip)
+    // Both attempts still got their worktrees.
+    assert.ok(existsSync(join(f.farHome, "remote", "worktrees", "newer-1")))
+    assert.ok(existsSync(join(f.farHome, "remote", "worktrees", "older-1")))
+  })
+})
+
+test("a prepare whose reply is lost leaves no worktree behind", async () => {
+  await withFixture(async (f) => {
+    // The helper finishes and answers, but the answer never reaches the run.
+    const transport = localTransport(() => f.farHome, (command, child) => {
+      if (command !== "prepare") return
+      const on = child.stdout!.on.bind(child.stdout!)
+      child.stdout!.on = ((event: string, fn: (...args: unknown[]) => void) => on(event, event === "data" ? () => {} : fn)) as typeof child.stdout.on
+    })
+    const file = workflow(f, `return await parallel([() => agent("commit:x.txt", { machine: "Far" })])`)
+    const out = await runWorkflow({ file, quiet: true, overrides: { cwd: f.repo }, machineSources: f.sources, remoteTransport: transport })
+    assert.deepEqual(out.result, [null])
+    const failed = events(out.runId).find((e) => e.type === "agent" && e.state === "failed")
+    assert.match(String(failed?.error), /could not prepare a checkout on Far Machine/)
+    assert.deepEqual(calls(f), [])
+    assert.deepEqual(readdirSync(join(f.farHome, "remote", "worktrees")).filter((n) => !n.endsWith(".pid")), [])
+    const cache = join(f.farHome, "remote", "repos", readdirSync(join(f.farHome, "remote", "repos"))[0]!)
+    assert.equal(git(cache, ["for-each-ref", "refs/heads/omegacode/"]), "")
   })
 })
 

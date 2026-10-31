@@ -170,7 +170,7 @@ export function remoteCall(o: RemoteCallOpts): Promise<unknown> {
     }
     child.stdin.write(JSON.stringify(o.request) + "\n")
     if (o.payload && o.payload.length > 0) child.stdin.write(o.payload)
-    // `run` keeps stdin open: closing it is how the helper learns the run gave up.
-    if (o.command !== "run") child.stdin.end()
+    // `run` and `prepare` keep stdin open: closing it is how the helper learns the run gave up.
+    if (o.command !== "run" && o.command !== "prepare") child.stdin.end()
   })
 }

@@ -143,10 +143,11 @@ async function have(req: HaveRequest): Promise<HaveReply> {
   return { tips: [...new Set(out ? out.split("\n") : [])].slice(0, MAX_TIPS) }
 }
 
-async function prepare(req: PrepareRequest, payload: Buffer): Promise<PrepareReply> {
+async function prepare(req: PrepareRequest, payload: Buffer, signal: AbortSignal): Promise<PrepareReply> {
   const repoKey = requireSafe("repoKey", req.repoKey, SAFE_NAME)
   const name = requireSafe("name", req.name, SAFE_NAME)
   const base = requireSafe("base", req.base, SHA)
+  if (!Number.isSafeInteger(req.generation) || req.generation <= 0) throw new HelperError("bad_request", `invalid generation: ${JSON.stringify(req.generation)}`)
   const branches = Object.entries(req.branches ?? {})
   for (const [branch, sha] of branches) {
     requireSafe("branch commit", sha, SHA)
@@ -182,19 +183,35 @@ async function prepare(req: PrepareRequest, payload: Buffer): Promise<PrepareRep
     for (const sha of [base, ...branches.map(([, s]) => s)]) {
       if (!(await hasCommit(repo, sha))) throw new HelperError("base_missing", `commit ${sha} is not in ${repo} after the transfer`)
     }
-    // Mirror the run's branches exactly so later agents can name earlier agents' branches.
-    // Internal omegacode/* branches are checked out by live worktrees and are never touched.
-    const wanted = new Map(branches.filter(([branch]) => !branch.startsWith("omegacode/")))
-    const current = await git(repo, ["for-each-ref", "--format=%(refname:strip=2)", "refs/heads/"])
     const updates = [`update refs/omegacode/have/${base} ${base}`]
-    for (const branch of current ? current.split("\n") : []) {
-      if (!branch.startsWith("omegacode/") && !wanted.has(branch)) updates.push(`delete refs/heads/${branch}`)
+    // Mirror the run's branches so later agents can name earlier agents' branches, but only from
+    // a newer snapshot than the last one applied: a delayed older prepare must not rewind or
+    // delete a branch a running agent already reads. Branches checked out by live worktrees
+    // (the internal omegacode/* ones, or any an agent switched to) are never touched.
+    const applied = Number(await git(repo, ["config", "--get", "omegacode.generation"]).catch(() => "0"))
+    if (req.generation > applied) {
+      await git(repo, ["worktree", "prune"]).catch(() => {})
+      const listing = await git(repo, ["worktree", "list", "--porcelain"])
+      const checkedOut = new Set(listing.split("\n").filter((l) => l.startsWith("branch refs/heads/")).map((l) => l.slice("branch refs/heads/".length)))
+      const keep = (branch: string): boolean => branch.startsWith("omegacode/") || checkedOut.has(branch)
+      const wanted = new Map(branches.filter(([branch]) => !keep(branch)))
+      const current = await git(repo, ["for-each-ref", "--format=%(refname:strip=2)", "refs/heads/"])
+      for (const branch of current ? current.split("\n") : []) {
+        if (!keep(branch) && !wanted.has(branch)) updates.push(`delete refs/heads/${branch}`)
+      }
+      for (const [branch, sha] of wanted) updates.push(`update refs/heads/${branch} ${sha}`)
     }
-    for (const [branch, sha] of wanted) updates.push(`update refs/heads/${branch} ${sha}`)
     await git(repo, ["update-ref", "--stdin"], updates.join("\n") + "\n")
-    await git(repo, ["worktree", "prune"]).catch(() => {})
+    if (req.generation > applied) await git(repo, ["config", "omegacode.generation", String(req.generation)])
+    // The run gave up (its ssh closed our stdin): add no worktree it cannot clean up.
+    if (signal.aborted) throw new HelperError("interrupted", "prepare was abandoned by the run")
     mkdirSync(dirname(path), { recursive: true })
     await git(repo, ["worktree", "add", "-q", "-b", internalBranch(name), path, base])
+    if (signal.aborted) {
+      await git(repo, ["worktree", "remove", "--force", path]).catch(() => {})
+      await git(repo, ["branch", "-D", internalBranch(name)]).catch(() => {})
+      throw new HelperError("interrupted", "prepare was abandoned by the run")
+    }
   })
   return { path }
 }
@@ -448,7 +465,7 @@ export async function remoteMain(command: string | undefined, opts: RemoteMainOp
           else resolve()
           return
         }
-        // Control lines after the request (only `run` reads them).
+        // Control lines after the request (`run` and `prepare` read them).
         try {
           if ((JSON.parse(line) as { t?: string }).t === "abort") abort.abort()
         } catch {
@@ -481,7 +498,7 @@ export async function remoteMain(command: string | undefined, opts: RemoteMainOp
         value = await have(request as HaveRequest)
         break
       case "prepare":
-        value = await prepare(request as PrepareRequest, payload)
+        value = await prepare(request as PrepareRequest, payload, abort.signal)
         break
       case "run":
         if (process.env[RUNNER_ENV] === "1") {

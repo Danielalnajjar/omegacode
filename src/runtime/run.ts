@@ -26,6 +26,9 @@ import { TerminalRenderer } from "./progress.js"
 import { runInSandbox } from "./sandbox.js"
 import { countAgentStates, isValidRunId, type AgentCounts } from "./run-store.js"
 import { resolveRunModes } from "./run-modes.js"
+import { planMachines } from "../remote/agent.js"
+import { sshTransport, type RemoteTransport } from "../remote/client.js"
+import type { MachinePlan, MachineSources } from "../remote/machines.js"
 
 export interface RunOverrides {
   provider?: ProviderId
@@ -67,6 +70,10 @@ export interface RunOptions {
   signal?: AbortSignal
   /** Hard ceiling on total workflow execution time (forwarded to the sandbox). Default: unbounded. */
   execTimeoutMs?: number
+  /** How remote agents are reached (default: ssh). Tests substitute a local process. */
+  remoteTransport?: RemoteTransport
+  /** Where machine names resolve (default: Crew's table and the live `bb machine list`). */
+  machineSources?: MachineSources
 }
 
 export interface RunOutcome {
@@ -90,6 +97,8 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   let fileHash: string
   let parsed: ReturnType<typeof parseWorkflow>
   let defaults: RunDefaults
+  let machines: MachinePlan
+  const remoteTransport = opts.remoteTransport ?? sshTransport
   try {
     source = readFileSync(filePath, "utf8")
     fileHash = sha256(source)
@@ -103,6 +112,8 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
 
     parsed = parseWorkflow(source)
     defaults = resolveDefaults(parsed.meta, opts)
+    // Every declared machine is checked before any agent starts (ADR 0003), on resume as well.
+    machines = await planMachines(parsed.meta.machines ?? [], remoteTransport, opts.machineSources)
   } catch (err) {
     if (opts.runId && !opts.resumeRunId) await writePreflightFailure(opts.runId, filePath, err)
     throw err
@@ -185,7 +196,11 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   let status: RunOutcome["status"] = "completed"
   let result: unknown
   let error: string | undefined
-  const runtime = new Runtime({ runId, defaults, factory, journal, loaded, events, args: opts.args, seed, baseTimeMs, signal: ac.signal, declaredPhases: parsed.meta.phases })
+  const runtime = new Runtime({
+    runId, defaults, factory, journal, loaded, events, args: opts.args, seed, baseTimeMs, signal: ac.signal, declaredPhases: parsed.meta.phases,
+    machines,
+    remote: { transport: remoteTransport, fake: modes.fake, claudeModel: opts.overrides?.claudeModel ?? (defaults.provider === "claude-code" ? defaults.model : undefined) },
+  })
   try {
     // The abort signal MUST reach the sandbox (M13 wiring): the vm timeout bounds only synchronous
     // execution, so without it `await new Promise(() => {})` in a workflow body would hang this

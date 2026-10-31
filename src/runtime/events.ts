@@ -25,6 +25,8 @@ export type WorkflowEvent =
       model?: string
       /** Authored Subscription Picker name for a pinned Claude call. Display-only. */
       claudeProfileLabel?: string
+      /** The machine label of a remote agent (ADR 0003); absent for a local one. */
+      machine?: string
       state: AgentState
       cached?: boolean
       queuedAt?: number

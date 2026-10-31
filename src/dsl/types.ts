@@ -42,6 +42,11 @@ interface AgentOptsBase {
   instructions?: string
   schema?: JSONSchema
   worktree?: boolean | string
+  /**
+   * Run this agent, and its isolated checkout, on another BB machine (host id, label or short
+   * label). The name must be listed in meta.machines. See docs/adr/0003-remote-machine-agents.md.
+   */
+  machine?: string
   /** Pin a stable resume cache key; otherwise the chained key is used. */
   key?: string
   /** Hard cap on agent turns (provider-enforced where supported). */
@@ -154,6 +159,8 @@ interface MetaBase {
   phases?: Array<{ title: string; detail?: string }>
   defaultSandbox?: Sandbox
   whenToUse?: string
+  /** Every machine an agent({ machine }) may name; all are checked before the first agent starts. */
+  machines?: string[]
 }
 
 export type Meta = MetaBase &

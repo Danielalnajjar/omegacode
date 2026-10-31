@@ -34,6 +34,8 @@ declare global {
     instructions?: string
     schema?: OmegacodeJSONSchema
     worktree?: boolean | string
+    /** Run this agent and its isolated checkout on another BB machine listed in meta.machines. */
+    machine?: string
     /** Pin a stable resume cache key; otherwise the chained key is used. */
     key?: string
     /** Hard cap on agent turns (provider-enforced where supported). */

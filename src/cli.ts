@@ -11,6 +11,7 @@ import { listWorkflows, resolveWorkflowName, WorkflowNotFoundError } from "./run
 import { dataRoot, Journal, JournalNotFoundError, listRunIds, ResumePreconditionError, runDir } from "./runtime/journal.js"
 import { expectedLogPath, isValidRunId, loadRunStatus, type AgentCounts, type RunStatusSnapshot } from "./runtime/run-store.js"
 import { WorkflowError } from "./runtime/primitives.js"
+import { MachineError } from "./remote/machines.js"
 import { startViewer } from "./server/serve.js"
 import { AgentError, AgentInterrupted } from "./worker/index.js"
 import { proveClaudeIsolation } from "./worker/claude-preflight.js"
@@ -198,6 +199,11 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       console.log(JSON.stringify(receipt))
       if (!receipt.passed) process.exitCode = 1
       return
+    }
+    case "remote": {
+      // Internal: the far end of a remote agent, started over SSH by a run on another machine.
+      const { remoteMain } = await import("./remote/helper.js")
+      return remoteMain((flags._ as string[])[1])
     }
     case "capabilities":
       return cmdCapabilities(flags)
@@ -971,7 +977,8 @@ export function isUserFacingError(err: unknown): boolean {
     err instanceof AgentError ||
     err instanceof AgentInterrupted ||
     err instanceof JournalNotFoundError ||
-    err instanceof ResumePreconditionError
+    err instanceof ResumePreconditionError ||
+    err instanceof MachineError
   ) {
     return true
   }

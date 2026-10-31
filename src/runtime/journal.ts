@@ -38,6 +38,8 @@ export interface JournalStarted {
   model?: string
   effort?: Effort
   serviceTier?: string
+  /** The machine label of a remote agent; display-only, not part of the resume key. */
+  machine?: string
 }
 
 export interface JournalResult {
@@ -50,6 +52,8 @@ export interface JournalResult {
   usage: AgentUsage
   provider: ProviderId
   worktreeBranch?: string
+  /** The commit a remote agent's branch was published at (ADR 0003). */
+  worktreeHead?: string
   durationMs: number
   /** Authored subscription name at run time. Display-only; not routing identity. */
   claudeProfileLabel?: string

@@ -32,6 +32,12 @@ import type { EventSink } from "./events.js"
 import { AgentTranscript } from "./transcript.js"
 import { Semaphore } from "./semaphore.js"
 import { createWorktree, findGitRoot, teardownWorktree, type Worktree } from "./worktree.js"
+import { RemoteCheckout, RemoteWorker, type CollectResult } from "../remote/agent.js"
+import type { RemoteTransport } from "../remote/client.js"
+import { MachineError, MachinePlan, providerUnavailable, type RemoteMachine } from "../remote/machines.js"
+
+/** How long a failed or interrupted remote agent may take to hand back its commits. */
+const REMOTE_SALVAGE_TIMEOUT_MS = 2 * 60_000
 
 export class WorkflowError extends Error {}
 
@@ -95,6 +101,9 @@ export interface RuntimeOpts {
   signal: AbortSignal
   /** meta.phases, announced as pending phase events up front so the viewer shows the full plan. */
   declaredPhases?: Array<{ title: string; detail?: string }>
+  /** The machines validated from meta.machines (ADR 0003). Absent: every agent is local. */
+  machines?: MachinePlan
+  remote?: { transport: RemoteTransport; fake: boolean; claudeModel?: string }
 }
 
 /**
@@ -142,6 +151,8 @@ export class Runtime {
   private readonly sem: Semaphore
   private readonly worktreeMutex = new Semaphore(1)
   private readonly explicitKeys = new Set<string>()
+  /** Local branches that in-flight remote agents will publish to; two may not share one. */
+  private readonly remoteBranches = new Set<string>()
   private readonly ctxStore = new AsyncLocalStorage<KeyContext>()
   private readonly rootCtx: KeyContext
   // In-flight agent() promises so the run loop can await settlement and a fire-and-forget agent()
@@ -372,10 +383,14 @@ export class Runtime {
     const localIndex = ctx.agentIndex++
     const promptStr = String(prompt)
     const spec = this.resolveSpec(promptStr, opts)
+    const machine = this.resolveMachine(opts, spec)
+    const where = machine ? { machine: machine.label } : {}
     // Key off the RESOLVED spec (not raw opts) so defaults/CLI overrides invalidate the cache (H8).
+    // The machine is placement, not meaning, so it stays out of the key; a remote agent's implied
+    // isolated checkout does change it, as worktree: true would.
     const key = opts?.key
       ? explicitKey(opts.key)
-      : chainKey(ctx.branchKey, localIndex, promptStr, keyedSpec(spec, opts?.worktree))
+      : chainKey(ctx.branchKey, localIndex, promptStr, keyedSpec(spec, opts?.worktree ?? (machine ? true : undefined)))
     if (opts?.key) {
       // Explicit keys must be unique within a run, or two calls collide on the same journal slot and
       // the earlier call replays the later call's result on resume (last-write-wins). Fail fast.
@@ -405,6 +420,7 @@ export class Runtime {
     if (cached && cached.status === "completed") {
       this.o.events.emit({
         type: "agent",
+          ...where,
         index,
         phaseIndex,
         phaseTitle,
@@ -423,6 +439,7 @@ export class Runtime {
 
     this.o.events.emit({
       type: "agent",
+          ...where,
       index,
       phaseIndex,
       phaseTitle,
@@ -475,7 +492,8 @@ export class Runtime {
             rejectDeadline(timeoutError)
           }, this.o.defaults.agentTimeoutMs)
         }
-        this.o.events.emit({ type: "agent", index, phaseIndex, phaseTitle, label, provider: spec.provider, model: spec.model, state: "running", startedAt })
+        this.o.events.emit({ type: "agent",
+          ...where, index, phaseIndex, phaseTitle, label, provider: spec.provider, model: spec.model, state: "running", startedAt })
         this.o.journal.append({
           type: "started",
           key,
@@ -485,6 +503,7 @@ export class Runtime {
           ...(spec.model ? { model: spec.model } : {}),
           ...(spec.effort ? { effort: spec.effort } : {}),
           ...(spec.serviceTier ? { serviceTier: spec.serviceTier } : {}),
+          ...where,
         })
         // A re-run truncates only this journal-key-stable agent's transcript.
         transcriptForSetup = new AgentTranscript(this.o.runId, index)
@@ -499,6 +518,8 @@ export class Runtime {
       }
 
       let worktree: (Worktree & { gitRoot: string }) | undefined
+      let remote: RemoteCheckout | undefined
+      let collected: CollectResult | undefined
       let claudeProfileLabel: string | undefined
       const runSpec = { ...spec }
       const transcript = transcriptForSetup!
@@ -510,7 +531,7 @@ export class Runtime {
       // Tracked so the post-teardown worktree event (below) can re-state the right terminal state.
       let succeeded = false
       try {
-        if (opts?.worktree) {
+        if (opts?.worktree && !machine) {
           const setup = this.setupWorktree(runSpec, opts.worktree, index)
           try {
             worktree = await withinDeadline(setup)
@@ -524,7 +545,21 @@ export class Runtime {
             throw err
           }
         }
-        const worker = this.o.factory.get(runSpec.provider, runSpec.serviceTier, runSpec.codexExecutionProfile)
+        if (machine) {
+          const setup = this.setupRemote(runSpec, machine, opts?.worktree, index, agentAbort.signal)
+          try {
+            remote = await withinDeadline(setup)
+          } catch (err) {
+            void setup.then((late) => {
+              this.remoteBranches.delete(late.branch)
+              return late.cleanup()
+            }).catch(() => {})
+            throw err
+          }
+        }
+        const worker = remote && machine
+          ? new RemoteWorker({ machine, transport: this.o.remote!.transport, provider: runSpec.provider, name: remote.name, fake: this.o.remote!.fake, claudeModel: this.o.remote!.claudeModel })
+          : this.o.factory.get(runSpec.provider, runSpec.serviceTier, runSpec.codexExecutionProfile)
         const workerCtx = {
           signal: agentAbort.signal,
           onProgress: (e: WorkerProgress) => {
@@ -540,6 +575,7 @@ export class Runtime {
                 transcript.write({ kind: "tool", id: e.id, name: e.name, input: e.input })
                 this.o.events.emit({
                   type: "agent",
+          ...where,
                   index,
                   phaseIndex,
                   phaseTitle,
@@ -557,6 +593,7 @@ export class Runtime {
               case "usage":
                 this.o.events.emit({
                   type: "agent",
+          ...where,
                   index,
                   phaseIndex,
                   phaseTitle,
@@ -577,6 +614,7 @@ export class Runtime {
                 claudeProfileLabel = name
                 this.o.events.emit({
                   type: "agent",
+          ...where,
                   index,
                   phaseIndex,
                   phaseTitle,
@@ -631,9 +669,12 @@ export class Runtime {
             throw err
           }
         }
+        // A remote agent succeeds only once its commits are in this repository (ADR 0003): a
+        // journaled success whose work never arrived would replay as done on every resume.
+        if (remote) collected = await withinDeadline(this.collectRemote(remote, runSpec.provider, agentAbort.signal))
         const durationMs = Date.now() - startedAt
         this.totalUsage = addUsage(this.totalUsage, attemptUsage)
-        const branch = worktree?.branch
+        const branch = remote ? collected?.branch : worktree?.branch
         this.o.journal.append({
           type: "result",
           key,
@@ -643,6 +684,7 @@ export class Runtime {
           usage: attemptUsage,
           provider: spec.provider,
           worktreeBranch: branch,
+          ...(collected?.head ? { worktreeHead: collected.head } : {}),
           durationMs,
           ...(claudeProfileLabel ? { claudeProfileLabel } : {}),
         })
@@ -656,6 +698,7 @@ export class Runtime {
         transcript.write({ kind: "status", state: "done" })
         this.o.events.emit({
           type: "agent",
+          ...where,
           index,
           phaseIndex,
           phaseTitle,
@@ -699,6 +742,7 @@ export class Runtime {
         transcript.write({ kind: "status", state: "failed", error: message })
         this.o.events.emit({
           type: "agent",
+          ...where,
           index,
           phaseIndex,
           phaseTitle,
@@ -719,6 +763,35 @@ export class Runtime {
       } finally {
         clearDeadline()
         await transcript.close().catch(() => {})
+        if (remote) {
+          // A failed or interrupted agent still hands back what it committed, as a local worktree
+          // is preserved; if that fails, the remote worktree stays for inspection.
+          if (!collected) {
+            collected = await this.collectRemote(remote, spec.provider, AbortSignal.timeout(REMOTE_SALVAGE_TIMEOUT_MS)).catch((err: Error) => {
+              this.log(`[${label}] could not collect from ${remote!.where}; its worktree is kept there: ${err.message}`)
+              return undefined
+            })
+          }
+          if (collected) {
+            await remote.cleanup().catch((err: Error) => this.log(`[${label}] cleanup of ${remote!.where} failed: ${err.message}`))
+          }
+          this.remoteBranches.delete(remote.branch)
+          if (collected?.changed) {
+            this.o.events.emit({
+              type: "agent",
+              ...where,
+              index,
+              phaseIndex,
+              phaseTitle,
+              label,
+              provider: spec.provider,
+              model: spec.model,
+              state: succeeded ? "done" : "failed",
+              worktreeBranch: collected.branch,
+              ...(claudeProfileLabel ? { claudeProfileLabel } : {}),
+            })
+          }
+        }
         if (worktree) {
           // Thread the creation-time base through teardown (H10): the git-config fallback lives in
           // the SHARED .git/config, so parallel worktrees overwrite each other (last-writer-wins).
@@ -730,6 +803,7 @@ export class Runtime {
             // — renderers dedupe terminal rows, so this only surfaces the worktree fields.
             this.o.events.emit({
               type: "agent",
+          ...where,
               index,
               phaseIndex,
               phaseTitle,
@@ -770,6 +844,67 @@ export class Runtime {
     spec.sandbox = "workspace-write"
     spec.instructions = `${spec.instructions ?? ""}\n\nYou are in an isolated git worktree at ${created.path}; changes here do not affect the main directory or other agents.`.trim()
     return { ...created, gitRoot }
+  }
+
+  /** Resolve agent({ machine }) to a remote machine, or undefined for this machine. */
+  private resolveMachine(opts: AgentOpts | undefined, spec: AgentSpec): RemoteMachine | undefined {
+    const raw: unknown = opts?.machine
+    if (raw === undefined) return undefined
+    if (typeof raw !== "string" || !raw.trim()) {
+      throw new AgentError({ provider: spec.provider, code: "unsupported_option", message: "machine must be a non-empty machine name" })
+    }
+    let placed: RemoteMachine | "local"
+    try {
+      placed = (this.o.machines ?? MachinePlan.empty()).resolve(raw)
+    } catch (err) {
+      // An undeclared machine is an authoring error: abort the run rather than null one item.
+      if (err instanceof MachineError) throw new WorkflowError(err.message)
+      throw err
+    }
+    if (placed === "local") return undefined
+    const unavailable = providerUnavailable(placed, spec.provider)
+    if (unavailable) throw new AgentError({ provider: spec.provider, code: "unsupported_option", message: unavailable })
+    if (!this.o.remote) throw new WorkflowError("remote agents need a remote transport; run through runWorkflow")
+    return placed
+  }
+
+  private async setupRemote(spec: AgentSpec, machine: RemoteMachine, wt: boolean | string | undefined, index: number, signal: AbortSignal): Promise<RemoteCheckout> {
+    const gitRoot = await findGitRoot(spec.cwd)
+    if (!gitRoot) throw new WorkflowError(`machine: ${machine.label} requires the cwd to be a git repository`)
+    const branch = typeof wt === "string" ? wt : `aw/${this.o.runId}-${index}`
+    if (this.remoteBranches.has(branch)) {
+      throw new AgentError({ provider: spec.provider, code: "unsupported_option", message: `branch ${branch} is already the target of another running agent in this run` })
+    }
+    this.remoteBranches.add(branch)
+    let checkout: RemoteCheckout
+    try {
+      checkout = await RemoteCheckout.prepare({
+        machine,
+        transport: this.o.remote!.transport,
+        gitRoot,
+        runId: this.o.runId,
+        index,
+        branch,
+        lock: (fn) => this.worktreeMutex.run(fn),
+      }, signal)
+    } catch (err) {
+      this.remoteBranches.delete(branch)
+      throw new AgentError({ provider: spec.provider, code: "remote_checkout_failed", message: `could not prepare a checkout on ${machine.label}: ${(err as Error).message}` })
+    }
+    spec.cwd = checkout.path
+    // As for a local worktree, an explicit `worktree` makes the checkout writable; an implied one
+    // keeps the resolved sandbox, so a read-only reviewer stays read-only.
+    if (wt) spec.sandbox = "workspace-write"
+    spec.instructions = `${spec.instructions ?? ""}\n\nYou are in an isolated git worktree at ${checkout.path} on ${machine.label}; changes here do not affect the main directory or other agents.`.trim()
+    return checkout
+  }
+
+  private async collectRemote(checkout: RemoteCheckout, provider: AgentSpec["provider"], signal: AbortSignal): Promise<CollectResult> {
+    try {
+      return await checkout.collect(signal)
+    } catch (err) {
+      throw new AgentError({ provider, code: "remote_collect_failed", message: `could not bring the agent's changes back from ${checkout.where}: ${(err as Error).message}` })
+    }
   }
 
   private async parallel<T>(thunks: Array<() => Promise<T>>): Promise<T[]> {

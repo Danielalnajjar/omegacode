@@ -12,6 +12,7 @@ import { promisify } from "node:util"
 import type { AgentResult, AgentSpec, ProviderId } from "../dsl/types.js"
 import { AgentError, AgentInterrupted, type PreparedAgentCall, type Worker, type WorkerContext } from "../worker/index.js"
 import { RemoteConnectionError, RemoteReplyError, remoteCall, remoteCommandLine, type RemoteTransport } from "./client.js"
+import { buildId } from "./build.js"
 import { defaultMachineSources, MachineError, resolveMachines, type MachinePlan, type MachineSources, type RemoteMachine } from "./machines.js"
 import { PROTOCOL_VERSION, type CollectReply, type HaveReply, type HelloReply, type PrepareReply, type RunReply } from "./protocol.js"
 
@@ -34,7 +35,7 @@ function nextGeneration(): number {
 
 /**
  * Resolve the declared machines and prove each remote one answers `hello` in-band with this
- * protocol version and the host id it was chosen as. Runs before the first agent starts; every
+ * protocol version, this build, and the host id it was chosen as. Runs before the first agent starts; every
  * problem is reported at once.
  */
 export async function planMachines(names: string[], transport: RemoteTransport, sources: MachineSources = defaultMachineSources): Promise<MachinePlan> {
@@ -52,15 +53,27 @@ export async function planMachines(names: string[], transport: RemoteTransport, 
       problems.push(`machine ${machine.label} runs OmegaCode ${hello?.version ?? "unknown"} with remote protocol ${hello?.protocol}; this run needs protocol ${PROTOCOL_VERSION} — update OmegaCode there`)
     } else if (hello.hostId !== machine.hostId) {
       problems.push(`\`ssh ${machine.ssh}\` reaches BB machine ${hello.hostId ?? "(unknown host id)"}, not ${machine.label} (${machine.hostId}) — fix its "ssh" entry in the machine table`)
+    } else if (hello.build !== buildId()) {
+      problems.push(`machine ${machine.label} runs a different OmegaCode build (${hello.version} build ${hello.build ?? "unknown"}; this run is build ${buildId()}) — install this run's build there`)
     }
   }))
   if (problems.length > 0) throw new MachineError(problems.join("; "))
   return plan
 }
 
-async function git(cwd: string, args: string[]): Promise<string> {
-  const { stdout } = await exec("git", args, { cwd, maxBuffer: 64 * 1024 * 1024 })
+async function git(cwd: string, args: string[], input?: string): Promise<string> {
+  const run = exec("git", args, { cwd, maxBuffer: 64 * 1024 * 1024 })
+  if (input !== undefined) run.child.stdin?.end(input)
+  const { stdout } = await run
   return stdout.trim()
+}
+
+/** The machine's tips that this repository also has, as bundle negations; one git call. */
+async function negations(gitRoot: string, tips: string[]): Promise<string[]> {
+  const valid = tips.filter((tip) => /^[0-9a-f]{40,64}$/.test(tip))
+  if (valid.length === 0) return []
+  const types = (await git(gitRoot, ["cat-file", "--batch-check=%(objecttype)"], valid.map((tip) => `${tip}^{commit}`).join("\n") + "\n")).split("\n")
+  return valid.filter((_, i) => types[i] === "commit").map((tip) => `^${tip}`)
 }
 
 /**
@@ -126,6 +139,9 @@ export class RemoteCheckout {
     const call = (command: "have" | "prepare", request: unknown, payload?: Buffer) =>
       remoteCall({ machine: a.machine, transport: a.transport, command, request, payload, signal, timeoutMs: TRANSFER_TIMEOUT_MS, abortGraceMs: 0 })
     const { tips } = (await call("have", { repoKey: key })) as HaveReply
+    // Negate every tip the machine reported that this repository also has, so only missing
+    // history travels. A tip unknown here is skipped; the bundle is then merely larger.
+    const negatives = await negations(a.gitRoot, tips)
     const bundleRef = `refs/omegacode/xfer/${name}`
     const { base, branches, expectedTip, payload, generation } = await a.lock(async () => {
       const generation = nextGeneration()
@@ -137,12 +153,6 @@ export class RemoteCheckout {
         branches[line.slice(space + 1)] = line.slice(0, space)
       }
       const expectedTip = branches[a.branch] ?? ZERO_SHA
-      // Negate every tip the machine reported that this repository also has, so only missing
-      // history travels. A tip unknown here is skipped; the bundle is then merely larger.
-      const negatives: string[] = []
-      for (const tip of tips) {
-        if (/^[0-9a-f]{40,64}$/.test(tip) && await git(a.gitRoot, ["cat-file", "-e", `${tip}^{commit}`]).then(() => true, () => false)) negatives.push(`^${tip}`)
-      }
       const dir = mkdtempSync(join(tmpdir(), "omegacode-bundle-"))
       try {
         await git(a.gitRoot, ["update-ref", bundleRef, base])
@@ -245,6 +255,8 @@ export interface RemoteWorkerOpts {
   name: string
   fake: boolean
   claudeModel?: string
+  /** When the agent's time limit ends (this machine's clock); the machine enforces what is left. */
+  deadlineAt?: number
 }
 
 /** Runs each attempt as one `remote run` call on the machine. */
@@ -256,12 +268,19 @@ export class RemoteWorker implements Worker {
 
   async runAgent(spec: AgentSpec, ctx: WorkerContext): Promise<AgentResult> {
     if (ctx.signal.aborted) throw new AgentInterrupted()
+    const timeoutMs = this.o.deadlineAt === undefined ? undefined : Math.max(1, this.o.deadlineAt - Date.now())
     try {
       const reply = (await remoteCall({
         machine: this.o.machine,
         transport: this.o.transport,
         command: "run",
-        request: { spec, name: this.o.name, fake: this.o.fake, ...(this.o.claudeModel ? { claudeModel: this.o.claudeModel } : {}) },
+        request: {
+          spec,
+          name: this.o.name,
+          fake: this.o.fake,
+          ...(this.o.claudeModel ? { claudeModel: this.o.claudeModel } : {}),
+          ...(timeoutMs === undefined ? {} : { timeoutMs }),
+        },
         signal: ctx.signal,
         abortGraceMs: RUN_ABORT_GRACE_MS,
         onProgress: ctx.onProgress,

@@ -13,6 +13,7 @@ import { explicitKey } from "../src/runtime/keys.ts"
 import type { EventSink, WorkflowEventInput } from "../src/runtime/events.ts"
 import type { PreparedAgentCall, Worker, WorkerContext, WorkerFactory } from "../src/worker/index.ts"
 import { AgentError, AgentInterrupted } from "../src/worker/index.ts"
+import { MachinePlan } from "../src/remote/machines.ts"
 import { DEFAULTS, emptyUsage, type AgentResult, type AgentSpec, type RunDefaults } from "../src/dsl/types.ts"
 
 // ---- test harness ----------------------------------------------------------------------------
@@ -101,6 +102,7 @@ function build(opts: {
   factory?: WorkerFactory
   ac?: AbortController
   declaredPhases?: Array<{ title: string; detail?: string }>
+  machines?: MachinePlan
 } = {}): Built {
   const home = mkdtempSync(join(tmpdir(), "omega-prim-"))
   const prev = process.env.OMEGACODE_HOME
@@ -122,6 +124,7 @@ function build(opts: {
     baseTimeMs: 1_000_000,
     signal: ac.signal,
     declaredPhases: opts.declaredPhases,
+    machines: opts.machines,
   })
   return {
     runtime,
@@ -1403,6 +1406,38 @@ test("H10: teardown trusts the THREADED creation base when the shared-config fal
     // … and the worktree checkout was actually removed
     const wtDir = join(repo, ".omegacode", "worktrees")
     assert.deepEqual(existsSync(wtDir) ? readdirSync(wtDir) : [], [])
+  } finally {
+    b.cleanup()
+    rmSync(repo, { recursive: true, force: true })
+  }
+})
+
+test("an agent naming the run's own machine still gets its own worktree and branch, keeping its sandbox", async () => {
+  // A workflow that places agents on machines must behave the same from whichever machine runs it.
+  const repo = makeGitRepo()
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim()
+  const seen: AgentSpec[] = []
+  const b = build({
+    defaults: { cwd: repo },
+    machines: new MachinePlan(new Map([["here", "local"]])),
+    hooks: {
+      run: async (spec) => {
+        seen.push({ ...spec })
+        writeFileSync(join(spec.cwd, "here.txt"), "x\n")
+        execFileSync("git", ["add", "here.txt"], { cwd: spec.cwd })
+        execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-q", "-m", "here"], { cwd: spec.cwd })
+        return { text: "ok", status: "completed", usage: emptyUsage() }
+      },
+    },
+  })
+  try {
+    assert.equal(await runBody(b, `return await agent("edit", { machine: "Here" })`), "ok")
+    assert.notEqual(seen[0]!.cwd, repo)
+    assert.equal(seen[0]!.sandbox, DEFAULTS.sandbox)
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim()
+    assert.equal(git("show", "aw/run_test-1:here.txt"), "x")
+    assert.equal(git("rev-parse", "HEAD"), head)
+    assert.equal(git("status", "--porcelain", "--untracked-files=no"), "")
   } finally {
     b.cleanup()
     rmSync(repo, { recursive: true, force: true })

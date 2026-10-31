@@ -5,15 +5,18 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { execFileSync, spawn } from "node:child_process"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
+import { PassThrough } from "node:stream"
 import { fileURLToPath } from "node:url"
 import { runWorkflow } from "../src/runtime/run.ts"
 import { Journal } from "../src/runtime/journal.ts"
 import { MachineError, resolveMachines, type LiveMachine, type MachineSources, type RemoteMachine } from "../src/remote/machines.ts"
 import { planMachines, RemoteWorker } from "../src/remote/agent.ts"
 import { remoteCall, type RemoteTransport } from "../src/remote/client.ts"
+import { buildId } from "../src/remote/build.ts"
+import type { AgentSpec } from "../src/dsl/types.ts"
 import { AgentError } from "../src/worker/index.ts"
 import { parseWorkflow, WorkflowSyntaxError } from "../src/runtime/sandbox.ts"
 
@@ -60,6 +63,41 @@ function localTransport(homeFor: (m: RemoteMachine) => string, wrap?: (command: 
     wrap?.(command, child)
     return child as ReturnType<RemoteTransport>
   }
+}
+
+/**
+ * Let the run see only the first `keep(received)` bytes of a reply, then kill the helper: a link
+ * that drops at a fixed point however the bytes happen to be chunked. `keep` returns undefined
+ * until enough has arrived to decide.
+ */
+function cutReply(child: ReturnType<typeof spawn>, keep: (received: Buffer) => number | undefined): void {
+  const real = child.stdout!
+  const visible = new PassThrough()
+  Object.defineProperty(child, "stdout", { value: visible })
+  let received = Buffer.alloc(0)
+  let cut = false
+  real.on("data", (chunk: Buffer) => {
+    if (cut) return
+    received = Buffer.concat([received, chunk])
+    const n = keep(received)
+    if (n === undefined) return
+    cut = true
+    visible.write(received.subarray(0, n))
+    child.kill("SIGKILL")
+  })
+  real.on("end", () => visible.end())
+}
+
+/** Through the end of the first reply line. */
+const firstLine = (received: Buffer): number | undefined => {
+  const nl = received.indexOf(10)
+  return nl < 0 ? undefined : nl + 1
+}
+
+/** The first line (a `bytes` header) and 16 bytes of the segment it announces. */
+const intoFirstSegment = (received: Buffer): number | undefined => {
+  const nl = received.indexOf(10)
+  return nl < 0 || received.length < nl + 17 ? undefined : nl + 17
 }
 
 async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
@@ -156,6 +194,38 @@ test("a machine on another protocol version is rejected with an update hint", as
   await withFixture(async (f) => {
     const old: RemoteTransport = () => spawn(process.execPath, ["-e", `console.log(JSON.stringify({ ocr: 0, t: "done", value: { protocol: 0, version: "0.0.1", platform: "linux" } }))`], { stdio: ["pipe", "pipe", "pipe"] }) as ReturnType<RemoteTransport>
     await assert.rejects(planMachines(["Far"], old, f.sources), /runs OmegaCode 0\.0\.1 with remote protocol 0; this run needs protocol 1/)
+  })
+})
+
+test("a machine running a different OmegaCode build is refused", async () => {
+  await withFixture(async (f) => {
+    const other: RemoteTransport = () => spawn(process.execPath, ["-e", `console.log(JSON.stringify({ ocr: 1, t: "done", value: { protocol: 1, version: "0.0.6", build: "0000000000000000", platform: "linux", hostId: "host_far" } }))`], { stdio: ["pipe", "pipe", "pipe"] }) as ReturnType<RemoteTransport>
+    await assert.rejects(planMachines(["Far"], other, f.sources), new RegExp(`Far Machine runs a different OmegaCode build \\(0\\.0\\.6 build 0000000000000000; this run is build ${buildId()}\\)`))
+    // The same build passes.
+    const plan = await planMachines(["Far"], f.transport, f.sources)
+    assert.equal(plan.remotes().length, 1)
+  })
+})
+
+test("a machine refuses an agent option it does not understand rather than run without it", async () => {
+  await withFixture(async (f) => {
+    const machine: RemoteMachine = { hostId: "host_far", label: "Far Machine", ssh: "me@far" }
+    const cwd = join(f.farHome, "remote", "worktrees", "r-3")
+    mkdirSync(cwd, { recursive: true })
+    const worker = new RemoteWorker({ machine, transport: f.transport, provider: "codex", name: "r-3", fake: false })
+    // A newer build's restriction, such as a permission profile, must never be silently dropped.
+    const spec = { prompt: "hi", provider: "codex", cwd, sandbox: "read-only", approval: "never", codexFutureRestriction: "strict" } as AgentSpec
+    await assert.rejects(worker.runAgent(spec, { signal: new AbortController().signal, onProgress: () => {} }), (err: Error) => {
+      assert.ok(err instanceof AgentError)
+      assert.equal(err.code, "bad_request")
+      assert.match(err.message, /does not understand agent option codexFutureRestriction; install the run's OmegaCode build here/)
+      return true
+    })
+    assert.deepEqual(calls(f), [])
+    await assert.rejects(
+      remoteCall({ machine, transport: f.transport, command: "cleanup", request: { repoKey: "r", name: "n", keepEverything: true } }),
+      /does not understand cleanup request field keepEverything/,
+    )
   })
 })
 
@@ -282,6 +352,75 @@ test("a delayed older branch manifest neither rewinds nor deletes the machine's 
   })
 })
 
+test("a branch renamed from feat to feat/x still mirrors to the machine", async () => {
+  await withFixture(async (f) => {
+    git(f.repo, ["branch", "feat"])
+    const first = await runWorkflow({ file: workflow(f, `return await agent("nothing", { machine: "Far" })`), quiet: true, overrides: { cwd: f.repo }, machineSources: f.sources, remoteTransport: f.transport })
+    assert.equal(first.status, "completed", first.error)
+    git(f.repo, ["branch", "-D", "feat"])
+    git(f.repo, ["branch", "feat/x"])
+    const second = await runWorkflow({ file: workflow(f, `return await agent("commit:y.txt", { machine: "Far" })`), quiet: true, overrides: { cwd: f.repo }, machineSources: f.sources, remoteTransport: f.transport })
+    assert.equal(second.status, "completed", second.error)
+    const cache = join(f.farHome, "remote", "repos", readdirSync(join(f.farHome, "remote", "repos"))[0]!)
+    assert.equal(git(cache, ["for-each-ref", "--format=%(refname)", "refs/heads/feat", "refs/heads/feat/"]), "refs/heads/feat/x")
+  })
+})
+
+test("eight agents fanned out to one machine at once all run and all come back", async () => {
+  await withFixture(async (f) => {
+    const file = workflow(f, `return await parallel(Array.from({ length: 8 }, (_, i) => () => agent("commit:f" + i + ".txt", { machine: "Far" })))`)
+    const out = await runWorkflow({ file, quiet: true, overrides: { cwd: f.repo }, machineSources: f.sources, remoteTransport: f.transport })
+    assert.equal(out.status, "completed", out.error)
+    assert.deepEqual(out.result, Array.from({ length: 8 }, (_, i) => `did commit:f${i}.txt`))
+    const branches = git(f.repo, ["for-each-ref", "--format=%(refname:short)", "refs/heads/aw/"]).split("\n")
+    assert.equal(branches.length, 8)
+    const files = branches.map((b) => git(f.repo, ["diff", "--name-only", "main", b])).sort()
+    assert.deepEqual(files, Array.from({ length: 8 }, (_, i) => `f${i}.txt`).sort())
+    assert.deepEqual(readdirSync(join(f.farHome, "remote", "worktrees")), [])
+  })
+})
+
+test("the next setup on a machine removes worktrees left by a run that died, and only those", async () => {
+  await withFixture(async (f) => {
+    const machine: RemoteMachine = { hostId: "host_far", label: "Far Machine", ssh: "me@far" }
+    const seeded = await runWorkflow({ file: workflow(f, `return await agent("nothing", { machine: "Far" })`), quiet: true, overrides: { cwd: f.repo }, machineSources: f.sources, remoteTransport: f.transport })
+    assert.equal(seeded.status, "completed", seeded.error)
+    const repoKey = readdirSync(join(f.farHome, "remote", "repos"))[0]!.replace(/\.git$/, "")
+    const base = git(f.repo, ["rev-parse", "HEAD"])
+    for (const name of ["crashed-1", "recent-1"]) {
+      await remoteCall({ machine, transport: f.transport, command: "prepare", request: { repoKey, name, base, generation: 1, branches: {}, payloadBytes: 0 } })
+    }
+    // crashed-1's run died two days ago: its lease was never renewed.
+    const twoDaysAgo = (Date.now() - 2 * 24 * 60 * 60_000) / 1000
+    utimesSync(join(f.farHome, "remote", "worktrees", "crashed-1.lease"), twoDaysAgo, twoDaysAgo)
+    const next = await runWorkflow({ file: workflow(f, `return await agent("nothing again", { machine: "Far" })`), quiet: true, overrides: { cwd: f.repo }, machineSources: f.sources, remoteTransport: f.transport })
+    assert.equal(next.status, "completed", next.error)
+    const left = readdirSync(join(f.farHome, "remote", "worktrees")).sort()
+    assert.deepEqual(left, ["recent-1", "recent-1.lease"])
+    const cache = join(f.farHome, "remote", "repos", `${repoKey}.git`)
+    assert.equal(git(cache, ["for-each-ref", "--format=%(refname)", "refs/heads/omegacode/"]), "refs/heads/omegacode/recent-1")
+  })
+})
+
+test("two collections of one attempt run one after the other, so a salvage never collides with the first", async () => {
+  await withFixture(async (f) => {
+    const machine: RemoteMachine = { hostId: "host_far", label: "Far Machine", ssh: "me@far" }
+    const seeded = await runWorkflow({ file: workflow(f, `return await agent("nothing", { machine: "Far" })`), quiet: true, overrides: { cwd: f.repo }, machineSources: f.sources, remoteTransport: f.transport })
+    assert.equal(seeded.status, "completed", seeded.error)
+    const repoKey = readdirSync(join(f.farHome, "remote", "repos"))[0]!.replace(/\.git$/, "")
+    const base = git(f.repo, ["rev-parse", "HEAD"])
+    await remoteCall({ machine, transport: f.transport, command: "prepare", request: { repoKey, name: "twice-1", base, generation: 1, branches: {}, payloadBytes: 0 } })
+    const wt = join(f.farHome, "remote", "worktrees", "twice-1")
+    for (let i = 0; i < 300; i++) writeFileSync(join(wt, `left-${i}.txt`), `${i}\n`)
+    const collect = () => remoteCall({ machine, transport: f.transport, command: "collect", request: { repoKey, name: "twice-1", base, index: 1 }, onBytes: () => {} })
+    const [a, b] = (await Promise.all([collect(), collect()])) as Array<{ changed: boolean; head: string; snapshot?: boolean }>
+    assert.ok(a.changed && b.changed)
+    assert.equal(a.head, b.head)
+    // Exactly one of them made the snapshot commit.
+    assert.deepEqual([a.snapshot, b.snapshot].sort(), [false, true])
+  })
+})
+
 test("a prepare whose reply is lost leaves no worktree behind", async () => {
   await withFixture(async (f) => {
     // The helper finishes and answers, but the answer never reaches the run.
@@ -317,8 +456,7 @@ test("a connection lost mid-turn fails the agent with a clear error and keeps no
   await withFixture(async (f) => {
     // Drop the link as soon as the turn reports progress; the helper's "exit" looks like success to ssh.
     const transport = localTransport(() => f.farHome, (command, child) => {
-      if (command !== "run") return
-      child.stdout!.once("data", () => child.kill("SIGKILL"))
+      if (command === "run") cutReply(child, firstLine)
     })
     const file = workflow(f, `return await parallel([() => agent("hang", { machine: "Far" })])`)
     const out = await runWorkflow({ file, quiet: true, overrides: { cwd: f.repo }, machineSources: f.sources, remoteTransport: transport })
@@ -337,12 +475,14 @@ test("a connection lost while bringing changes back fails the agent instead of j
   await withFixture(async (f) => {
     let collects = 0
     const transport = localTransport(() => f.farHome, (command, child) => {
-      // The first collect is cut off after its header; the salvage collect then succeeds.
-      if (command === "collect" && collects++ === 0) child.stdout!.once("data", () => child.kill("SIGKILL"))
+      // The first collect is cut off inside its bundle; the salvage collect then succeeds.
+      if (command === "collect" && collects++ === 0) cutReply(child, intoFirstSegment)
     })
     const file = workflow(f, `return await parallel([() => agent("commit:x.txt", { machine: "Far", worktree: "feat/x" })])`)
     const out = await runWorkflow({ file, quiet: true, overrides: { cwd: f.repo }, machineSources: f.sources, remoteTransport: transport })
     assert.deepEqual(out.result, [null])
+    const failed = events(out.runId).find((e) => e.type === "agent" && e.state === "failed")
+    assert.match(String(failed?.error), /ended in the middle of a data transfer before the remote collect reported a result/)
     const [result] = [...Journal.load(out.runId).results.values()]
     assert.equal(result?.status, "failed")
     // Like a preserved local worktree, the failed agent's commit still comes back.
@@ -381,6 +521,25 @@ test("a remote provider error keeps its code, retryable flag and usage", async (
   })
 })
 
+test("the machine enforces the agent's time limit even when the run cannot stop it", async () => {
+  await withFixture(async (f) => {
+    const machine: RemoteMachine = { hostId: "host_far", label: "Far Machine", ssh: "me@far" }
+    const cwd = join(f.farHome, "remote", "worktrees", "r-2")
+    mkdirSync(cwd, { recursive: true })
+    // The run never aborts this call: only the machine's own deadline can end the turn.
+    const worker = new RemoteWorker({ machine, transport: f.transport, provider: "codex", name: "r-2", fake: false, deadlineAt: Date.now() + 1500 })
+    await assert.rejects(
+      worker.runAgent({ prompt: "hang", provider: "codex", cwd, sandbox: "read-only", approval: "never" }, { signal: new AbortController().signal, onProgress: () => {} }),
+      (err: Error) => {
+        assert.ok(err instanceof AgentError)
+        assert.equal(err.code, "agent_timeout")
+        assert.match(err.message, /time limit on this machine/)
+        return true
+      },
+    )
+  })
+})
+
 // ---- journal ----------------------------------------------------------------------------------
 
 test("resume replays a completed remote agent without contacting the machine's worker", async () => {
@@ -406,7 +565,7 @@ test("resume replays a completed remote agent without contacting the machine's w
 test("resume re-runs a remote agent whose connection was lost", async () => {
   await withFixture(async (f) => {
     const dropping = localTransport(() => f.farHome, (command, child) => {
-      if (command === "run") child.stdout!.once("data", () => child.kill("SIGKILL"))
+      if (command === "run") cutReply(child, firstLine)
     })
     const file = workflow(f, `return await parallel([() => agent("commit:again.txt", { machine: "Far", worktree: "feat/again" })])`)
     const first = await runWorkflow({ file, quiet: true, overrides: { cwd: f.repo }, machineSources: f.sources, remoteTransport: dropping })

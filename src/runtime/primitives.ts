@@ -386,11 +386,14 @@ export class Runtime {
     const machine = this.resolveMachine(opts, spec)
     const where = machine ? { machine: machine.label } : {}
     // Key off the RESOLVED spec (not raw opts) so defaults/CLI overrides invalidate the cache (H8).
-    // The machine is placement, not meaning, so it stays out of the key; a remote agent's implied
-    // isolated checkout does change it, as worktree: true would.
+    // An agent that names a machine always gets an isolated checkout, even when the machine is
+    // this one, so a workflow behaves the same from whichever machine runs it. The machine is
+    // placement, not meaning, so it stays out of the key; the implied checkout does change it,
+    // as worktree: true would.
+    const isolated = opts?.machine !== undefined ? opts.worktree || true : opts?.worktree
     const key = opts?.key
       ? explicitKey(opts.key)
-      : chainKey(ctx.branchKey, localIndex, promptStr, keyedSpec(spec, opts?.worktree ?? (machine ? true : undefined)))
+      : chainKey(ctx.branchKey, localIndex, promptStr, keyedSpec(spec, isolated))
     if (opts?.key) {
       // Explicit keys must be unique within a run, or two calls collide on the same journal slot and
       // the earlier call replays the later call's result on resume (last-write-wins). Fail fast.
@@ -420,7 +423,7 @@ export class Runtime {
     if (cached && cached.status === "completed") {
       this.o.events.emit({
         type: "agent",
-          ...where,
+        ...where,
         index,
         phaseIndex,
         phaseTitle,
@@ -439,7 +442,7 @@ export class Runtime {
 
     this.o.events.emit({
       type: "agent",
-          ...where,
+      ...where,
       index,
       phaseIndex,
       phaseTitle,
@@ -492,8 +495,7 @@ export class Runtime {
             rejectDeadline(timeoutError)
           }, this.o.defaults.agentTimeoutMs)
         }
-        this.o.events.emit({ type: "agent",
-          ...where, index, phaseIndex, phaseTitle, label, provider: spec.provider, model: spec.model, state: "running", startedAt })
+        this.o.events.emit({ type: "agent", ...where, index, phaseIndex, phaseTitle, label, provider: spec.provider, model: spec.model, state: "running", startedAt })
         this.o.journal.append({
           type: "started",
           key,
@@ -531,8 +533,8 @@ export class Runtime {
       // Tracked so the post-teardown worktree event (below) can re-state the right terminal state.
       let succeeded = false
       try {
-        if (opts?.worktree && !machine) {
-          const setup = this.setupWorktree(runSpec, opts.worktree, index)
+        if (isolated && !machine) {
+          const setup = this.setupWorktree(runSpec, isolated, index, Boolean(opts?.worktree))
           try {
             worktree = await withinDeadline(setup)
           } catch (err) {
@@ -558,7 +560,15 @@ export class Runtime {
           }
         }
         const worker = remote && machine
-          ? new RemoteWorker({ machine, transport: this.o.remote!.transport, provider: runSpec.provider, name: remote.name, fake: this.o.remote!.fake, claudeModel: this.o.remote!.claudeModel })
+          ? new RemoteWorker({
+            machine,
+            transport: this.o.remote!.transport,
+            provider: runSpec.provider,
+            name: remote.name,
+            fake: this.o.remote!.fake,
+            claudeModel: this.o.remote!.claudeModel,
+            ...(this.o.defaults.agentTimeoutMs > 0 ? { deadlineAt: startedAt + this.o.defaults.agentTimeoutMs } : {}),
+          })
           : this.o.factory.get(runSpec.provider, runSpec.serviceTier, runSpec.codexExecutionProfile)
         const workerCtx = {
           signal: agentAbort.signal,
@@ -575,7 +585,7 @@ export class Runtime {
                 transcript.write({ kind: "tool", id: e.id, name: e.name, input: e.input })
                 this.o.events.emit({
                   type: "agent",
-          ...where,
+                  ...where,
                   index,
                   phaseIndex,
                   phaseTitle,
@@ -593,7 +603,7 @@ export class Runtime {
               case "usage":
                 this.o.events.emit({
                   type: "agent",
-          ...where,
+                  ...where,
                   index,
                   phaseIndex,
                   phaseTitle,
@@ -614,7 +624,7 @@ export class Runtime {
                 claudeProfileLabel = name
                 this.o.events.emit({
                   type: "agent",
-          ...where,
+                  ...where,
                   index,
                   phaseIndex,
                   phaseTitle,
@@ -805,7 +815,7 @@ export class Runtime {
             // — renderers dedupe terminal rows, so this only surfaces the worktree fields.
             this.o.events.emit({
               type: "agent",
-          ...where,
+              ...where,
               index,
               phaseIndex,
               phaseTitle,
@@ -836,14 +846,15 @@ export class Runtime {
     throw new WorkflowError(`agent({schema}) returned no structured output; ${structuredOutputTextDiagnostic(result.text)}`)
   }
 
-  private async setupWorktree(spec: AgentSpec, wt: boolean | string, index: number): Promise<Worktree & { gitRoot: string }> {
+  /** `writable`: an explicit `worktree` makes it `workspace-write`; one implied by `machine` keeps the sandbox. */
+  private async setupWorktree(spec: AgentSpec, wt: boolean | string, index: number, writable: boolean): Promise<Worktree & { gitRoot: string }> {
     const gitRoot = await findGitRoot(spec.cwd)
     if (!gitRoot) throw new WorkflowError("worktree: true requires the cwd to be a git repository")
     const created = await this.worktreeMutex.run(() =>
       createWorktree({ gitRoot, runId: this.o.runId, index, branch: typeof wt === "string" ? wt : undefined }),
     )
     spec.cwd = created.path
-    spec.sandbox = "workspace-write"
+    if (writable) spec.sandbox = "workspace-write"
     spec.instructions = `${spec.instructions ?? ""}\n\nYou are in an isolated git worktree at ${created.path}; changes here do not affect the main directory or other agents.`.trim()
     return { ...created, gitRoot }
   }

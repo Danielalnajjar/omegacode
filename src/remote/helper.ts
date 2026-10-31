@@ -5,19 +5,22 @@
 
 import { execFile, spawn } from "node:child_process"
 import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
-import { dirname, join } from "node:path"
-import { fileURLToPath } from "node:url"
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { basename, dirname, join } from "node:path"
 import { promisify } from "node:util"
 import { dataRoot } from "../runtime/journal.js"
 import { DefaultWorkerFactory } from "../worker/factory.js"
 import { AgentError, AgentInterrupted, type WorkerFactory, type WorkerProgress } from "../worker/index.js"
+import { buildId, packageVersion } from "./build.js"
 import { defaultMachineSources } from "./machines.js"
 import {
+  AGENT_SPEC_KEYS,
   FrameReader,
   parseReplyLine,
   PROTOCOL_VERSION,
   REMOTE_COMMANDS,
+  REQUEST_KEYS,
+  unknownKeys,
   type CleanupRequest,
   type CollectReply,
   type CollectRequest,
@@ -38,7 +41,11 @@ const exec = promisify(execFile)
 /** Most negotiation tips `have` returns. More only make the bundle smaller. */
 const MAX_TIPS = 1000
 const LOCK_WAIT_MS = 120_000
-const LOCK_STALE_MS = 10 * 60_000
+/** A lock directory still without its owner file this long after creation was left by a crash. */
+const LOCK_OWNERLESS_MS = 30_000
+/** A worktree whose lease has not been renewed for this long belongs to a run that died. */
+const ABANDONED_MS = 24 * 60 * 60_000
+const LEASE_RENEW_MS = 60_000
 /** How long an aborted runner may take to stop before its process group is killed. */
 const STOP_GRACE_MS = 5_000
 /** How long `collect`/`cleanup` wait for a recorded supervisor before killing its group. */
@@ -63,6 +70,19 @@ function worktreePath(name: string): string {
 
 function pidPath(name: string): string {
   return join(remoteRoot(), "worktrees", `${name}.pid`)
+}
+
+/** Renewed by prepare, a running agent and collect; a stale lease marks an abandoned worktree. */
+function leasePath(name: string): string {
+  return join(remoteRoot(), "worktrees", `${name}.lease`)
+}
+
+function renewLease(name: string): void {
+  try {
+    writeFileSync(leasePath(name), String(Date.now()))
+  } catch {
+    // the worktrees directory went away; nothing left to protect
+  }
 }
 
 /** The internal branch a remote worktree is on; the run's branch name applies only locally. */
@@ -93,47 +113,54 @@ function requireSafe(field: string, value: unknown, pattern: RegExp): string {
   return value
 }
 
-/** Serialize repository mutations across concurrent helpers (several agents, or several runs). */
-async function withRepoLock<T>(repoKey: string, fn: () => Promise<T>): Promise<T> {
+/** Every helper on a machine shares its locks, so a holder that died is known by its pid. */
+function lockAbandoned(lock: string): boolean {
+  try {
+    const pid = Number(readFileSync(join(lock, "owner"), "utf8"))
+    return Number.isInteger(pid) && pid > 0 && !alive(pid)
+  } catch {
+    try {
+      return Date.now() - statSync(lock).mtimeMs > LOCK_OWNERLESS_MS
+    } catch {
+      return false
+    }
+  }
+}
+
+/** Take a machine-wide lock, waiting up to `waitMs`; undefined when it stays held. */
+async function acquireLock(id: string, waitMs: number): Promise<(() => void) | undefined> {
   mkdirSync(join(remoteRoot(), "locks"), { recursive: true })
-  const lock = join(remoteRoot(), "locks", `${repoKey}.lock`)
+  const lock = join(remoteRoot(), "locks", `${id}.lock`)
   const started = Date.now()
   for (;;) {
     try {
       mkdirSync(lock)
-      break
     } catch {
-      try {
-        if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) rmSync(lock, { recursive: true, force: true })
-      } catch {
-        // raced with its release
+      if (lockAbandoned(lock)) {
+        rmSync(lock, { recursive: true, force: true })
+        continue
       }
-      if (Date.now() - started > LOCK_WAIT_MS) throw new HelperError("lock_timeout", `timed out waiting for ${lock}`)
+      if (Date.now() - started >= waitMs) return undefined
       await new Promise((r) => setTimeout(r, 200))
+      continue
     }
+    writeFileSync(join(lock, "owner"), String(process.pid))
+    return () => rmSync(lock, { recursive: true, force: true })
   }
+}
+
+/**
+ * `repo-<key>` guards a cache repository's objects and refs; `worktree-<name>` orders the calls
+ * on one attempt (prepare, collect, cleanup), so a salvage collection waits for an earlier one.
+ */
+async function withLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  const release = await acquireLock(id, LOCK_WAIT_MS)
+  if (!release) throw new HelperError("lock_timeout", `timed out waiting for the ${id} lock`)
   try {
     return await fn()
   } finally {
-    rmSync(lock, { recursive: true, force: true })
+    release()
   }
-}
-
-function packageVersion(): string {
-  const here = dirname(fileURLToPath(import.meta.url))
-  for (const candidate of [join(here, "..", "package.json"), join(here, "..", "..", "package.json")]) {
-    try {
-      const pkg = JSON.parse(readFileSync(candidate, "utf8")) as { name?: string; version?: string }
-      if (pkg.name === "omegacode" && pkg.version) return pkg.version
-    } catch {
-      // next candidate
-    }
-  }
-  return "unknown"
-}
-
-async function hasCommit(repo: string, sha: string): Promise<boolean> {
-  return exec("git", ["cat-file", "-e", `${sha}^{commit}`], { cwd: repo }).then(() => true, () => false)
 }
 
 async function have(req: HaveRequest): Promise<HaveReply> {
@@ -161,51 +188,15 @@ async function prepare(req: PrepareRequest, payload: Buffer, signal: AbortSignal
   }
   const path = worktreePath(name)
   if (existsSync(path)) throw new HelperError("bad_request", `remote worktree ${path} already exists`)
-  await withRepoLock(repoKey, async () => {
-    const repo = repoPath(repoKey)
-    if (!existsSync(join(repo, "HEAD"))) {
-      mkdirSync(repo, { recursive: true })
-      await git(repo, ["init", "--bare", "-q"])
-    }
-    if (payload.length > 0) {
-      const file = join(remoteRoot(), "worktrees", `${name}.in.bundle`)
-      mkdirSync(dirname(file), { recursive: true })
-      writeFileSync(file, payload)
-      try {
-        // Objects only: the bundle's refs land in a scratch namespace, the manifest sets the names.
-        await git(repo, ["fetch", "-q", "--no-tags", file, `+refs/*:refs/omegacode/xfer/${name}/*`])
-      } finally {
-        rmSync(file, { force: true })
-        const scratch = await git(repo, ["for-each-ref", "--format=delete %(refname)", `refs/omegacode/xfer/${name}/`]).catch(() => "")
-        if (scratch) await git(repo, ["update-ref", "--stdin"], scratch + "\n").catch(() => {})
-      }
-    }
-    for (const sha of [base, ...branches.map(([, s]) => s)]) {
-      if (!(await hasCommit(repo, sha))) throw new HelperError("base_missing", `commit ${sha} is not in ${repo} after the transfer`)
-    }
-    const updates = [`update refs/omegacode/have/${base} ${base}`]
-    // Mirror the run's branches so later agents can name earlier agents' branches, but only from
-    // a newer snapshot than the last one applied: a delayed older prepare must not rewind or
-    // delete a branch a running agent already reads. Branches checked out by live worktrees
-    // (the internal omegacode/* ones, or any an agent switched to) are never touched.
-    const applied = Number(await git(repo, ["config", "--get", "omegacode.generation"]).catch(() => "0"))
-    if (req.generation > applied) {
-      await git(repo, ["worktree", "prune"]).catch(() => {})
-      const listing = await git(repo, ["worktree", "list", "--porcelain"])
-      const checkedOut = new Set(listing.split("\n").filter((l) => l.startsWith("branch refs/heads/")).map((l) => l.slice("branch refs/heads/".length)))
-      const keep = (branch: string): boolean => branch.startsWith("omegacode/") || checkedOut.has(branch)
-      const wanted = new Map(branches.filter(([branch]) => !keep(branch)))
-      const current = await git(repo, ["for-each-ref", "--format=%(refname:strip=2)", "refs/heads/"])
-      for (const branch of current ? current.split("\n") : []) {
-        if (!keep(branch) && !wanted.has(branch)) updates.push(`delete refs/heads/${branch}`)
-      }
-      for (const [branch, sha] of wanted) updates.push(`update refs/heads/${branch} ${sha}`)
-    }
-    await git(repo, ["update-ref", "--stdin"], updates.join("\n") + "\n")
-    if (req.generation > applied) await git(repo, ["config", "omegacode.generation", String(req.generation)])
+  const repo = repoPath(repoKey)
+  await withLock(`worktree-${name}`, async () => {
+    mkdirSync(dirname(path), { recursive: true })
+    renewLease(name)
+    // Only the cache's objects and refs need the repository lock; checkouts are added in parallel.
+    await withLock(`repo-${repoKey}`, () => syncCache(repo, name, base, branches, req.generation, payload))
+    await sweepAbandoned(repo).catch(() => {})
     // The run gave up (its ssh closed our stdin): add no worktree it cannot clean up.
     if (signal.aborted) throw new HelperError("interrupted", "prepare was abandoned by the run")
-    mkdirSync(dirname(path), { recursive: true })
     await git(repo, ["worktree", "add", "-q", "-b", internalBranch(name), path, base])
     if (signal.aborted) {
       await git(repo, ["worktree", "remove", "--force", path]).catch(() => {})
@@ -214,6 +205,122 @@ async function prepare(req: PrepareRequest, payload: Buffer, signal: AbortSignal
     }
   })
   return { path }
+}
+
+/** Fetch the run's bundle into the cache and mirror its branches there. */
+async function syncCache(repo: string, name: string, base: string, branches: Array<[string, string]>, generation: number, payload: Buffer): Promise<void> {
+  if (!existsSync(join(repo, "HEAD"))) {
+    mkdirSync(repo, { recursive: true })
+    await git(repo, ["init", "--bare", "-q"])
+  }
+  if (payload.length > 0) {
+    const file = join(remoteRoot(), "worktrees", `${name}.in.bundle`)
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, payload)
+    try {
+      // Objects only: the bundle's refs land in a scratch namespace, the manifest sets the names.
+      await git(repo, ["fetch", "-q", "--no-tags", file, `+refs/*:refs/omegacode/xfer/${name}/*`])
+    } finally {
+      rmSync(file, { force: true })
+      const scratch = await git(repo, ["for-each-ref", "--format=delete %(refname)", `refs/omegacode/xfer/${name}/`]).catch(() => "")
+      if (scratch) await git(repo, ["update-ref", "--stdin"], scratch + "\n").catch(() => {})
+    }
+  }
+  const wantedCommits = [...new Set([base, ...branches.map(([, s]) => s)])]
+  const found = await git(repo, ["cat-file", "--batch-check=%(objecttype)"], wantedCommits.map((sha) => `${sha}^{commit}`).join("\n") + "\n")
+  found.split("\n").forEach((type, i) => {
+    if (type !== "commit") throw new HelperError("base_missing", `commit ${wantedCommits[i]} is not in ${repo} after the transfer`)
+  })
+  const deletes: string[] = []
+  const updates = [`update refs/omegacode/have/${base} ${base}`]
+  // Mirror the run's branches so later agents can name earlier agents' branches, but only from
+  // a newer snapshot than the last one applied: a delayed older prepare must not rewind or
+  // delete a branch a running agent already reads. Branches checked out by live worktrees
+  // (the internal omegacode/* ones, or any an agent switched to) are never touched.
+  const applied = Number(await git(repo, ["config", "--get", "omegacode.generation"]).catch(() => "0"))
+  if (generation > applied) {
+    await git(repo, ["worktree", "prune"]).catch(() => {})
+    const listing = await git(repo, ["worktree", "list", "--porcelain"])
+    const checkedOut = new Set(listing.split("\n").filter((l) => l.startsWith("branch refs/heads/")).map((l) => l.slice("branch refs/heads/".length)))
+    const keep = (branch: string): boolean => branch.startsWith("omegacode/") || checkedOut.has(branch)
+    const wanted = new Map(branches.filter(([branch]) => !keep(branch)))
+    const current = await git(repo, ["for-each-ref", "--format=%(refname:strip=2)", "refs/heads/"])
+    for (const branch of current ? current.split("\n") : []) {
+      if (!keep(branch) && !wanted.has(branch)) deletes.push(`delete refs/heads/${branch}`)
+    }
+    for (const [branch, sha] of wanted) updates.push(`update refs/heads/${branch} ${sha}`)
+  }
+  // Deletes go first, in their own transaction: a branch renamed between `feat` and `feat/x`
+  // cannot be deleted and created in one (git refuses the directory/file conflict).
+  if (deletes.length > 0) await git(repo, ["update-ref", "--stdin"], deletes.join("\n") + "\n")
+  await git(repo, ["update-ref", "--stdin"], updates.join("\n") + "\n")
+  if (generation > applied) await git(repo, ["config", "omegacode.generation", String(generation)])
+}
+
+/** No live agent and no lease renewal for ABANDONED_MS: the run that owned it died. */
+function abandoned(name: string): boolean {
+  try {
+    const { supervisor } = JSON.parse(readFileSync(pidPath(name), "utf8")) as RunRecord
+    if (Number.isInteger(supervisor) && supervisor > 1 && alive(supervisor)) return false
+  } catch {
+    // no recorded run
+  }
+  for (const marker of [leasePath(name), worktreePath(name)]) {
+    try {
+      return Date.now() - statSync(marker).mtimeMs > ABANDONED_MS
+    } catch {
+      // try the next marker
+    }
+  }
+  return false
+}
+
+/** Remove this cache's worktrees whose run died, as the next setup on the machine. */
+async function sweepAbandoned(repo: string): Promise<void> {
+  let root: string
+  try {
+    root = realpathSync(join(remoteRoot(), "worktrees"))
+  } catch {
+    return
+  }
+  const listing = await git(repo, ["worktree", "list", "--porcelain"]).catch(() => "")
+  for (const line of listing.split("\n")) {
+    if (!line.startsWith("worktree ")) continue
+    const path = line.slice("worktree ".length)
+    const name = basename(path)
+    let parent: string
+    try {
+      parent = realpathSync(dirname(path))
+    } catch {
+      parent = dirname(path)
+    }
+    if (parent !== root || !SAFE_NAME.test(name) || !abandoned(name)) continue
+    // Never wait: an attempt someone is working on is not abandoned.
+    const release = await acquireLock(`worktree-${name}`, 0)
+    if (!release) continue
+    try {
+      if (abandoned(name)) {
+        await stopRecordedRun(name)
+        await removeAttempt(repo, name)
+      }
+    } catch {
+      // still running, or already gone; the next setup tries again
+    } finally {
+      release()
+    }
+  }
+}
+
+/** Remove one attempt's worktree, internal branch, outgoing ref and records. */
+async function removeAttempt(repo: string, name: string): Promise<void> {
+  const path = worktreePath(name)
+  await git(repo, ["worktree", "remove", "--force", path]).catch(() => {})
+  if (existsSync(path)) rmSync(path, { recursive: true, force: true })
+  await git(repo, ["worktree", "prune"]).catch(() => {})
+  await git(repo, ["branch", "-D", internalBranch(name)]).catch(() => {})
+  await git(repo, ["update-ref", "-d", `refs/omegacode/out/${name}`]).catch(() => {})
+  rmSync(leasePath(name), { force: true })
+  rmSync(pidPath(name), { force: true })
 }
 
 interface RunRecord {
@@ -263,52 +370,49 @@ async function stopRecordedRun(name: string): Promise<void> {
 }
 
 async function collect(req: CollectRequest, send: (line: ReplyBody, bytes?: Buffer) => void): Promise<CollectReply> {
-  const repoKey = requireSafe("repoKey", req.repoKey, SAFE_NAME)
+  requireSafe("repoKey", req.repoKey, SAFE_NAME)
   const name = requireSafe("name", req.name, SAFE_NAME)
   const base = requireSafe("base", req.base, SHA)
   const path = worktreePath(name)
-  if (!existsSync(path)) throw new HelperError("worktree_missing", `remote worktree ${path} does not exist`)
-  await stopRecordedRun(name)
-  let snapshot = false
-  if ((await git(path, ["status", "--porcelain"])).length > 0) {
-    await git(path, ["add", "-A"])
-    await git(path, [
-      "-c", "user.name=OmegaCode", "-c", "user.email=omegacode@localhost", "-c", "commit.gpgsign=false",
-      "commit", "-q", "--no-verify", "-m", `omegacode: uncommitted changes left by agent ${req.index}`,
-    ])
-    snapshot = true
-  }
-  const head = await git(path, ["rev-parse", "HEAD"])
-  const ahead = await git(path, ["rev-list", "--count", `${base}..${head}`])
-  if (ahead === "0") return { changed: false, head }
-  const ref = `refs/omegacode/out/${name}`
-  const file = join(remoteRoot(), "worktrees", `${name}.out.bundle`)
-  await withRepoLock(repoKey, async () => {
+  return withLock(`worktree-${name}`, async () => {
+    if (!existsSync(path)) throw new HelperError("worktree_missing", `remote worktree ${path} does not exist`)
+    renewLease(name)
+    await stopRecordedRun(name)
+    let snapshot = false
+    if ((await git(path, ["status", "--porcelain"])).length > 0) {
+      await git(path, ["add", "-A"])
+      await git(path, [
+        "-c", "user.name=OmegaCode", "-c", "user.email=omegacode@localhost", "-c", "commit.gpgsign=false",
+        "commit", "-q", "--no-verify", "-m", `omegacode: uncommitted changes left by agent ${req.index}`,
+      ])
+      snapshot = true
+    }
+    const head = await git(path, ["rev-parse", "HEAD"])
+    const ahead = await git(path, ["rev-list", "--count", `${base}..${head}`])
+    if (ahead === "0") return { changed: false, head }
+    const ref = `refs/omegacode/out/${name}`
+    const file = join(remoteRoot(), "worktrees", `${name}.out.bundle`)
     await git(path, ["update-ref", ref, head])
     await git(path, ["bundle", "create", "-q", file, ref, `^${base}`])
+    try {
+      const bytes = readFileSync(file)
+      send({ t: "bytes", bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }, bytes)
+    } finally {
+      rmSync(file, { force: true })
+    }
+    return { changed: true, head, ref, snapshot }
   })
-  try {
-    const bytes = readFileSync(file)
-    send({ t: "bytes", bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }, bytes)
-  } finally {
-    rmSync(file, { force: true })
-  }
-  return { changed: true, head, ref, snapshot }
 }
 
 async function cleanup(req: CleanupRequest): Promise<Record<string, never>> {
   const repoKey = requireSafe("repoKey", req.repoKey, SAFE_NAME)
   const name = requireSafe("name", req.name, SAFE_NAME)
-  await stopRecordedRun(name)
   const repo = repoPath(repoKey)
-  const path = worktreePath(name)
-  await withRepoLock(repoKey, async () => {
-    if (!existsSync(join(repo, "HEAD"))) return
-    await git(repo, ["worktree", "remove", "--force", path]).catch(() => {})
-    if (existsSync(path)) rmSync(path, { recursive: true, force: true })
-    await git(repo, ["worktree", "prune"]).catch(() => {})
-    await git(repo, ["branch", "-D", internalBranch(name)]).catch(() => {})
-    await git(repo, ["update-ref", "-d", `refs/omegacode/out/${name}`]).catch(() => {})
+  // The attempt's lock orders this after a prepare or collection still finishing on it.
+  await withLock(`worktree-${name}`, async () => {
+    await stopRecordedRun(name)
+    if (existsSync(join(repo, "HEAD"))) await removeAttempt(repo, name)
+    else rmSync(leasePath(name), { force: true })
   })
   return {}
 }
@@ -331,7 +435,17 @@ function checkRunRequest(req: RunRequest): string {
   if (!req.spec || req.spec.cwd !== worktreePath(name)) {
     throw new HelperError("bad_request", `run must target this machine's worktree ${worktreePath(name)}`)
   }
+  const unknown = unknownKeys(req.spec, AGENT_SPEC_KEYS)
+  if (unknown.length > 0) throw notUnderstood(`agent option${unknown.length > 1 ? "s" : ""} ${unknown.join(", ")}`)
+  if (req.timeoutMs !== undefined && !(typeof req.timeoutMs === "number" && req.timeoutMs > 0)) {
+    throw new HelperError("bad_request", `invalid timeoutMs: ${JSON.stringify(req.timeoutMs)}`)
+  }
   return name
+}
+
+/** A field from a newer build: refuse it rather than run without what it asks for. */
+function notUnderstood(what: string): HelperError {
+  return new HelperError("bad_request", `OmegaCode ${packageVersion()} (build ${buildId()}) on this machine does not understand ${what}; install the run's OmegaCode build here`)
 }
 
 /** The runner child: run the turn with this machine's workers. */
@@ -369,6 +483,15 @@ async function supervise(req: RunRequest, abort: AbortController, send: (line: R
   })
   const group = child.pid
   writeFileSync(pidPath(name), JSON.stringify({ supervisor: process.pid, ...(group ? { group } : {}) } satisfies RunRecord))
+  renewLease(name)
+  const lease = setInterval(() => renewLease(name), LEASE_RENEW_MS)
+  lease.unref()
+  // The run enforces the time limit too; this one holds when the link is gone without an EOF.
+  let timedOut = false
+  const limit = req.timeoutMs === undefined ? undefined : setTimeout(() => {
+    timedOut = true
+    abort.abort()
+  }, req.timeoutMs)
   let terminal: ReplyBody | undefined
   const reader = new FrameReader(
     (line) => {
@@ -400,6 +523,8 @@ async function supervise(req: RunRequest, abort: AbortController, send: (line: R
   if (abort.signal.aborted) void stop()
   else abort.signal.addEventListener("abort", () => void stop(), { once: true })
   await closed
+  clearInterval(lease)
+  if (limit) clearTimeout(limit)
   // The runner's own exit is not enough: anything it started must be gone too.
   if (group && alive(group, true)) {
     try {
@@ -412,7 +537,8 @@ async function supervise(req: RunRequest, abort: AbortController, send: (line: R
     }
   }
   rmSync(pidPath(name), { force: true })
-  if (terminal) return terminal
+  if (terminal && !(timedOut && terminal.t === "error")) return terminal
+  if (timedOut) return { t: "error", code: "agent_timeout", message: `the agent exceeded its ${req.timeoutMs}ms time limit on this machine` }
   if (abort.signal.aborted) return { t: "error", code: "interrupted", message: "agent interrupted", interrupted: true }
   return { t: "error", code: "remote_runner_exited", message: `the agent process on this machine exited without a result (exit ${child.exitCode ?? child.signalCode})` }
 }
@@ -489,10 +615,12 @@ export async function remoteMain(command: string | undefined, opts: RemoteMainOp
   })
   for (const signal of ["SIGTERM", "SIGHUP", "SIGINT"] as const) process.once(signal, () => abort.abort())
   try {
+    const unknown = unknownKeys(request, REQUEST_KEYS[command as RemoteCommand])
+    if (unknown.length > 0) throw notUnderstood(`${command} request field${unknown.length > 1 ? "s" : ""} ${unknown.join(", ")}`)
     let value: unknown
     switch (command as RemoteCommand) {
       case "hello":
-        value = { protocol: PROTOCOL_VERSION, version: packageVersion(), platform: process.platform, hostId: await (opts.hostId ?? defaultMachineSources.localHostId)() } satisfies HelloReply
+        value = { protocol: PROTOCOL_VERSION, version: packageVersion(), build: buildId(), platform: process.platform, hostId: await (opts.hostId ?? defaultMachineSources.localHostId)() } satisfies HelloReply
         break
       case "have":
         value = await have(request as HaveRequest)

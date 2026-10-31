@@ -41,6 +41,8 @@ export interface RunRequest {
   name: string
   fake: boolean
   claudeModel?: string
+  /** What is left of the agent's time limit; the machine stops the turn when it runs out. */
+  timeoutMs?: number
 }
 export interface RunReply { result: AgentResult }
 
@@ -50,7 +52,52 @@ export interface CollectReply { changed: boolean; head?: string; ref?: string; s
 
 export interface CleanupRequest { repoKey: string; name: string }
 
-export interface HelloReply { protocol: number; version: string; platform: string; hostId?: string }
+export interface HelloReply {
+  protocol: number
+  version: string
+  /** `buildId()` of the helper's code; the run refuses a machine whose build differs. */
+  build: string
+  platform: string
+  hostId?: string
+}
+
+/**
+ * The request fields each command understands. The helper refuses any other field, so a request
+ * from a newer build can never lose a restriction the older helper would silently drop.
+ */
+export const REQUEST_KEYS: Record<RemoteCommand, readonly string[]> = {
+  hello: [],
+  have: ["repoKey"],
+  prepare: ["repoKey", "name", "base", "generation", "branches", "payloadBytes", "payloadSha256"],
+  run: ["spec", "name", "fake", "claudeModel", "timeoutMs"],
+  collect: ["repoKey", "name", "base", "index"],
+  cleanup: ["repoKey", "name"],
+} satisfies { [C in RemoteCommand]: readonly (keyof RequestOf<C> & string)[] }
+
+type RequestOf<C extends RemoteCommand> = {
+  hello: Record<string, never>
+  have: HaveRequest
+  prepare: PrepareRequest
+  run: RunRequest
+  collect: CollectRequest
+  cleanup: CleanupRequest
+}[C]
+
+/** Every AgentSpec field; the compile-time check below fails when a new field is not listed. */
+export const AGENT_SPEC_KEYS = [
+  "prompt", "provider", "model", "effort", "cwd", "sandbox", "approval", "instructions", "schema", "maxTurns",
+  "serviceTier", "codexExecutionProfile", "museExecutionProfile", "claudeAgent", "grokAgent", "claudeProfile",
+  "codexChildRole", "codexWebSearch", "codexNetworkAccess", "codexMcpServers", "codexPlugins", "codexPermissions",
+] as const satisfies readonly (keyof AgentSpec)[]
+type UnlistedSpecKey = Exclude<keyof AgentSpec, (typeof AGENT_SPEC_KEYS)[number]>
+const allSpecKeysListed: [UnlistedSpecKey] extends [never] ? true : UnlistedSpecKey = true
+void allSpecKeysListed
+
+/** Fields of `value` not in `allowed`. */
+export function unknownKeys(value: unknown, allowed: readonly string[]): string[] {
+  if (!value || typeof value !== "object") return []
+  return Object.keys(value).filter((key) => !allowed.includes(key))
+}
 
 /** A reply line before the protocol tag is added. */
 export type ReplyBody = ReplyLine extends infer L ? (L extends unknown ? Omit<L, "ocr"> : never) : never

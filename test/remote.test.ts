@@ -396,9 +396,39 @@ test("the next setup on a machine removes worktrees left by a run that died, and
     const next = await runWorkflow({ file: workflow(f, `return await agent("nothing again", { machine: "Far" })`), quiet: true, overrides: { cwd: f.repo }, machineSources: f.sources, remoteTransport: f.transport })
     assert.equal(next.status, "completed", next.error)
     const left = readdirSync(join(f.farHome, "remote", "worktrees")).sort()
-    assert.deepEqual(left, ["recent-1", "recent-1.lease"])
+    assert.deepEqual(left, ["recent-1", "recent-1.base", "recent-1.lease"])
     const cache = join(f.farHome, "remote", "repos", `${repoKey}.git`)
     assert.equal(git(cache, ["for-each-ref", "--format=%(refname)", "refs/heads/omegacode/"]), "refs/heads/omegacode/recent-1")
+    // crashed-1 held nothing beyond its base, so nothing was kept for it.
+    assert.equal(git(cache, ["for-each-ref", "refs/omegacode/salvage/"]), "")
+  })
+})
+
+test("sweeping an abandoned attempt keeps its uncollected work on a salvage ref", async () => {
+  await withFixture(async (f) => {
+    const machine: RemoteMachine = { hostId: "host_far", label: "Far Machine", ssh: "me@far" }
+    const seeded = await runWorkflow({ file: workflow(f, `return await agent("nothing", { machine: "Far" })`), quiet: true, overrides: { cwd: f.repo }, machineSources: f.sources, remoteTransport: f.transport })
+    assert.equal(seeded.status, "completed", seeded.error)
+    const repoKey = readdirSync(join(f.farHome, "remote", "repos"))[0]!.replace(/\.git$/, "")
+    const base = git(f.repo, ["rev-parse", "HEAD"])
+    await remoteCall({ machine, transport: f.transport, command: "prepare", request: { repoKey, name: "dirty-1", base, generation: 1, branches: {}, payloadBytes: 0 } })
+    // The agent changed a tracked file and wrote a new one, then its run died and was never collected.
+    const wt = join(f.farHome, "remote", "worktrees", "dirty-1")
+    writeFileSync(join(wt, "a.txt"), "edited by the agent\n")
+    writeFileSync(join(wt, "new.txt"), "written by the agent\n")
+    const twoDaysAgo = (Date.now() - 2 * 24 * 60 * 60_000) / 1000
+    utimesSync(join(f.farHome, "remote", "worktrees", "dirty-1.lease"), twoDaysAgo, twoDaysAgo)
+    const next = await runWorkflow({ file: workflow(f, `return await agent("nothing again", { machine: "Far" })`), quiet: true, overrides: { cwd: f.repo }, machineSources: f.sources, remoteTransport: f.transport })
+    assert.equal(next.status, "completed", next.error)
+    // The checkout and its internal branch are gone; the work is on the salvage ref.
+    assert.deepEqual(readdirSync(join(f.farHome, "remote", "worktrees")), [])
+    const cache = join(f.farHome, "remote", "repos", `${repoKey}.git`)
+    assert.equal(git(cache, ["for-each-ref", "refs/heads/omegacode/"]), "")
+    const salvaged = "refs/omegacode/salvage/dirty-1"
+    assert.equal(git(cache, ["rev-parse", `${salvaged}^`]), base)
+    assert.equal(git(cache, ["show", `${salvaged}:a.txt`]), "edited by the agent")
+    assert.equal(git(cache, ["show", `${salvaged}:new.txt`]), "written by the agent")
+    assert.equal(git(cache, ["log", "-1", "--format=%s", salvaged]), "omegacode: uncommitted changes left by an abandoned agent")
   })
 })
 

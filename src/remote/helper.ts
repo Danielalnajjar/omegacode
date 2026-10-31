@@ -77,6 +77,11 @@ function leasePath(name: string): string {
   return join(remoteRoot(), "worktrees", `${name}.lease`)
 }
 
+/** The commit an attempt started from, so a sweep can tell whether it holds work. */
+function basePath(name: string): string {
+  return join(remoteRoot(), "worktrees", `${name}.base`)
+}
+
 function renewLease(name: string): void {
   try {
     writeFileSync(leasePath(name), String(Date.now()))
@@ -192,6 +197,7 @@ async function prepare(req: PrepareRequest, payload: Buffer, signal: AbortSignal
   await withLock(`worktree-${name}`, async () => {
     mkdirSync(dirname(path), { recursive: true })
     renewLease(name)
+    writeFileSync(basePath(name), base)
     // Only the cache's objects and refs need the repository lock; checkouts are added in parallel.
     await withLock(`repo-${repoKey}`, () => syncCache(repo, name, base, branches, req.generation, payload))
     await sweepAbandoned(repo).catch(() => {})
@@ -275,7 +281,11 @@ function abandoned(name: string): boolean {
   return false
 }
 
-/** Remove this cache's worktrees whose run died, as the next setup on the machine. */
+/**
+ * Remove this cache's worktrees whose run died, as the next setup on the machine. Their work is
+ * never destroyed: uncommitted changes become a commit, and a head beyond the attempt's base
+ * stays on `refs/omegacode/salvage/<name>`; an attempt that cannot be salvaged is kept.
+ */
 async function sweepAbandoned(repo: string): Promise<void> {
   let root: string
   try {
@@ -301,6 +311,7 @@ async function sweepAbandoned(repo: string): Promise<void> {
     try {
       if (abandoned(name)) {
         await stopRecordedRun(name)
+        await salvage(repo, name)
         await removeAttempt(repo, name)
       }
     } catch {
@@ -309,6 +320,38 @@ async function sweepAbandoned(repo: string): Promise<void> {
       release()
     }
   }
+}
+
+/** Commit anything left uncommitted (tracked, or untracked and not ignored); true if it did. */
+async function snapshot(path: string, message: string): Promise<boolean> {
+  if ((await git(path, ["status", "--porcelain"])).length === 0) return false
+  await git(path, ["add", "-A"])
+  await git(path, [
+    "-c", "user.name=OmegaCode", "-c", "user.email=omegacode@localhost", "-c", "commit.gpgsign=false",
+    "commit", "-q", "--no-verify", "-m", message,
+  ])
+  return true
+}
+
+/** Keep an abandoned attempt's work on `refs/omegacode/salvage/<name>` when it has any. */
+async function salvage(repo: string, name: string): Promise<void> {
+  const path = worktreePath(name)
+  let head: string
+  if (existsSync(path)) {
+    await snapshot(path, "omegacode: uncommitted changes left by an abandoned agent")
+    head = await git(path, ["rev-parse", "HEAD"])
+  } else {
+    head = await git(repo, ["rev-parse", "--verify", "-q", `refs/heads/${internalBranch(name)}`]).catch(() => "")
+    if (!head) return
+  }
+  let base = ""
+  try {
+    base = readFileSync(basePath(name), "utf8").trim()
+  } catch {
+    // unknown base: keep the head
+  }
+  if (SHA.test(base) && (await git(repo, ["rev-list", "--count", `${base}..${head}`])) === "0") return
+  await git(repo, ["update-ref", `refs/omegacode/salvage/${name}`, head])
 }
 
 /** Remove one attempt's worktree, internal branch, outgoing ref and records. */
@@ -320,6 +363,7 @@ async function removeAttempt(repo: string, name: string): Promise<void> {
   await git(repo, ["branch", "-D", internalBranch(name)]).catch(() => {})
   await git(repo, ["update-ref", "-d", `refs/omegacode/out/${name}`]).catch(() => {})
   rmSync(leasePath(name), { force: true })
+  rmSync(basePath(name), { force: true })
   rmSync(pidPath(name), { force: true })
 }
 
@@ -378,15 +422,7 @@ async function collect(req: CollectRequest, send: (line: ReplyBody, bytes?: Buff
     if (!existsSync(path)) throw new HelperError("worktree_missing", `remote worktree ${path} does not exist`)
     renewLease(name)
     await stopRecordedRun(name)
-    let snapshot = false
-    if ((await git(path, ["status", "--porcelain"])).length > 0) {
-      await git(path, ["add", "-A"])
-      await git(path, [
-        "-c", "user.name=OmegaCode", "-c", "user.email=omegacode@localhost", "-c", "commit.gpgsign=false",
-        "commit", "-q", "--no-verify", "-m", `omegacode: uncommitted changes left by agent ${req.index}`,
-      ])
-      snapshot = true
-    }
+    const snapshotted = await snapshot(path, `omegacode: uncommitted changes left by agent ${req.index}`)
     const head = await git(path, ["rev-parse", "HEAD"])
     const ahead = await git(path, ["rev-list", "--count", `${base}..${head}`])
     if (ahead === "0") return { changed: false, head }
@@ -400,7 +436,7 @@ async function collect(req: CollectRequest, send: (line: ReplyBody, bytes?: Buff
     } finally {
       rmSync(file, { force: true })
     }
-    return { changed: true, head, ref, snapshot }
+    return { changed: true, head, ref, snapshot: snapshotted }
   })
 }
 
@@ -412,7 +448,7 @@ async function cleanup(req: CleanupRequest): Promise<Record<string, never>> {
   await withLock(`worktree-${name}`, async () => {
     await stopRecordedRun(name)
     if (existsSync(join(repo, "HEAD"))) await removeAttempt(repo, name)
-    else rmSync(leasePath(name), { force: true })
+    else for (const file of [leasePath(name), basePath(name)]) rmSync(file, { force: true })
   })
   return {}
 }

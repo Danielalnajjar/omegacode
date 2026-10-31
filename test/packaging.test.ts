@@ -784,6 +784,26 @@ if (process.argv[2] === "add") {
     }
   })
 
+  test("refresh installs packed modes under a group-writable caller umask", { skip: !bunAvailable || process.platform === "win32" }, () => {
+    const temp = mkdtempSync(join(tmpdir(), "omega-refresh-umask-"))
+    try {
+      const prefix = join(temp, "active")
+      const tarball = makeOmegaTarball(join(temp, "candidate"), "0.0.6", "verified")
+      execFileSync("bash", ["-c", 'umask 002; exec bash "$1" --fast', "refresh", join(root, "scripts/refresh-global.sh")], {
+        cwd: root,
+        env: { ...process.env, BASH_ENV: "", BUN_INSTALL: prefix, OMEGACODE_REFRESH_TARBALL: tarball },
+        stdio: "pipe",
+      })
+      const installed = join(prefix, "install/global/node_modules/omegacode")
+      assert.equal(statSync(join(installed, "package.json")).mode & 0o777, 0o644)
+      assert.equal(statSync(join(installed, "dist")).mode & 0o777, 0o755)
+      assert.equal(statSync(join(installed, "dist/cli.js")).mode & 0o777, 0o755)
+      assert.equal(execFileSync(join(prefix, "bin/omegacode"), { encoding: "utf8" }), "verified")
+    } finally {
+      rmSync(temp, { recursive: true, force: true })
+    }
+  })
+
   test("post-cutover failure restores the old global package and metadata byte-for-byte", { skip: !bunAvailable }, () => {
     const temp = mkdtempSync(join(tmpdir(), "omega-refresh-rollback-"))
     try {

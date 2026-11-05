@@ -916,7 +916,7 @@ Each agent() spawns a real provider agent; choose the provider per call or inher
 Usage:
   omegacode run <file.workflow.js | name> [options]   Run a workflow (by path or saved name)
       --args '<json>' | --args-file <f>    input exposed as the \`args\` global
-      --provider codex|claude-code|opencode|pi|grok|muse   default provider (per-agent opts override)
+      --provider codex|claude-code|opencode|pi|grok|muse   default provider (default ${DEFAULTS.provider}; per-agent opts override)
       --model <m>                          default model — set together with --provider (both or neither)
       --effort <e>  --sandbox read-only|workspace-write|danger-full-access
       --cwd <dir>  --concurrency <N>       working dir; max concurrent agents (default ${DEFAULTS.concurrency})

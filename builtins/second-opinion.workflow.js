@@ -7,7 +7,7 @@
 export const meta = {
   name: "second-opinion",
   description:
-    "Cheap consensus check — Codex answers at medium effort and Claude at low effort, and a medium-effort comparator checks agreement; agreement returns a merged answer, disagreement escalates both to deep effort and adjudicates.",
+    "Cheap consensus check — Grok answers at medium effort and Claude at low effort, and a medium-effort comparator checks agreement; agreement returns a merged answer, disagreement escalates both to deep effort and adjudicates.",
   defaultSandbox: "read-only",
   phases: [
     { title: "Ask", detail: "both providers answer independently at their cheapest effort" },
@@ -18,7 +18,8 @@ export const meta = {
 }
 
 const PROVIDERS = [
-  { provider: "codex", model: "gpt-6.1-sol", effort: "medium", name: "Codex" },
+  // OpenAI cutover (11-05): the Codex answerer became Grok.
+  { provider: "grok", model: "grok-4.7", effort: "medium", name: "Grok" },
   { provider: "claude-code", model: "claude-fable-5-1", effort: "low", name: "Claude" },
 ]
 

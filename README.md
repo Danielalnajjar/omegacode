@@ -20,7 +20,7 @@ omegacode install-skill
 `~/.claude/skills/` (Claude Code) and `~/.agents/skills/` (Codex and other agents). Pass
 `--claude` or `--agents` to install to just one.
 
-You'll need Node 20+ and at least one worker installed: `codex` (the default provider), `claude`,
+You'll need Node 20+ and at least one worker installed: `claude` (the default provider), <!-- OpenAI cutover (11-05) --> `codex`,
 `opencode` (≥ 1.16.2), `pi` (≥ 0.79.1, `bun add -g @earendil-works/pi-coding-agent`),
 `grok` (≥ 0.2.112), and/or `muse` (≥ 1.3.0). Run
 `omegacode doctor` to check — it flags binaries below the minimum versions, which the workers
@@ -71,7 +71,7 @@ return await pipeline(
 
 Plain JavaScript, no imports — the DSL is injected. Each `agent()` spawns a real Codex, Claude
 Code, OpenCode, pi, Grok, or Muse agent; omit `provider`/`model` to inherit whatever the run was started with
-(`--provider --model`, default `codex`), or pin them per call when you want cross-provider
+(`--provider --model`, default `claude-code` <!-- OpenAI cutover (11-05) -->), or pin them per call when you want cross-provider
 diversity. Provider and model are **both-or-neither** at every site (per-call, meta defaults,
 CLI flags): a lone `provider:` or `model:` is rejected, so a model meant for one provider can
 never silently ride another provider's call.

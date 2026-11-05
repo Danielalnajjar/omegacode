@@ -3,7 +3,7 @@
 // The cross-provider attacker is the point: a model is measurably worse at finding holes in its
 // own reasoning than another model is.
 // Run with: omegacode run provider-debate --args '"<question>"'
-//       or: --args '{"question": "...", "rounds": 2, "proposer": "codex" | "claude-code"}'
+//       or: --args '{"question": "...", "rounds": 2, "proposer": "grok" | "claude-code"}'
 
 export const meta = {
   name: "provider-debate",
@@ -18,7 +18,8 @@ export const meta = {
 }
 
 const PROVIDERS = {
-  codex: { provider: "codex", model: "gpt-6.1-sol", name: "Codex" },
+  // OpenAI cutover (11-05): the Codex debater became Grok.
+  grok: { provider: "grok", model: "grok-4.7", name: "Grok" },
   "claude-code": { provider: "claude-code", model: "claude-fable-5-1", name: "Claude" },
 }
 
@@ -32,10 +33,10 @@ if (!question) {
   throw new Error(`provider-debate needs a question — pass --args '"<question>"' or --args '{"question": "..."}'`)
 }
 
-const proposerId = args && typeof args === "object" && args.proposer !== undefined ? args.proposer : "codex"
+const proposerId = args && typeof args === "object" && args.proposer !== undefined ? args.proposer : "grok"
 const proposer = PROVIDERS[proposerId]
-if (!proposer) throw new Error(`unknown proposer "${proposerId}" — expected "codex" or "claude-code"`)
-const attacker = proposer === PROVIDERS.codex ? PROVIDERS["claude-code"] : PROVIDERS.codex
+if (!proposer) throw new Error(`unknown proposer "${proposerId}" — expected "grok" or "claude-code"`)
+const attacker = proposer === PROVIDERS.grok ? PROVIDERS["claude-code"] : PROVIDERS.grok
 
 const rawRounds = args && typeof args === "object" && typeof args.rounds === "number" ? args.rounds : 2
 const rounds = Math.max(1, Math.min(5, Math.floor(rawRounds)))

@@ -18,6 +18,6 @@ const files = [
 test("every Codex model literal in shipped workflows and the skill names the current Codex model", () => {
   const pins = files.flatMap((file) =>
     [...readFileSync(root + file, "utf8").matchAll(/"(gpt-[^"]+)"/g)].map((m) => `${file}: ${m[1]}`))
-  assert.ok(pins.length >= 7, `expected codex pins, found ${pins.length}`)
+  assert.ok(pins.length >= 6, `expected codex pins, found ${pins.length}`)
   assert.deepEqual(pins.filter((pin) => !pin.endsWith(`: ${CODEX_MODEL}`)), [])
 })

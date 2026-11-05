@@ -7,7 +7,7 @@
 export const meta = {
   name: "bake-off",
   description:
-    "Implementation bake-off — Codex and Claude each build the same task in isolated worktrees, blind cross-provider judges score the diffs, tie-break on splits, report with graft suggestions.",
+    "Implementation bake-off — Grok and Claude each build the same task in isolated worktrees, blind cross-provider judges score the diffs, tie-break on splits, report with graft suggestions.",
   defaultSandbox: "read-only",
   phases: [
     { title: "Implement", detail: "each provider builds the task in its own git worktree" },
@@ -17,7 +17,8 @@ export const meta = {
 }
 
 const CONTENDERS = [
-  { provider: "codex", model: "gpt-6.1-sol", name: "Codex" },
+  // OpenAI cutover (11-05): the Codex contender became Grok.
+  { provider: "grok", model: "grok-4.7", name: "Grok" },
   { provider: "claude-code", model: "claude-fable-5-1", name: "Claude" },
 ]
 

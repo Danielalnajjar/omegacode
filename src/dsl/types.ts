@@ -211,7 +211,8 @@ export interface RunDefaults {
 }
 
 export const DEFAULTS: Omit<RunDefaults, "cwd"> = {
-  provider: "codex",
+  // OpenAI cutover (11-05): runs that name no provider go to Claude Code instead of Codex.
+  provider: "claude-code",
   sandbox: "read-only",
   approval: "never",
   concurrency: 100,

@@ -189,7 +189,8 @@ function inspectRun({ outcome, omegaHome, trace, nonce, expectedDigests, profile
 
   const resolverDir = join(trace, "resolver")
   const resolverCalls = readdirSync(resolverDir).sort().map((name) => JSON.parse(readFileSync(join(resolverDir, name), "utf8")))
-  if (resolverCalls.length !== 3) throw new Error(`profile smoke expected three resolver calls, observed ${resolverCalls.length}`)
+  // A run resolves each profile once and shares it across lanes, so A/B/A resolves A and B once each.
+  if (resolverCalls.length !== 2) throw new Error(`profile smoke expected two resolver calls, observed ${resolverCalls.length}`)
   const resolvedIds = []
   for (const row of resolverCalls) {
     const argv = row.argv
@@ -199,8 +200,8 @@ function inspectRun({ outcome, omegaHome, trace, nonce, expectedDigests, profile
       || ![profileA, profileB].includes(argv[3])) throw new Error("profile smoke bb trace contains a refused invocation")
     resolvedIds.push(argv[3])
   }
-  if (resolvedIds.filter((id) => id === profileA).length !== 2 || resolvedIds.filter((id) => id === profileB).length !== 1) {
-    throw new Error("profile smoke resolver calls did not map A/B/A")
+  if (resolvedIds.filter((id) => id === profileA).length !== 1 || resolvedIds.filter((id) => id === profileB).length !== 1) {
+    throw new Error("profile smoke resolver calls did not resolve A and B once each")
   }
 
   const arrivals = LANES.map((lane) => JSON.parse(readFileSync(join(trace, `${lane}.arrival.json`), "utf8")))

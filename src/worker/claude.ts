@@ -15,7 +15,7 @@ import { addUsage, emptyUsage, type AgentResult, type AgentSpec, type AgentUsage
 import type { PreparedAgentCall, Worker, WorkerContext } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
 import { isolatedClaudeOptions, loadClaudeIsolation } from "./claude-isolation.js"
-import { prepareClaudeProfile, resolveClaudeProfile, type ClaudeProfileResolver } from "./claude-profile.js"
+import { prepareClaudeProfile, resolveClaudeProfile, type ClaudeProfileResolver, type OmegaProfile } from "./claude-profile.js"
 import { DEFAULT_STALL_TIMEOUT_MS } from "./subprocess-jsonl.js"
 import { assertValidSchema, toClaudeOutputFormat } from "./schema.js"
 
@@ -99,17 +99,38 @@ function claudeFailure(code: string, message: string, usage?: AgentUsage, comple
 
 export class ClaudeWorker implements Worker {
   readonly id = "claude-code" as const
+  // One resolution per profile for this worker's run, shared by every lane that names it. It is
+  // bound to the worker's lifetime rather than to the first lane, so one lane's abort cannot fail
+  // the others; a failed resolution is dropped so a later lane resolves again.
+  private readonly profiles = new Map<string, Promise<OmegaProfile>>()
+  private readonly lifetime = new AbortController()
   constructor(private readonly opts: ClaudeWorkerOpts = {}) {}
 
   async prepareAgentCall(spec: AgentSpec, ctx: WorkerContext): Promise<PreparedAgentCall> {
     this.preflight(spec, ctx)
-    const prepared = await prepareClaudeProfile(spec, ctx.signal, this.opts.profileResolver ?? resolveClaudeProfile, this.opts.baseEnv ?? process.env)
+    const prepared = await prepareClaudeProfile(spec, ctx.signal, (profileId, signal) => this.resolveProfile(profileId, signal), this.opts.baseEnv ?? process.env)
     ctx.onProgress({ kind: "claude-profile", label: prepared.label })
     return (attemptSpec, attemptContext) => this.runAgentWithEnv(attemptSpec, attemptContext, prepared.env)
   }
 
   async runAgent(spec: AgentSpec, ctx: WorkerContext): Promise<AgentResult> {
     return this.runAgentWithEnv(spec, ctx)
+  }
+
+  private resolveProfile(profileId: string, signal: AbortSignal): Promise<OmegaProfile> {
+    let pending = this.profiles.get(profileId)
+    if (!pending) {
+      const resolving = (this.opts.profileResolver ?? resolveClaudeProfile)(profileId, this.lifetime.signal)
+      resolving.catch(() => { if (this.profiles.get(profileId) === resolving) this.profiles.delete(profileId) })
+      this.profiles.set(profileId, resolving)
+      pending = resolving
+    }
+    if (signal.aborted) return Promise.reject(new AgentInterrupted())
+    return new Promise((resolve, reject) => {
+      const onAbort = () => reject(new AgentInterrupted())
+      signal.addEventListener("abort", onAbort, { once: true })
+      pending.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort))
+    })
   }
 
   private preflight(spec: AgentSpec, ctx: WorkerContext): void {
@@ -333,7 +354,9 @@ export class ClaudeWorker implements Worker {
     }
   }
 
-  async shutdown(): Promise<void> {}
+  async shutdown(): Promise<void> {
+    this.lifetime.abort()
+  }
 }
 
 /**

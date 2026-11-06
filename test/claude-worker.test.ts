@@ -1021,3 +1021,31 @@ for (const prefix of USAGE_LIMIT_ERROR_PREFIXES) {
     assert.equal(calls, 1)
   })
 }
+
+test("lanes naming one profile share one resolution that no single lane's abort can fail", async () => {
+  let resolutions = 0
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  const worker = new ClaudeWorker({
+    queryFn: scripted([resultMsg()]),
+    baseEnv: {},
+    profileResolver: async (profileId) => {
+      resolutions += 1
+      if (resolutions === 1) throw new AgentError({ provider: "claude-code", code: "claude_profile_unavailable", message: "first resolution fails" })
+      await gate
+      return { profileId, label: "Hub", configDir: "/profiles/hub", claudeCodeExecutable: "/launchers/hub" }
+    },
+  })
+
+  await assert.rejects(worker.prepareAgentCall(spec({ claudeProfile: "hub" }), ctx()),
+    (error: unknown) => error instanceof AgentError && error.code === "claude_profile_unavailable")
+
+  const aborted = new AbortController()
+  const abortedLane = worker.prepareAgentCall(spec({ claudeProfile: "hub" }), ctx(aborted.signal))
+  const lanes = [1, 2, 3].map(() => worker.prepareAgentCall(spec({ claudeProfile: "hub" }), ctx()))
+  aborted.abort()
+  await assert.rejects(abortedLane, (error: unknown) => error instanceof AgentInterrupted)
+  release()
+  await Promise.all(lanes)
+  assert.equal(resolutions, 2)
+})

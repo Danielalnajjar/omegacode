@@ -37,7 +37,39 @@ export function assertNoClaudeProfileAuthConflict(env: NodeJS.ProcessEnv): void 
 export interface OmegaProfile { profileId: string; label: string; configDir: string; claudeCodeExecutable: string }
 export type ClaudeProfileResolver = (profileId: string, signal: AbortSignal) => Promise<OmegaProfile>
 
-export function resolveClaudeProfile(profileId: string, signal: AbortSignal, runExecFile: typeof execFile = execFile): Promise<OmegaProfile> {
+const RESOLVER_TIMEOUT_MS = 10_000
+const RESOLVER_RETRY_DELAYS_MS = [1_000, 2_000]
+
+// A loaded host can push `bb subscription resolve-omega` past its timeout, so only a timeout is
+// retried; every other failure is terminal. A retry asks for the same profile, never another one.
+export async function resolveClaudeProfile(profileId: string, signal: AbortSignal, runExecFile: typeof execFile = execFile): Promise<OmegaProfile> {
+  for (const delayMs of RESOLVER_RETRY_DELAYS_MS) {
+    try {
+      return await resolveClaudeProfileOnce(profileId, signal, runExecFile)
+    } catch (error) {
+      if (!(error instanceof ResolverTimeout)) throw error
+    }
+    await abortableDelay(delayMs, signal)
+  }
+  try {
+    return await resolveClaudeProfileOnce(profileId, signal, runExecFile)
+  } catch (error) {
+    throw error instanceof ResolverTimeout ? unavailable("resolver command timed out") : error
+  }
+}
+
+class ResolverTimeout extends Error {}
+
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(new AgentInterrupted())
+    const onAbort = () => { clearTimeout(timer); reject(new AgentInterrupted()) }
+    const timer = setTimeout(() => { signal.removeEventListener("abort", onAbort); resolve() }, ms)
+    signal.addEventListener("abort", onAbort, { once: true })
+  })
+}
+
+function resolveClaudeProfileOnce(profileId: string, signal: AbortSignal, runExecFile: typeof execFile): Promise<OmegaProfile> {
   return new Promise((resolve, reject) => {
     let callbackDone = false
     let closeDone = false
@@ -45,6 +77,7 @@ export function resolveClaudeProfile(profileId: string, signal: AbortSignal, run
     const settle = () => {
       if (!callbackDone || !closeDone || !outcome) return
       if (signal.aborted || outcome.error?.code === "ABORT_ERR") return reject(new AgentInterrupted())
+      if (outcome.error?.killed && outcome.error.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return reject(new ResolverTimeout())
       if (outcome.error) {
         const cause = outcome.error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ? "resolver output exceeded its limit" : "resolver command failed"
         return reject(unavailable(cause))
@@ -71,7 +104,7 @@ export function resolveClaudeProfile(profileId: string, signal: AbortSignal, run
     let child
     try {
       child = runExecFile("bb", ["subscription", "resolve-omega", "--profile-id", profileId, "--json"], {
-        shell: false, signal, killSignal: "SIGKILL", maxBuffer: 64 * 1024, timeout: 10_000, encoding: "utf8",
+        shell: false, signal, killSignal: "SIGKILL", maxBuffer: 64 * 1024, timeout: RESOLVER_TIMEOUT_MS, encoding: "utf8",
       }, (error, stdout, stderr) => { outcome = { error, stdout, stderr }; callbackDone = true; settle() })
     } catch {
       reject(unavailable("resolver command failed"))

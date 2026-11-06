@@ -89,7 +89,8 @@ Provider-native options stay deliberately provider-specific:
   Agent SDK call. Resolve names with `bb subscription resolve-omega --reference ... --json`, persist
   only `profileId`, and never use an `acp-sub-*` route. At runtime the strict resolver also returns
   `configDir` and `claudeCodeExecutable`; OmegaCode binds both to that call without changing the
-  parent process. The profile joins cache identity so it can accompany `claudeAgent`; the named
+  parent process. A run resolves each profile once and shares the result across its lanes, and it
+  retries a resolver timeout twice, after 1 s and 2 s, for the same profile. The profile joins cache identity so it can accompany `claudeAgent`; the named
   agent then loads from the selected home. The viewer shows that profile's authored subscription
   name, not the stable id.
 - Codex: `codexChildRole` uses provider thread metadata to prove an exact native child role completed,

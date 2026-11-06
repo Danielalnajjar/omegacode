@@ -230,3 +230,30 @@ test("resolver bounds output and waits for abort cleanup", async () => {
     await assert.rejects(pending, (error: unknown) => error instanceof AgentInterrupted)
   })
 })
+
+test("resolver retries a timed-out command for the same profile and fails after three timeouts", async () => {
+  const root = mkdtempSync(join(tmpdir(), "omega-profile-timeout-"))
+  const fixture = join(root, "bb.cjs")
+  const attempts = join(root, "attempts")
+  // Hangs until the given attempt number, then answers.
+  writeFileSync(fixture, `const fs = require("node:fs"); fs.appendFileSync(${JSON.stringify(attempts)}, process.argv[5] + "\\n");
+const n = fs.readFileSync(${JSON.stringify(attempts)}, "utf8").trim().split("\\n").length;
+if (n < Number(process.env.ANSWER_ON)) setInterval(() => {}, 1000);
+else process.stdout.write(JSON.stringify({ profileId: process.argv[5], label: "Hub", configDir: "/profiles/hub", claudeCodeExecutable: "/launchers/hub" }));`)
+  const shortTimeout = ((_file: string, args: string[], options: object, callback: unknown) =>
+    execFile(process.execPath, [fixture, ...args], { ...options, timeout: 300 } as never, callback as never)) as typeof execFile
+  try {
+    process.env.ANSWER_ON = "3"
+    assert.equal((await resolveClaudeProfile("hub", new AbortController().signal, shortTimeout)).configDir, "/profiles/hub")
+    assert.deepEqual(readFileSync(attempts, "utf8").trim().split("\n"), ["hub", "hub", "hub"])
+
+    rmSync(attempts)
+    process.env.ANSWER_ON = "4"
+    await assert.rejects(resolveClaudeProfile("hub", new AbortController().signal, shortTimeout), (error: unknown) =>
+      error instanceof AgentError && error.code === "claude_profile_unavailable" && /timed out/.test(error.message))
+    assert.equal(readFileSync(attempts, "utf8").trim().split("\n").length, 3)
+  } finally {
+    delete process.env.ANSWER_ON
+    rmSync(root, { recursive: true, force: true })
+  }
+})

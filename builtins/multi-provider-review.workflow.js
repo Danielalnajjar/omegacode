@@ -1,4 +1,4 @@
-// omegacode-original built-in: the same change reviewed twice — once by Grok, once by Claude —
+// omegacode-original built-in: the same change reviewed twice — once by Codex, once by Claude —
 // each over the ENTIRE feature/branch, then a synthesis pass merges both: consensus findings
 // (both providers saw it → highest confidence), unique catches, and disagreements called out.
 // Run with: omegacode run multi-provider-review [--args '{"target": "<ref|path|diff>"}']
@@ -6,10 +6,10 @@
 export const meta = {
   name: "multi-provider-review",
   description:
-    "Dual-provider review — Grok and Claude each review the full feature/branch independently, then a synthesis merges both: consensus, unique catches, disagreements.",
+    "Dual-provider review — Codex and Claude each review the full feature/branch independently, then a synthesis merges both: consensus, unique catches, disagreements.",
   defaultSandbox: "read-only",
   phases: [
-    { title: "Review", detail: "Grok and Claude each review the entire change independently" },
+    { title: "Review", detail: "Codex and Claude each review the entire change independently" },
     { title: "Synthesize", detail: "merge both reviews: consensus, unique findings, ranked report" },
   ],
 }
@@ -17,8 +17,7 @@ export const meta = {
 const MAX_FINDINGS_PER_REVIEW = 15
 
 const REVIEWERS = [
-  // OpenAI cutover (11-05): the Codex reviewer became Grok.
-  { provider: "grok", model: "grok-4.7", name: "Grok" },
+  { provider: "codex", model: "gpt-6.1-sol", name: "Codex" },
   { provider: "claude-code", model: "claude-fable-5-1", name: "Claude" },
 ]
 

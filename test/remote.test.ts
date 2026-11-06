@@ -130,8 +130,7 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
 
 function workflow(f: Fixture, body: string, machines = `["Far"]`): string {
   const file = join(f.root, `w-${Math.random().toString(36).slice(2)}.workflow.js`)
-  // OpenAI cutover (11-05): the run default left codex, so these workflows name the codex-only machine's provider.
-  writeFileSync(file, `export const meta = { name: "remote-test", description: "test", machines: ${machines}, defaultProvider: "codex", defaultModel: "codex-model-1" };\n${body}`)
+  writeFileSync(file, `export const meta = { name: "remote-test", description: "test", machines: ${machines} };\n${body}`)
   return file
 }
 

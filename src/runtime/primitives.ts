@@ -99,6 +99,8 @@ export interface RuntimeOpts {
   seed: number
   baseTimeMs: number
   signal: AbortSignal
+  /** Reports the start of provider work, after any checkout preparation. */
+  onProviderDispatch?: () => void
   /** meta.phases, announced as pending phase events up front so the viewer shows the full plan. */
   declaredPhases?: Array<{ title: string; detail?: string }>
   /** The machines validated from meta.machines (ADR 0003). Absent: every agent is local. */
@@ -570,10 +572,18 @@ export class Runtime {
             ...(this.o.defaults.agentTimeoutMs > 0 ? { deadlineAt: startedAt + this.o.defaults.agentTimeoutMs } : {}),
           })
           : this.o.factory.get(runSpec.provider, runSpec.serviceTier, runSpec.codexExecutionProfile)
+        let reportedProgress = false
         const workerCtx = {
           signal: agentAbort.signal,
           onProgress: (e: WorkerProgress) => {
             if (agentAbort.signal.aborted) return
+            if (!reportedProgress && isProviderProgress(e)) {
+              reportedProgress = true
+              this.o.events.emit({
+                type: "agent", ...where, index, phaseIndex, phaseTitle, label,
+                provider: spec.provider, model: spec.model, state: "running", lastProgressAt: Date.now(),
+              })
+            }
             switch (e.kind) {
               case "text":
                 transcript.write({ kind: "text", text: e.text })
@@ -639,6 +649,7 @@ export class Runtime {
             }
           },
         }
+        this.o.onProviderDispatch?.()
         const prepared = runSpec.claudeProfile !== undefined && worker.prepareAgentCall
           ? await withinDeadline(worker.prepareAgentCall(runSpec, workerCtx))
           : undefined
@@ -986,6 +997,23 @@ export class Runtime {
  * agent's failure — AgentError from the worker, or its AgentFailedError wrap (e.g. a persistent
  * schema miss) — nulls only its own item, matching the baseline per-item semantics.
  */
+function isProviderProgress(event: WorkerProgress): boolean {
+  switch (event.kind) {
+    case "text":
+    case "reasoning":
+      return event.text.trim().length > 0
+    case "tool":
+      return true
+    case "tool-result":
+      return event.name !== "codex-thread-cleanup"
+    case "usage":
+      return (event.usage.inputTokens ?? 0) > 0 || (event.usage.outputTokens ?? 0) > 0
+    default:
+      // A local phase change or profile label does not mean the provider has begun work.
+      return false
+  }
+}
+
 function isControlFlow(err: unknown): boolean {
   return err instanceof AgentInterrupted || (err instanceof WorkflowError && !(err instanceof AgentFailedError))
 }

@@ -75,6 +75,57 @@ test("withRetry: jitters app-server overload backoff within the exponential cap"
   assert.ok(observedDelay >= 1 && observedDelay <= 20)
 })
 
+test("terminal Codex reconnect errors can recover beyond the ordinary four attempts", async () => {
+  let calls = 0
+  const result = await withRetry(async () => {
+    if (++calls < 8) {
+      throw new AgentError({
+        provider: "codex",
+        code: "codex_error",
+        message: "stream disconnected before completion: error sending request",
+        retryable: true,
+      })
+    }
+    return "recovered"
+  }, never(), { baseMs: 1, maxMs: 1 })
+
+  assert.equal(result, "recovered")
+})
+
+test("a slow Codex connection attempt consumes the reconnect retry window", async (t) => {
+  let now = 0
+  t.mock.method(Date, "now", () => now)
+  const failure = new AgentError({
+    provider: "codex",
+    code: "responseStreamDisconnected",
+    message: "connection lost",
+    retryable: true,
+  })
+  let calls = 0
+  await assert.rejects(withRetry(async () => {
+    if (++calls === 2) now = 121_000
+    throw failure
+  }, never(), { baseMs: 1, maxMs: 1 }), (error) => error === failure)
+
+  assert.equal(calls, 2)
+})
+
+test("other transient failures retain the original four attempts", async () => {
+  const failures = [
+    new AgentError({ provider: "codex", code: "httpConnectionFailed", message: "unexpected status 401 Unauthorized", retryable: true }),
+    new AgentError({ provider: "codex", code: "codex_error", message: "invalid model output", retryable: true }),
+    new AgentError({ provider: "claude-code", code: "responseStreamDisconnected", message: "connection lost", retryable: true }),
+  ]
+  for (const failure of failures) {
+    let calls = 0
+    await assert.rejects(withRetry(async () => {
+      calls++
+      throw failure
+    }, never(), { baseMs: 1, maxMs: 1 }), (error) => error === failure)
+    assert.equal(calls, 4, failure.message)
+  }
+})
+
 test("withRetry: does NOT retry a non-retryable AgentError", async () => {
   let calls = 0
   await assert.rejects(

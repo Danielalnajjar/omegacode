@@ -526,7 +526,10 @@ async function cmdRun(flags: Flags): Promise<void> {
 
   if (flags.json === true) {
     const url = base ? `${base}#/run/${outcome.runId}` : undefined
-    process.stdout.write(JSON.stringify({ runId: outcome.runId, status: outcome.status, agentCounts: outcome.agentCounts, url, result: outcome.result, error: outcome.error }, null, 2) + "\n")
+    process.stdout.write(JSON.stringify({
+      runId: outcome.runId, status: outcome.status, agentCounts: outcome.agentCounts, url,
+      result: outcome.result, error: outcome.error, errorCode: outcome.errorCode,
+    }, null, 2) + "\n")
     if (outcome.status === "completed") warnFailedAgents(outcome.agentCounts, outcome.runId)
   } else if (outcome.status === "completed") {
     const r = outcome.result

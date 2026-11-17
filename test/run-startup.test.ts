@@ -1,0 +1,114 @@
+import assert from "node:assert/strict"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { test, type TestContext } from "node:test"
+import { loadRunStatus } from "../src/runtime/run-store.ts"
+import { runWorkflow } from "../src/runtime/run.ts"
+import { setTestEnv } from "./test-env.ts"
+
+// Exercise the native worker and journal against a local Codex protocol peer, not a model.
+function setup(t: TestContext) {
+  const home = mkdtempSync(join(tmpdir(), "omega-startup-"))
+  t.after(() => rmSync(home, { recursive: true, force: true }))
+  const file = join(home, "startup.workflow.js")
+  const codex = join(home, "codex")
+  setTestEnv(t, { OMEGACODE_HOME: home, CODEX_BIN: codex })
+  writeFileSync(file, `
+    export const meta = { name: "startup", description: "test" }
+    return await parallel([() => agent("cached"), () => agent("fresh"), () => agent("quiet")])
+  `)
+  writeFileSync(codex, `#!${process.execPath}
+const readline = require("node:readline");
+const fs = require("node:fs");
+if (process.argv.includes("mcp") && process.argv.includes("list")) {
+  console.log("[]");
+} else if (process.argv.includes("features") && process.argv.includes("list")) {
+  console.log("plugins stable true\\nunbounded_connection_retries stable true");
+} else {
+  const mode = fs.readFileSync(${JSON.stringify(join(home, "mode"))}, "utf8");
+  const send = (frame) => console.log(JSON.stringify({ jsonrpc: "2.0", ...frame }));
+  readline.createInterface({ input: process.stdin }).on("line", (line) => {
+    const { id, method, params } = JSON.parse(line);
+    if (id === undefined) return;
+    const threadId = params?.threadId;
+    const reply = (result) => send({ id, result });
+    const notify = (method, data) => send({ method, params: { threadId, ...data } });
+    if (method === "initialize") reply({ userAgent: "test-app-server" });
+    else if (method === "thread/start") reply({ thread: { id: "thread-" + id } });
+    else if (method === "thread/unsubscribe") reply({ status: "notLoaded" });
+    else if (method === "turn/interrupt") reply({});
+    else if (method === "turn/start") {
+      reply({ turn: { id: "turn-" + id, status: "inProgress" } });
+      const prompt = params.input[0].text;
+      if (prompt === "cached" || (mode === "progress" && prompt === "fresh")) {
+        notify("item/agentMessage/delta", { delta: "actual model work" });
+        notify("turn/completed", { turn: { status: "completed" } });
+      } else if (mode === "fail") {
+        notify("error", { error: { message: "provider rejected startup", codexErrorInfo: "usageLimitExceeded" } });
+      } else {
+        notify("thread/tokenUsage/updated", { tokenUsage: { total: { inputTokens: 0, outputTokens: 0 } } });
+      }
+    }
+  });
+}
+`, { mode: 0o700 })
+  const mode = (value: string) => writeFileSync(join(home, "mode"), value)
+  mode("fail")
+  return { file, mode }
+}
+
+test("a resumed fan-out that makes no progress fails, even when a previous lane is cached", { skip: process.platform === "win32", timeout: 10_000 }, async (t) => {
+  const { file } = setup(t)
+  const first = await runWorkflow({ file, quiet: true })
+  assert.equal(first.status, "completed")
+  assert.deepEqual(first.agentCounts, { done: 1, failed: 2, skipped: 0, unfinished: 0 })
+
+  const resumed = await runWorkflow({ file, resumeRunId: first.runId, quiet: true })
+  assert.equal(resumed.status, "failed")
+  assert.equal(resumed.result, undefined)
+  const terminal = await loadRunStatus(first.runId)
+  assert.equal(terminal?.status, "failed")
+  assert.equal(terminal?.errorCode, "agent_restart_failed")
+  assert.equal(terminal?.result, undefined, "the prior generation's result does not belong to this failure")
+  assert.match(terminal?.error ?? "", /without any provider progress/)
+  assert.equal(terminal?.agents.filter((agent) => agent.cached).length, 1)
+})
+
+for (const providerMode of ["silent", "progress"]) {
+  test(`heartbeat distinguishes zero usage alone from real provider progress (${providerMode})`, { skip: process.platform === "win32", timeout: 10_000 }, async (t) => {
+    const { file, mode } = setup(t)
+    const first = await runWorkflow({ file, quiet: true })
+    mode(providerMode)
+    const abort = new AbortController()
+    t.after(() => abort.abort())
+    t.mock.timers.enable({ apis: ["Date", "setInterval"], now: Date.now() })
+    let observed = 0
+    let ready!: () => void
+    const bothLanes = new Promise<void>((resolve) => { ready = resolve })
+    const resumed = runWorkflow({
+      file, resumeRunId: first.runId, quiet: true, signal: abort.signal,
+      onEvent(event) {
+        if (event.type === "agent" && !event.cached
+          && (event.state === "done" || (event.inputTokens === 0 && event.outputTokens === 0))) {
+          if (++observed === 2) ready()
+        }
+      },
+    })
+    try {
+      await bothLanes
+      t.mock.timers.tick(300_000)
+      const outcome = await Promise.race([resumed, new Promise<null>((resolve) => setTimeout(() => resolve(null), 500))])
+      if (providerMode === "silent") {
+        assert.equal(outcome?.status, "failed")
+        assert.equal(outcome.errorCode, "agent_start_stalled")
+        assert.match(outcome.error ?? "", /within 5 minutes/)
+      } else {
+        assert.equal(outcome, null, "one genuinely active lane prevents an all-silent failure")
+      }
+    } finally {
+      abort.abort()
+      await resumed
+    }
+  })
+}

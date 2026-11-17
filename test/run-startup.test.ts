@@ -10,7 +10,7 @@ import { runWorkflow } from "../src/runtime/run.ts"
 import { setTestEnv } from "./test-env.ts"
 
 // Exercise the native worker and journal against a local Codex protocol peer, not a model.
-function setup(t: TestContext) {
+function setup(t: TestContext, afterFanout = "return results") {
   const home = mkdtempSync(join(tmpdir(), "omega-startup-"))
   t.after(() => rmSync(home, { recursive: true, force: true }))
   const file = join(home, "startup.workflow.js")
@@ -18,7 +18,8 @@ function setup(t: TestContext) {
   setTestEnv(t, { OMEGACODE_HOME: home, CODEX_BIN: codex })
   writeFileSync(file, `
     export const meta = { name: "startup", description: "test" }
-    return await parallel([() => agent("cached"), () => agent("fresh"), () => agent("quiet")])
+    const results = await parallel([() => agent("cached"), () => agent("fresh"), () => agent("quiet")])
+    ${afterFanout}
   `)
   writeFileSync(codex, `#!${process.execPath}
 const readline = require("node:readline");
@@ -57,7 +58,7 @@ if (process.argv.includes("mcp") && process.argv.includes("list")) {
 `, { mode: 0o700 })
   const mode = (value: string) => writeFileSync(join(home, "mode"), value)
   mode("fail")
-  return { file, mode }
+  return { file, home, mode }
 }
 
 test("a resumed fan-out that makes no progress fails, even when a previous lane is cached", { skip: process.platform === "win32", timeout: 10_000 }, async (t) => {
@@ -79,6 +80,15 @@ test("a resumed fan-out that makes no progress fails, even when a previous lane 
     "--import", "tsx", fileURLToPath(new URL("../src/cli.ts", import.meta.url)), "runs",
   ], { encoding: "utf8" })
   assert.match(listing, new RegExp(`^${first.runId}  failed\\b`, "m"))
+})
+
+test("a typed restart failure preserves the workflow's own error", { skip: process.platform === "win32", timeout: 10_000 }, async (t) => {
+  const { file } = setup(t, 'throw new Error("The workflow could not assemble its report")')
+  const first = await runWorkflow({ file, quiet: true })
+  const resumed = await runWorkflow({ file, resumeRunId: first.runId, quiet: true })
+  assert.equal(resumed.errorCode, "agent_restart_failed")
+  assert.match(first.error ?? "", /The workflow could not assemble its report/)
+  assert.equal(resumed.error, first.error)
 })
 
 for (const providerMode of ["silent", "progress"]) {
@@ -108,7 +118,7 @@ for (const providerMode of ["silent", "progress"]) {
       if (providerMode === "silent") {
         assert.equal(outcome?.status, "failed")
         assert.equal(outcome.errorCode, "agent_start_stalled")
-        assert.match(outcome.error ?? "", /within 5 minutes/)
+        assert.match(outcome.error ?? "", /startup deadlines expired/)
       } else {
         assert.equal(outcome, null, "one genuinely active lane prevents an all-silent failure")
       }
@@ -142,4 +152,42 @@ test("a failed earlier dispatch does not age a lane that has not reached its pro
   })
   assert.equal(resumed.status, "interrupted")
   assert.equal(resumed.errorCode, undefined)
+})
+
+test("a silent Codex lane does not shorten a sibling Muse startup window", { skip: process.platform === "win32", timeout: 10_000 }, async (t) => {
+  const { file, home, mode } = setup(t)
+  mode("silent")
+  const muse = join(home, "muse-fake")
+  writeFileSync(muse, `#!${process.execPath}
+if (process.argv.includes("--version")) console.log("1.3.0");
+else setInterval(() => {}, 1000);
+`, { mode: 0o700 })
+  process.env.MUSE_BIN = muse
+  process.env.XDG_CONFIG_HOME = home
+  writeFileSync(file, `
+    export const meta = { name: "mixed-startup", description: "test" }
+    return await parallel([
+      () => agent("quiet"),
+      () => agent("reason", { provider: "muse", model: "muse-spark-1.3-contributor", effort: "max" }),
+    ])
+  `)
+  const abort = new AbortController()
+  t.after(() => abort.abort())
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: Date.now() })
+  let museFailure: string | undefined
+  const outcome = await runWorkflow({
+    file, quiet: true, signal: abort.signal,
+    onEvent(event) {
+      if (event.type === "agent" && event.provider === "muse" && event.state === "failed") {
+        museFailure = event.error
+      }
+      if (event.type === "agent" && event.provider === "codex" && event.state === "running"
+        && event.inputTokens === 0 && event.outputTokens === 0) {
+        t.mock.timers.tick(300_000)
+        abort.abort()
+      }
+    },
+  })
+  assert.equal(outcome.status, "interrupted", `${outcome.error}; Muse: ${museFailure}`)
+  assert.equal(outcome.errorCode, undefined)
 })

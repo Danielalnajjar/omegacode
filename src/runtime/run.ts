@@ -6,6 +6,7 @@ import { readFileSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { DEFAULTS, type Effort, type ProviderId, type RunDefaults, type Sandbox } from "../dsl/types.js"
 import { DefaultWorkerFactory } from "../worker/factory.js"
+import { MUSE_DEFAULT_STALL_TIMEOUT_MS } from "../worker/muse.js"
 import { writeBbOrigin } from "./bb-origin.js"
 import { type EventListener, FileEventSink } from "./event-sink.js"
 import type { AgentState, RunErrorCode } from "./events.js"
@@ -149,12 +150,12 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
 
   const renderer = new TerminalRenderer({ enabled: !opts.quiet })
   const agentStates = new Map<number, AgentState>()
-  const providerDispatches = new Map<number, number>()
+  const providerStartupDeadlines = new Map<number, number>()
   let sawProviderProgress = false
   const countAgent: EventListener = (event) => {
     if (event.type !== "agent") return
     agentStates.set(event.index, event.state)
-    if (event.state !== "running") providerDispatches.delete(event.index)
+    if (event.state !== "running") providerStartupDeadlines.delete(event.index)
     if (!event.cached && (event.state === "done"
       || (event.inputTokens ?? 0) > 0 || (event.outputTokens ?? 0) > 0)) {
       sawProviderProgress = true
@@ -201,8 +202,8 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     } catch {
       // best effort — never let heartbeat failure break a run
     }
-    if (!ac.signal.aborted && !sawProviderProgress
-      && [...providerDispatches.values()].some((at) => now - at >= STARTUP_STALL_MS)) {
+    if (!ac.signal.aborted && !sawProviderProgress && providerStartupDeadlines.size > 0
+      && [...providerStartupDeadlines.values()].every((deadline) => now >= deadline)) {
       errorCode = "agent_start_stalled"
       ac.abort()
     }
@@ -219,7 +220,11 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   const restartFailure = "All fresh agents failed on resume without any provider progress; inspect the agent errors."
   const runtime = new Runtime({
     runId, defaults, factory, journal, loaded, events, args: opts.args, seed, baseTimeMs, signal: ac.signal, declaredPhases: parsed.meta.phases,
-    onProviderDispatch: (index) => { providerDispatches.set(index, Date.now()) },
+    onProviderDispatch: (index, provider) => {
+      // Muse's max-reasoning turns can be silent past the ordinary startup limit.
+      const limit = provider === "muse" ? MUSE_DEFAULT_STALL_TIMEOUT_MS : STARTUP_STALL_MS
+      providerStartupDeadlines.set(index, Date.now() + limit)
+    },
     onProviderProgress: () => { sawProviderProgress = true },
     machines,
     remote: { transport: remoteTransport, fake: modes.fake, claudeModel: opts.overrides?.claudeModel ?? (defaults.provider === "claude-code" ? defaults.model : undefined) },
@@ -247,10 +252,9 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     error = err instanceof Error ? err.message : String(err)
     if (errorCode === "agent_start_stalled") {
       status = "failed"
-      error = `No agent made provider progress within ${STARTUP_STALL_MS / 60_000} minutes of dispatch.`
+      error = "No agent made provider progress before the active startup deadlines expired."
     } else if (status === "failed" && allFreshAgentsFailed()) {
       errorCode = "agent_restart_failed"
-      error = restartFailure
       result = undefined
     }
   } finally {

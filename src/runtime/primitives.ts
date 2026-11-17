@@ -100,7 +100,7 @@ export interface RuntimeOpts {
   baseTimeMs: number
   signal: AbortSignal
   /** Reports the start of provider work, after any checkout preparation. */
-  onProviderDispatch?: (index: number) => void
+  onProviderDispatch?: (index: number, provider: AgentSpec["provider"]) => void
   onProviderProgress?: () => void
   /** meta.phases, announced as pending phase events up front so the viewer shows the full plan. */
   declaredPhases?: Array<{ title: string; detail?: string }>
@@ -643,7 +643,7 @@ export class Runtime {
             }
           },
         }
-        this.o.onProviderDispatch?.(index)
+        this.o.onProviderDispatch?.(index, spec.provider)
         const prepared = runSpec.claudeProfile !== undefined && worker.prepareAgentCall
           ? await withinDeadline(worker.prepareAgentCall(runSpec, workerCtx))
           : undefined

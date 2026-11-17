@@ -1,8 +1,10 @@
 import assert from "node:assert/strict"
+import { execFileSync } from "node:child_process"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test, type TestContext } from "node:test"
+import { fileURLToPath } from "node:url"
 import { loadRunStatus } from "../src/runtime/run-store.ts"
 import { runWorkflow } from "../src/runtime/run.ts"
 import { setTestEnv } from "./test-env.ts"
@@ -44,7 +46,7 @@ if (process.argv.includes("mcp") && process.argv.includes("list")) {
       if (prompt === "cached" || (mode === "progress" && prompt === "fresh")) {
         notify("item/agentMessage/delta", { delta: "actual model work" });
         notify("turn/completed", { turn: { status: "completed" } });
-      } else if (mode === "fail") {
+      } else if (mode === "fail" || (mode === "handoff" && prompt === "fresh")) {
         notify("error", { error: { message: "provider rejected startup", codexErrorInfo: "usageLimitExceeded" } });
       } else {
         notify("thread/tokenUsage/updated", { tokenUsage: { total: { inputTokens: 0, outputTokens: 0 } } });
@@ -73,6 +75,10 @@ test("a resumed fan-out that makes no progress fails, even when a previous lane 
   assert.equal(terminal?.result, undefined, "the prior generation's result does not belong to this failure")
   assert.match(terminal?.error ?? "", /without any provider progress/)
   assert.equal(terminal?.agents.filter((agent) => agent.cached).length, 1)
+  const listing = execFileSync(process.execPath, [
+    "--import", "tsx", fileURLToPath(new URL("../src/cli.ts", import.meta.url)), "runs",
+  ], { encoding: "utf8" })
+  assert.match(listing, new RegExp(`^${first.runId}  failed\\b`, "m"))
 })
 
 for (const providerMode of ["silent", "progress"]) {
@@ -112,3 +118,28 @@ for (const providerMode of ["silent", "progress"]) {
     }
   })
 }
+
+test("a failed earlier dispatch does not age a lane that has not reached its provider", { skip: process.platform === "win32", timeout: 10_000 }, async (t) => {
+  const { file, mode } = setup(t)
+  const first = await runWorkflow({ file, quiet: true })
+  mode("handoff")
+  const abort = new AbortController()
+  t.after(() => abort.abort())
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: Date.now() })
+  const resumed = await runWorkflow({
+    file, resumeRunId: first.runId, quiet: true, signal: abort.signal,
+    overrides: { concurrency: 1 },
+    onEvent(event) {
+      if (event.type !== "agent" || event.label !== "quiet" || event.state !== "running") return
+      if (event.startedAt !== undefined) {
+        // The old lane failed, and this event occurs before the new provider dispatch.
+        t.mock.timers.tick(300_000)
+      } else if (event.inputTokens === 0 && event.outputTokens === 0) {
+        // Reaching the provider proves the previous lane's age did not cancel this one.
+        abort.abort()
+      }
+    },
+  })
+  assert.equal(resumed.status, "interrupted")
+  assert.equal(resumed.errorCode, undefined)
+})

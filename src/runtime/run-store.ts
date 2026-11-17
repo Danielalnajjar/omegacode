@@ -147,6 +147,8 @@ export function foldSnapshot(runId: string, events: WorkflowEvent[], lastBeat?: 
       case "run": {
         if (ev.status === "started") {
           status = "started"
+          endedAt = undefined
+          error = undefined
           errorCode = undefined
           currentAttemptStates.clear()
           if (startedAt === undefined) startedAt = ev.t
@@ -156,7 +158,7 @@ export function foldSnapshot(runId: string, events: WorkflowEvent[], lastBeat?: 
           status = ev.status
           endedAt = ev.t
           errorCode = ev.errorCode
-          if (ev.error) error = ev.error
+          error = ev.error
         }
         break
       }
@@ -255,7 +257,7 @@ export async function loadRunStatus(runId: string): Promise<RunStatusSnapshot | 
   const snapshot = foldSnapshot(runId, events, await heartbeatMtime(runId))
   const logPath = join(runDir(runId), "run.log")
   let result: unknown
-  if (snapshot.errorCode === undefined) {
+  if (snapshot.status === "completed") {
     try {
       result = JSON.parse(await readFile(join(runDir(runId), "result.json"), "utf8"))
     } catch {

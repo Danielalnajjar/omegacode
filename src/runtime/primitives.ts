@@ -100,7 +100,8 @@ export interface RuntimeOpts {
   baseTimeMs: number
   signal: AbortSignal
   /** Reports the start of provider work, after any checkout preparation. */
-  onProviderDispatch?: () => void
+  onProviderDispatch?: (index: number) => void
+  onProviderProgress?: () => void
   /** meta.phases, announced as pending phase events up front so the viewer shows the full plan. */
   declaredPhases?: Array<{ title: string; detail?: string }>
   /** The machines validated from meta.machines (ADR 0003). Absent: every agent is local. */
@@ -572,18 +573,11 @@ export class Runtime {
             ...(this.o.defaults.agentTimeoutMs > 0 ? { deadlineAt: startedAt + this.o.defaults.agentTimeoutMs } : {}),
           })
           : this.o.factory.get(runSpec.provider, runSpec.serviceTier, runSpec.codexExecutionProfile)
-        let reportedProgress = false
         const workerCtx = {
           signal: agentAbort.signal,
           onProgress: (e: WorkerProgress) => {
             if (agentAbort.signal.aborted) return
-            if (!reportedProgress && isProviderProgress(e)) {
-              reportedProgress = true
-              this.o.events.emit({
-                type: "agent", ...where, index, phaseIndex, phaseTitle, label,
-                provider: spec.provider, model: spec.model, state: "running", lastProgressAt: Date.now(),
-              })
-            }
+            if (isProviderProgress(e)) this.o.onProviderProgress?.()
             switch (e.kind) {
               case "text":
                 transcript.write({ kind: "text", text: e.text })
@@ -649,7 +643,7 @@ export class Runtime {
             }
           },
         }
-        this.o.onProviderDispatch?.()
+        this.o.onProviderDispatch?.(index)
         const prepared = runSpec.claudeProfile !== undefined && worker.prepareAgentCall
           ? await withinDeadline(worker.prepareAgentCall(runSpec, workerCtx))
           : undefined

@@ -149,12 +149,13 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
 
   const renderer = new TerminalRenderer({ enabled: !opts.quiet })
   const agentStates = new Map<number, AgentState>()
-  let firstDispatchAt: number | undefined
+  const providerDispatches = new Map<number, number>()
   let sawProviderProgress = false
   const countAgent: EventListener = (event) => {
     if (event.type !== "agent") return
     agentStates.set(event.index, event.state)
-    if (!event.cached && (event.lastProgressAt !== undefined || event.state === "done"
+    if (event.state !== "running") providerDispatches.delete(event.index)
+    if (!event.cached && (event.state === "done"
       || (event.inputTokens ?? 0) > 0 || (event.outputTokens ?? 0) > 0)) {
       sawProviderProgress = true
     }
@@ -200,9 +201,8 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     } catch {
       // best effort — never let heartbeat failure break a run
     }
-    if (!ac.signal.aborted && !sawProviderProgress && firstDispatchAt !== undefined
-      && now - firstDispatchAt >= STARTUP_STALL_MS
-      && [...agentStates.values()].includes("running")) {
+    if (!ac.signal.aborted && !sawProviderProgress
+      && [...providerDispatches.values()].some((at) => now - at >= STARTUP_STALL_MS)) {
       errorCode = "agent_start_stalled"
       ac.abort()
     }
@@ -219,7 +219,8 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   const restartFailure = "All fresh agents failed on resume without any provider progress; inspect the agent errors."
   const runtime = new Runtime({
     runId, defaults, factory, journal, loaded, events, args: opts.args, seed, baseTimeMs, signal: ac.signal, declaredPhases: parsed.meta.phases,
-    onProviderDispatch: () => { firstDispatchAt ??= Date.now() },
+    onProviderDispatch: (index) => { providerDispatches.set(index, Date.now()) },
+    onProviderProgress: () => { sawProviderProgress = true },
     machines,
     remote: { transport: remoteTransport, fake: modes.fake, claudeModel: opts.overrides?.claudeModel ?? (defaults.provider === "claude-code" ? defaults.model : undefined) },
   })
@@ -246,7 +247,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     error = err instanceof Error ? err.message : String(err)
     if (errorCode === "agent_start_stalled") {
       status = "failed"
-      error = `No agent made provider progress within ${STARTUP_STALL_MS / 60_000} minutes of first dispatch.`
+      error = `No agent made provider progress within ${STARTUP_STALL_MS / 60_000} minutes of dispatch.`
     } else if (status === "failed" && allFreshAgentsFailed()) {
       errorCode = "agent_restart_failed"
       error = restartFailure

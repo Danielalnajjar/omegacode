@@ -6,6 +6,8 @@ export interface RetryOptions {
   attempts?: number
   baseMs?: number
   maxMs?: number
+  /** Opt in to a longer Codex reconnect window only before any provider work. */
+  beforeProviderProgress?: (failure: AgentError) => boolean
   onRetry?: (event: RetryEvent) => void | Promise<void>
 }
 
@@ -53,7 +55,8 @@ export async function withRetry<T>(
       return await fn()
     } catch (err) {
       if (!(err instanceof AgentError) || !err.retryable) throw err
-      const reconnect = opts.attempts === undefined && isCodexReconnect(err)
+      const beforeProgress = opts.beforeProviderProgress?.(err) === true
+      const reconnect = opts.attempts === undefined && beforeProgress && isCodexReconnect(err)
       const maxAttempts = opts.attempts ?? (reconnect ? CODEX_RECONNECT_ATTEMPTS : 4)
       if (attempt >= maxAttempts) throw err
       let cappedDelay = Math.min(max, base * 2 ** (attempt - 1))

@@ -87,7 +87,7 @@ test("terminal Codex reconnect errors can recover beyond the ordinary four attem
       })
     }
     return "recovered"
-  }, never(), { baseMs: 1, maxMs: 1 })
+  }, never(), { baseMs: 1, maxMs: 1, beforeProviderProgress: () => true })
 
   assert.equal(result, "recovered")
 })
@@ -105,7 +105,7 @@ test("a slow Codex connection attempt consumes the reconnect retry window", asyn
   await assert.rejects(withRetry(async () => {
     if (++calls === 2) now = 121_000
     throw failure
-  }, never(), { baseMs: 1, maxMs: 1 }), (error) => error === failure)
+  }, never(), { baseMs: 1, maxMs: 1, beforeProviderProgress: () => true }), (error) => error === failure)
 
   assert.equal(calls, 2)
 })
@@ -121,7 +121,7 @@ test("other transient failures retain the original four attempts", async () => {
     await assert.rejects(withRetry(async () => {
       calls++
       throw failure
-    }, never(), { baseMs: 1, maxMs: 1 }), (error) => error === failure)
+    }, never(), { baseMs: 1, maxMs: 1, beforeProviderProgress: () => true }), (error) => error === failure)
     assert.equal(calls, 4, failure.message)
   }
 })

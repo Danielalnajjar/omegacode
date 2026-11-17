@@ -49,6 +49,16 @@ if (process.argv.includes("mcp") && process.argv.includes("list")) {
         notify("turn/completed", { turn: { status: "completed" } });
       } else if (mode === "fail" || (mode === "handoff" && prompt === "fresh")) {
         notify("error", { error: { message: "provider rejected startup", codexErrorInfo: "usageLimitExceeded" } });
+      } else if (mode === "extract-disconnect" && !params.outputSchema) {
+        notify("item/completed", { item: { type: "agentMessage", text: "working turn returned prose" } });
+        notify("turn/completed", { turn: { status: "completed" } });
+      } else if (mode.endsWith("-disconnect")) {
+        if (mode === "tool-disconnect") {
+          notify("item/started", { item: { type: "commandExecution", command: "fixture tool" } });
+        } else if (mode === "usage-disconnect") {
+          notify("thread/tokenUsage/updated", { tokenUsage: { total: { inputTokens: 5, outputTokens: 1 } } });
+        }
+        notify("error", { error: { message: "connection lost", codexErrorInfo: "responseStreamDisconnected" } });
       } else {
         notify("thread/tokenUsage/updated", { tokenUsage: { total: { inputTokens: 0, outputTokens: 0 } } });
       }
@@ -191,3 +201,34 @@ else setInterval(() => {}, 1000);
   assert.equal(outcome.status, "interrupted", `${outcome.error}; Muse: ${museFailure}`)
   assert.equal(outcome.errorCode, undefined)
 })
+
+for (const [modeName, attempts] of [
+  ["startup-disconnect", 9],
+  ["tool-disconnect", 4],
+  ["usage-disconnect", 4],
+  ["extract-disconnect", 4],
+] as const) {
+  test(`Codex keeps the longer reconnect window only before work (${modeName})`, { skip: process.platform === "win32", timeout: 10_000 }, async (t) => {
+    const { file, mode } = setup(t)
+    mode(modeName)
+    const options = modeName === "extract-disconnect" ? ', { schema: { type: "object" } }' : ""
+    writeFileSync(file, `
+      export const meta = { name: "retry-progress", description: "test" }
+      return await agent("live"${options})
+    `)
+    const abort = new AbortController()
+    t.after(() => abort.abort())
+    let retry: string | undefined
+    const outcome = await runWorkflow({
+      file, quiet: true, signal: abort.signal,
+      onEvent(event) {
+        if (event.type === "log" && event.message.includes("retrying after responseStreamDisconnected")) {
+          retry = event.message
+          abort.abort()
+        }
+      },
+    })
+    assert.equal(outcome.status, "interrupted", outcome.error)
+    assert.match(retry ?? "", new RegExp(`attempt 2/${attempts},`))
+  })
+}

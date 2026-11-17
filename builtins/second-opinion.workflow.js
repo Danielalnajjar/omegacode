@@ -18,7 +18,7 @@ export const meta = {
 }
 
 const PROVIDERS = [
-  { provider: "codex", model: "gpt-6.1-sol", effort: "medium", name: "Codex" },
+  { provider: "codex", model: "gpt-6.2-sol", effort: "medium", name: "Codex" },
   { provider: "claude-code", model: "claude-fable-5-2", effort: "low", name: "Claude" },
 ]
 

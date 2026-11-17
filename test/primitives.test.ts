@@ -1000,8 +1000,8 @@ test("a resolved Claude profile name is shown on agent events without leaking th
 test("the journaled started entry records the resolved model, effort, and service tier", async () => {
   const b = build({ defaults: { effort: "medium" } })
   try {
-    await runBody(b, `return await agent("x", { provider: "codex", model: "gpt-6.1-sol", effort: "high", serviceTier: "default" })`)
-    await runBody(b, `return await agent("y", { provider: "codex", model: "gpt-6.1-sol" })`)
+    await runBody(b, `return await agent("x", { provider: "codex", model: "model-sol-1", effort: "high", serviceTier: "default" })`)
+    await runBody(b, `return await agent("y", { provider: "codex", model: "model-sol-1" })`)
     const started = readFileSync(join(b.home, "runs", "run_test", "journal.jsonl"), "utf8")
       .trim()
       .split("\n")
@@ -1011,9 +1011,9 @@ test("the journaled started entry records the resolved model, effort, and servic
     assert.deepEqual(
       started.map(({ model, effort, serviceTier }) => ({ model, effort, serviceTier })),
       [
-        { model: "gpt-6.1-sol", effort: "high", serviceTier: "default" },
+        { model: "model-sol-1", effort: "high", serviceTier: "default" },
         // Defaults resolve into the record; an unset service tier is absent, not null.
-        { model: "gpt-6.1-sol", effort: "medium", serviceTier: undefined },
+        { model: "model-sol-1", effort: "medium", serviceTier: undefined },
       ],
     )
     assert.equal("serviceTier" in started[1]!, false)

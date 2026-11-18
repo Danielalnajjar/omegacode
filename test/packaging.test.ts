@@ -947,6 +947,51 @@ if (process.argv[2] === "add") {
     }
   })
 
+  test("a failed skill link fails the refresh loudly and keeps the verified candidate installed", { skip: !bunAvailable }, () => {
+    const temp = mkdtempSync(join(tmpdir(), "omega-refresh-link-failure-"))
+    try {
+      const prefix = join(temp, "bun-prefix")
+      const source = join(temp, "checkout", "omegacode")
+      writeFixturePackage(source, "omegacode", "0.0.6", "linked-old")
+      execFileSync("bun", ["add", "-g", source], {
+        env: { ...process.env, BUN_INSTALL: prefix },
+        stdio: "pipe",
+      })
+      const binPath = join(prefix, "bin", "omegacode")
+      assert.equal(execFileSync(binPath, { encoding: "utf8" }), "linked-old")
+
+      // A candidate that installs and verifies, but whose install-skill refuses.
+      const candidateSource = join(temp, "candidate", "source")
+      writeFixturePackage(candidateSource, "omegacode", "0.0.6", "candidate")
+      writeFileSync(join(candidateSource, "dist", "cli.js"),
+        `#!/usr/bin/env node\nif (process.argv[2] === "install-skill") { console.error("error: refusing to replace /fixture"); process.exit(1) }\nprocess.stdout.write("candidate" + process.argv.slice(2).map((a) => " " + a).join(""))\n`,
+        { mode: 0o755 })
+      const candidatePackages = join(temp, "candidate", "packages")
+      mkdirSync(candidatePackages, { recursive: true })
+      pnpm(["pack", "--pack-destination", candidatePackages], candidateSource)
+      const candidate = join(candidatePackages, "omegacode-0.0.6.tgz")
+
+      let output = ""
+      try {
+        execFileSync("bash", [join(root, "scripts", "refresh-global.sh"), "--fast"], {
+          cwd: root,
+          env: { ...process.env, BUN_INSTALL: prefix, OMEGACODE_REFRESH_TARBALL: candidate },
+          encoding: "utf8",
+          stdio: "pipe",
+        })
+        assert.fail("refresh must fail when linking the skill fails")
+      } catch (err) {
+        const e = err as { stdout?: string; stderr?: string }
+        output = `${e.stdout ?? ""}${e.stderr ?? ""}`
+      }
+      assert.match(output, /linking its skill failed/, "the link failure must be loud, not swallowed")
+      assert.doesNotMatch(output, /ok: packed global/, "a failed link must not print the success line")
+      assert.equal(execFileSync(binPath, { encoding: "utf8" }), "candidate", "the verified candidate stays installed; a link failure is not a cutover rollback")
+    } finally {
+      rmSync(temp, { recursive: true, force: true })
+    }
+  })
+
   test("failed first Omega install restores absence without changing an unrelated global package", { skip: !bunAvailable }, () => {
     const temp = mkdtempSync(join(tmpdir(), "omega-refresh-absent-rollback-"))
     try {

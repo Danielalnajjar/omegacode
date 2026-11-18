@@ -19,6 +19,8 @@ export type {
   WorkflowGlobals,
 } from "./dsl/types.js"
 export { PROVIDER_IDS } from "./dsl/types.js"
+export { MODELS } from "./dsl/models.js"
+export type { Models } from "./dsl/models.js"
 export { CODEX_EXECUTION_PROFILE_NAMES, resolveCodexExecutionProfile } from "./worker/codex-profile.js"
 export type { CodexExecutionProfileName } from "./worker/codex-profile.js"
 

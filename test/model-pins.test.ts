@@ -34,8 +34,17 @@ test("shipped workflows, the skill, and the README read model ids from `models` 
   const literals = files.flatMap((file) =>
     [...readFileSync(root + file, "utf8").matchAll(/\b(gpt-\d[\w.-]*|claude-(?:fable|opus)-\d[\w-]*)/g)].map((m) => `${file}: ${m[1]}`))
   assert.deepEqual(literals, [])
-  const readers = files.filter((file) => /model: models\.(sol|fable)\b/.test(readFileSync(root + file, "utf8")))
-  assert.ok(readers.length >= 6, `expected the pinned built-ins and examples to read models, found ${readers.join(", ")}`)
+  const readers = files.filter((file) => /model: models\.(sol|fable)\b/.test(readFileSync(root + file, "utf8"))).sort()
+  assert.deepEqual(readers, [
+    "README.md",
+    "builtins/bake-off.workflow.js",
+    "builtins/multi-provider-review.workflow.js",
+    "builtins/provider-debate.workflow.js",
+    "builtins/second-opinion.workflow.js",
+    "examples/explore-codebase.workflow.js",
+    "examples/parity-audit.workflow.js",
+    "skill/SKILL.md",
+  ], "every file that pins a model must read it from `models`")
 })
 
 test("the ambient `models` declaration names exactly the families in src/dsl/models.ts", () => {
@@ -44,6 +53,15 @@ test("the ambient `models` declaration names exactly the families in src/dsl/mod
   assert.ok(decl, "ambient.d.ts must declare the injected models global")
   const declared = [...decl[1]!.matchAll(/readonly (\w+): string/g)].map((m) => m[1]).sort()
   assert.deepEqual(declared, Object.keys(MODELS).sort())
+})
+
+test("runInSandbox supplies the canonical models when an embedder's globals omit them", async () => {
+  const body = parseWorkflow(
+    `export const meta = { name: "n", description: "d" }\nreturn models.opus\n`,
+  ).body
+  const globals = {} as WorkflowGlobals // a pre-`models` embedder's globals object
+  assert.equal(await runInSandbox({ body, filename: "wf.js", globals }), MODELS.opus)
+  assert.equal(Object.getPrototypeOf(MODELS), null, "the shared map must not carry a mutable host prototype")
 })
 
 test("a workflow body reads the injected models and cannot change them", async () => {

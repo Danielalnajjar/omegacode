@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process"
-import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, type Stats } from "node:fs"
+import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, type Stats } from "node:fs"
 import { get as httpGet } from "node:http"
 import { homedir } from "node:os"
 import { dirname, join, resolve, sep } from "node:path"
@@ -904,54 +904,75 @@ async function cmdInstallSkill(flags: Flags): Promise<void> {
 /**
  * Make `dest` a link to the package's skill directory, so refreshing the package refreshes the
  * skill. An existing link is repointed. An existing directory is replaced only when it holds nothing
- * but omegacode's own SKILL.md (the copy earlier versions wrote); anything else is refused, so no
- * hand-added file is lost. A source without SKILL.md (a broken install) throws before `dest` changes.
+ * but omegacode's own SKILL.md (the copy earlier versions wrote) or nothing at all; anything else is
+ * refused, so no hand-added file is lost. The source SKILL.md is read first, so a broken install
+ * throws before `dest` moves; the old entry is then staged aside by rename and deleted only after
+ * the new link verifies, so any failure in between renames it back byte-for-byte.
  */
 export function linkSkill(source: string, dest: string): string {
-  if (!existsSync(join(source, "SKILL.md"))) throw new Error(`skill source not found at ${join(source, "SKILL.md")}`)
-  const target = realpathSync(source)
-  let existing: Stats | undefined
+  const sourceSkill = join(source, "SKILL.md")
+  let sourceStat: Stats
   try {
-    existing = lstatSync(dest)
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err
+    sourceStat = lstatSync(sourceSkill)
+  } catch {
+    throw new Error(`skill source not found at ${sourceSkill}`)
   }
-  let restore = (): void => {}
-  if (existing?.isSymbolicLink()) {
-    if (resolvesTo(dest, target)) return `skill already linked → ${dest} → ${target}`
-    const previous = readlinkSync(dest)
-    unlinkSync(dest)
-    restore = () => symlinkSync(previous, dest, DIR_LINK)
-  } else if (existing) {
+  if (!sourceStat.isFile()) throw new Error(`skill source is not a file at ${sourceSkill}`)
+  readFileSync(sourceSkill, "utf8") // prove it readable, as the copy this replaces did; the link serves it
+  const target = realpathSync(source)
+  const existing = lstatOrUndefined(dest)
+  if (existing?.isSymbolicLink() && resolvesTo(dest, target) && isFileAt(join(dest, "SKILL.md"))) {
+    return `skill already linked → ${dest} → ${target}`
+  }
+  if (existing && !existing.isSymbolicLink()) {
     const skill = join(dest, "SKILL.md")
     const entries = existing.isDirectory() ? readdirSync(dest) : []
     // An empty directory holds nothing to lose; a lone SKILL.md must be omegacode's own copy.
-    const copy = entries.length === 0 && existing.isDirectory() ? null :
-      entries.length === 1 && entries[0] === "SKILL.md" && lstatSync(skill).isFile() ? readFileSync(skill, "utf8") : undefined
-    if (copy === undefined || (copy !== null && !isOmegacodeSkill(copy))) {
+    const ownCopy = existing.isDirectory() && (entries.length === 0 ||
+      (entries.length === 1 && entries[0] === "SKILL.md" && lstatSync(skill).isFile() && isOmegacodeSkill(readFileSync(skill, "utf8"))))
+    if (!ownCopy) {
       throw new Error(`refusing to replace ${dest}: it holds more than omegacode's own SKILL.md; move its other contents and rerun install-skill`)
     }
-    if (copy !== null) rmSync(skill)
-    rmdirSync(dest)
-    restore = () => {
-      mkdirSync(dest)
-      if (copy !== null) writeFileSync(skill, copy)
+  }
+  let staged: string | undefined
+  if (existing) {
+    staged = `${dest}.replaced-by-install-skill`
+    if (lstatOrUndefined(staged)) {
+      throw new Error(`refusing to replace ${dest}: ${staged} already exists (an interrupted install-skill may have left it); inspect it, move it away, and rerun`)
     }
+    renameSync(dest, staged)
   } else {
     mkdirSync(dirname(dest), { recursive: true })
   }
   try {
     symlinkSync(target, dest, DIR_LINK)
+    if (!resolvesTo(dest, target) || !isFileAt(join(dest, "SKILL.md"))) {
+      throw new Error(`linked ${dest} → ${target}, but the link does not resolve to the package's SKILL.md`)
+    }
   } catch (err) {
-    restore()
+    try { unlinkSync(dest) } catch { /* the link may never have been created */ }
+    if (staged) renameSync(staged, dest)
     throw err
   }
-  if (!resolvesTo(dest, target) || !existsSync(join(dest, "SKILL.md"))) {
-    unlinkSync(dest)
-    restore()
-    throw new Error(`linked ${dest} → ${target}, but the link does not resolve to the package's SKILL.md`)
-  }
+  if (staged) rmSync(staged, { recursive: true, force: true })
   return `linked skill → ${dest} → ${target}`
+}
+
+function lstatOrUndefined(path: string): Stats | undefined {
+  try {
+    return lstatSync(path)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined
+    throw err
+  }
+}
+
+function isFileAt(path: string): boolean {
+  try {
+    return lstatSync(path).isFile()
+  } catch {
+    return false
+  }
 }
 
 // A junction needs no privilege on Windows; POSIX ignores the type.
@@ -966,8 +987,9 @@ function resolvesTo(path: string, target: string): boolean {
 }
 
 function isOmegacodeSkill(text: string): boolean {
-  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)
-  return frontmatter !== null && /^name:\s*omegacode\s*$/m.test(frontmatter[1]!)
+  // Both delimiters must be complete lines, so a hand-written `---notes` never reads as frontmatter.
+  const frontmatter = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(text)
+  return frontmatter !== null && /^name:[ \t]*omegacode[ \t]*$/m.test(frontmatter[1]!)
 }
 
 function printHelp(): void {

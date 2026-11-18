@@ -188,8 +188,11 @@ export interface WorkflowGlobals {
   random: () => number
   budget: WorkflowBudget
   args: unknown
-  /** Current model id per family (src/dsl/models.ts); pin with `{ provider: "codex", model: models.sol }`. */
-  models: Models
+  /**
+   * Current model id per family (src/dsl/models.ts); pin with `{ provider: "codex", model: models.sol }`.
+   * Optional for embedders: `runInSandbox` supplies the canonical `MODELS` when it is omitted.
+   */
+  models?: Models
 }
 
 export type PipelineStage = (prev: unknown, item: unknown, index: number) => unknown | Promise<unknown>

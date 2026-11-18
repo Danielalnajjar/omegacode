@@ -988,6 +988,7 @@ describe("install-skill links the agent skill dirs to the package skill", () => 
   for (const [name, files] of [
     ["an extra file", { "SKILL.md": OWN_SKILL, "notes.md": "mine\n" }],
     ["another skill's SKILL.md", { "SKILL.md": "---\nname: something-else\n---\n" }],
+    ["a SKILL.md whose frontmatter never closes on its own line", { "SKILL.md": "---\nname: omegacode\n---notes I keep here\n" }],
   ] as const) {
     test(`refuses a directory holding ${name}, naming the path and changing nothing`, () => {
       const { temp, source, dest } = fixture()
@@ -1001,6 +1002,44 @@ describe("install-skill links the agent skill dirs to the package skill", () => 
       } finally { rmSync(temp, { recursive: true, force: true }) }
     })
   }
+
+  test("a package whose SKILL.md is a directory fails loudly and leaves the existing skill in place", () => {
+    const { temp, source, dest } = fixture()
+    try {
+      rmSync(join(source, "SKILL.md"))
+      mkdirSync(join(source, "SKILL.md"))
+      mkdirSync(dest, { recursive: true })
+      writeFileSync(join(dest, "SKILL.md"), OWN_SKILL)
+      assert.throws(() => linkSkill(source, dest), /skill source is not a file/)
+      assert.equal(readFileSync(join(dest, "SKILL.md"), "utf8"), OWN_SKILL)
+    } finally { rmSync(temp, { recursive: true, force: true }) }
+  })
+
+  test("a leftover staged entry is refused by name and the existing skill stays in place", () => {
+    const { temp, source, dest } = fixture()
+    try {
+      mkdirSync(dest, { recursive: true })
+      writeFileSync(join(dest, "SKILL.md"), OWN_SKILL)
+      mkdirSync(`${dest}.replaced-by-install-skill`)
+      assert.throws(() => linkSkill(source, dest), (err: Error) => err.message.includes(`${dest}.replaced-by-install-skill`))
+      assert.equal(readFileSync(join(dest, "SKILL.md"), "utf8"), OWN_SKILL)
+    } finally { rmSync(temp, { recursive: true, force: true }) }
+  })
+
+  test("a non-writable parent fails before anything is deleted", { skip: process.platform === "win32" || process.getuid?.() === 0 }, () => {
+    const { temp, source, dest } = fixture()
+    const parent = join(dest, "..")
+    try {
+      mkdirSync(dest, { recursive: true })
+      writeFileSync(join(dest, "SKILL.md"), OWN_SKILL)
+      chmodSync(parent, 0o555)
+      assert.throws(() => linkSkill(source, dest))
+      assert.equal(readFileSync(join(dest, "SKILL.md"), "utf8"), OWN_SKILL, "the failed migration deleted the prior skill")
+    } finally {
+      chmodSync(parent, 0o755)
+      rmSync(temp, { recursive: true, force: true })
+    }
+  })
 
   test("a package without SKILL.md fails loudly and leaves the existing skill in place", () => {
     const { temp, source, dest } = fixture()

@@ -14,6 +14,7 @@ import type {
   AgentOpts,
   AgentResult,
   AgentSpec,
+  AgentUsage,
   PipelineStage,
   RunDefaults,
   WorkflowGlobals,
@@ -100,6 +101,9 @@ export interface RuntimeOpts {
   seed: number
   baseTimeMs: number
   signal: AbortSignal
+  /** Reports the start of provider work, after any checkout preparation. */
+  onProviderDispatch?: (index: number, provider: AgentSpec["provider"]) => void
+  onProviderProgress?: () => void
   /** meta.phases, announced as pending phase events up front so the viewer shows the full plan. */
   declaredPhases?: Array<{ title: string; detail?: string }>
   /** The machines validated from meta.machines (ADR 0003). Absent: every agent is local. */
@@ -572,10 +576,17 @@ export class Runtime {
             ...(this.o.defaults.agentTimeoutMs > 0 ? { deadlineAt: startedAt + this.o.defaults.agentTimeoutMs } : {}),
           })
           : this.o.factory.get(runSpec.provider, runSpec.serviceTier, runSpec.codexExecutionProfile)
+        let sawProviderProgress = false
+        const noteProviderProgress = () => {
+          if (sawProviderProgress) return
+          sawProviderProgress = true
+          this.o.onProviderProgress?.()
+        }
         const workerCtx = {
           signal: agentAbort.signal,
           onProgress: (e: WorkerProgress) => {
             if (agentAbort.signal.aborted) return
+            if (isProviderProgress(e)) noteProviderProgress()
             switch (e.kind) {
               case "text":
                 transcript.write({ kind: "text", text: e.text })
@@ -641,6 +652,7 @@ export class Runtime {
             }
           },
         }
+        this.o.onProviderDispatch?.(index, spec.provider)
         const prepared = runSpec.claudeProfile !== undefined && worker.prepareAgentCall
           ? await withinDeadline(worker.prepareAgentCall(runSpec, workerCtx))
           : undefined
@@ -651,6 +663,10 @@ export class Runtime {
         // Wrap the worker call in withRetry so a retryable AgentError (429/overload) backs off
         // instead of killing the agent and usually the whole run.
         let result = await withinDeadline(withRetry(() => runAttempt(runSpec, workerCtx), agentAbort.signal, {
+          beforeProviderProgress: (failure) => {
+            if (hasProviderUsage(failure.usage)) noteProviderProgress()
+            return !sawProviderProgress
+          },
           onRetry: ({ attempt, maxAttempts, delayMs, error }) => {
             // A retried attempt still billed; keep its usage so the journal and budget see every attempt.
             if (error.usage) attemptUsage = addUsage(attemptUsage, error.usage)
@@ -988,6 +1004,30 @@ export class Runtime {
  * agent's failure — AgentError from the worker, or its AgentFailedError wrap (e.g. a persistent
  * schema miss) — nulls only its own item, matching the baseline per-item semantics.
  */
+function hasProviderUsage(usage: Partial<AgentUsage> | undefined): boolean {
+  return (usage?.inputTokens ?? 0) > 0 || (usage?.outputTokens ?? 0) > 0
+}
+
+function isProviderProgress(event: WorkerProgress): boolean {
+  switch (event.kind) {
+    case "text":
+    case "reasoning":
+      return event.text.trim().length > 0
+    case "tool":
+      return true
+    case "tool-result":
+      return event.name !== "codex-thread-cleanup"
+    case "usage":
+      return hasProviderUsage(event.usage)
+    case "phase":
+      // Codex only starts extraction once its working turn has completed.
+      return event.phase === "extraction"
+    default:
+      // A local phase change or profile label does not mean the provider has begun work.
+      return false
+  }
+}
+
 function isControlFlow(err: unknown): boolean {
   return err instanceof AgentInterrupted || (err instanceof WorkflowError && !(err instanceof AgentFailedError))
 }

@@ -9,7 +9,7 @@ import { newRunId, runWorkflow, type RunOverrides } from "./runtime/run.js"
 import { compileWorkflowBody, parseWorkflow, WorkflowSyntaxError } from "./runtime/sandbox.js"
 import { listWorkflows, resolveWorkflowName, WorkflowNotFoundError } from "./runtime/registry.js"
 import { dataRoot, Journal, JournalNotFoundError, listRunIds, ResumePreconditionError, runDir } from "./runtime/journal.js"
-import { expectedLogPath, isValidRunId, loadRunStatus, type AgentCounts, type RunStatusSnapshot } from "./runtime/run-store.js"
+import { expectedLogPath, isValidRunId, listRuns, loadRunStatus, type AgentCounts, type RunStatusSnapshot } from "./runtime/run-store.js"
 import { WorkflowError } from "./runtime/primitives.js"
 import { MachineError } from "./remote/machines.js"
 import { startViewer } from "./server/serve.js"
@@ -369,17 +369,11 @@ async function cmdRuns(flags: Flags): Promise<void> {
     return
   }
 
-  const rows = ids.map((id) => {
-    const loaded = Journal.load(id)
-    const name = loaded.meta?.workflowFile?.split("/").pop() ?? ""
-    const agents = loaded.results.size
-    const resultPath = join(dir, id, "result.json")
-    const done = existsSync(resultPath)
-    const status = done ? "completed" : isStaleRun(dir, id) ? "stale" : "?"
-    return { id, name, agents, status, at: loaded.meta?.createdAt ?? 0 }
-  })
-  rows.sort((a, b) => b.at - a.at)
-  for (const r of rows) console.log(`${r.id}  ${r.status.padEnd(10)} ${String(r.agents).padStart(3)} agents  ${r.name}`)
+  const summaries = await listRuns()
+  for (const { runId, status, agents, name } of summaries) {
+    if (!runId.startsWith("wf_")) continue
+    console.log(`${runId}  ${status.padEnd(10)} ${String(agents).padStart(3)} agents  ${name ?? ""}`)
+  }
 }
 
 /**
@@ -526,7 +520,10 @@ async function cmdRun(flags: Flags): Promise<void> {
 
   if (flags.json === true) {
     const url = base ? `${base}#/run/${outcome.runId}` : undefined
-    process.stdout.write(JSON.stringify({ runId: outcome.runId, status: outcome.status, agentCounts: outcome.agentCounts, url, result: outcome.result, error: outcome.error }, null, 2) + "\n")
+    process.stdout.write(JSON.stringify({
+      runId: outcome.runId, status: outcome.status, agentCounts: outcome.agentCounts, url,
+      result: outcome.result, error: outcome.error, errorCode: outcome.errorCode,
+    }, null, 2) + "\n")
     if (outcome.status === "completed") warnFailedAgents(outcome.agentCounts, outcome.runId)
   } else if (outcome.status === "completed") {
     const r = outcome.result

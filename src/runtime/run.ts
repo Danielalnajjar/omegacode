@@ -6,9 +6,10 @@ import { readFileSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { DEFAULTS, type Effort, type ProviderId, type RunDefaults, type Sandbox } from "../dsl/types.js"
 import { DefaultWorkerFactory } from "../worker/factory.js"
+import { MUSE_DEFAULT_STALL_TIMEOUT_MS } from "../worker/muse.js"
 import { writeBbOrigin } from "./bb-origin.js"
 import { type EventListener, FileEventSink } from "./event-sink.js"
-import type { AgentState } from "./events.js"
+import type { AgentState, RunErrorCode } from "./events.js"
 import { determinismLint, KEY_VERSION } from "./keys.js"
 import {
   checkResumePreconditions,
@@ -82,10 +83,13 @@ export interface RunOutcome {
   status: "completed" | "failed" | "interrupted"
   agentCounts: AgentCounts
   error?: string
+  errorCode?: RunErrorCode
 }
 
 /** How often a live run refreshes its heartbeat file (see the deadman switch below). */
 const HEARTBEAT_MS = 5000
+/** Over 3x the slowest observed healthy generation's first provider event (75s). */
+const STARTUP_STALL_MS = 5 * 60_000
 
 export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   if (opts.runId && opts.resumeRunId) throw new Error("runId and resumeRunId are mutually exclusive")
@@ -146,8 +150,16 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
 
   const renderer = new TerminalRenderer({ enabled: !opts.quiet })
   const agentStates = new Map<number, AgentState>()
+  const providerStartupDeadlines = new Map<number, number>()
+  let sawProviderProgress = false
   const countAgent: EventListener = (event) => {
-    if (event.type === "agent") agentStates.set(event.index, event.state)
+    if (event.type !== "agent") return
+    agentStates.set(event.index, event.state)
+    if (event.state !== "running") providerStartupDeadlines.delete(event.index)
+    if (!event.cached && (event.state === "done"
+      || (event.inputTokens ?? 0) > 0 || (event.outputTokens ?? 0) > 0)) {
+      sawProviderProgress = true
+    }
   }
   const listeners: EventListener[] = [renderer.handle, countAgent]
   if (opts.onEvent) listeners.push(opts.onEvent)
@@ -182,11 +194,18 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   // terminal cannot — those leave the run stuck at "started". The viewer and CLI treat
   // a "started" run with a stale heartbeat as dead, instead of a perpetual spinner.
   const heartbeatFile = join(runDir(runId), ".heartbeat")
+  let errorCode: RunErrorCode | undefined
   const beat = (): void => {
+    const now = Date.now()
     try {
-      writeFileSync(heartbeatFile, String(Date.now()))
+      writeFileSync(heartbeatFile, String(now))
     } catch {
       // best effort — never let heartbeat failure break a run
+    }
+    if (!ac.signal.aborted && !sawProviderProgress && providerStartupDeadlines.size > 0
+      && [...providerStartupDeadlines.values()].every((deadline) => now >= deadline)) {
+      errorCode = "agent_start_stalled"
+      ac.abort()
     }
   }
   beat()
@@ -196,8 +215,17 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   let status: RunOutcome["status"] = "completed"
   let result: unknown
   let error: string | undefined
+  const allFreshAgentsFailed = () => opts.resumeRunId !== undefined && !sawProviderProgress
+    && [...agentStates.values()].includes("failed")
+  const restartFailure = "All fresh agents failed on resume without any provider progress; inspect the agent errors."
   const runtime = new Runtime({
     runId, defaults, factory, journal, loaded, events, args: opts.args, seed, baseTimeMs, signal: ac.signal, declaredPhases: parsed.meta.phases,
+    onProviderDispatch: (index, provider) => {
+      // Muse's max-reasoning turns can be silent past the ordinary startup limit.
+      const limit = provider === "muse" ? MUSE_DEFAULT_STALL_TIMEOUT_MS : STARTUP_STALL_MS
+      providerStartupDeadlines.set(index, Date.now() + limit)
+    },
+    onProviderProgress: () => { sawProviderProgress = true },
     machines,
     remote: { transport: remoteTransport, fake: modes.fake, claudeModel: opts.overrides?.claudeModel ?? (defaults.provider === "claude-code" ? defaults.model : undefined) },
   })
@@ -216,23 +244,34 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     // process after we've declared "completed".
     await runtime.settle()
     ac.signal.throwIfAborted()
+    if (allFreshAgentsFailed()) throw new Error(restartFailure)
     writeResult(runId, result ?? null)
   } catch (err) {
     status = ac.signal.aborted ? "interrupted" : "failed"
     if (status === "interrupted") result = undefined
     error = err instanceof Error ? err.message : String(err)
   } finally {
+    // A workflow rejection can race live siblings. Only a settled attempt
+    // establishes that no fresh agent made progress.
     await runtime.settle()
+    if (errorCode === "agent_start_stalled") {
+      status = "failed"
+      result = undefined
+      error = "No agent made provider progress before the active startup deadlines expired."
+    } else if (status === "failed" && !ac.signal.aborted && allFreshAgentsFailed()) {
+      errorCode = "agent_restart_failed"
+      result = undefined
+    }
     clearInterval(heartbeat)
     process.removeListener("SIGINT", onSig)
     process.removeListener("SIGTERM", onSig)
     opts.signal?.removeEventListener("abort", onSig)
     await factory.shutdownAll()
-    events.emit({ type: "run", status, runId, error })
+    events.emit({ type: "run", status, runId, error, errorCode })
     await events.close()
   }
 
-  return { runId, result, status, agentCounts: countAgentStates(agentStates.values()), error }
+  return { runId, result, status, agentCounts: countAgentStates(agentStates.values()), error, errorCode }
 }
 
 async function writePreflightFailure(runId: string, workflowFile: string, err: unknown): Promise<void> {

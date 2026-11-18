@@ -455,7 +455,7 @@ test("JsonRpcStdioClient: dispatches notifications and server requests", () => {
 // config of) whatever codex is installed on the host.
 const HERMETIC_INVENTORY = {
   readMcpInventory: async () => "[]",
-  readFeatureInventory: async () => "plugins stable true\nplugin_sharing stable true\nremote_plugin stable true\napps stable true\nenable_mcp_apps stable true\ncomputer_use stable true\nbrowser_use stable true\nbrowser_use_external stable true\nin_app_browser stable true",
+  readFeatureInventory: async () => "unbounded_connection_retries stable true\nplugins stable true\nplugin_sharing stable true\nremote_plugin stable true\napps stable true\nenable_mcp_apps stable true\ncomputer_use stable true\nbrowser_use stable true\nbrowser_use_external stable true\nin_app_browser stable true",
 }
 
 // Helper that attaches the scripted server BEFORE the worker spawns, by
@@ -545,7 +545,7 @@ function tick(): Promise<void> {
   return new Promise((r) => setImmediate(r))
 }
 
-test("lean worker inventories every MCP transport and disables process features before launch", async () => {
+test("lean worker inventories MCP transports and disables unbounded reconnect and process features", async () => {
   let inventoryReads = 0
   const { worker } = makeServedWorker(
     (_req, reply) => {
@@ -577,6 +577,7 @@ test("lean worker inventories every MCP transport and disables process features 
     "thread_unload_delay_secs=0",
     "service_tier=default",
     "mcp_servers={paos-recall-mcp={enabled=false},onepassword={enabled=false},node_repl={enabled=false},openaiDeveloperDocs={enabled=false},legacy-sse={enabled=false}}",
+    "features.unbounded_connection_retries=false",
     ...["plugins", "plugin_sharing", "remote_plugin", "apps", "enable_mcp_apps", "computer_use", "browser_use", "browser_use_external", "in_app_browser"].map((name) => `features.${name}=false`),
   ])
   await worker.shutdown()
@@ -605,6 +606,7 @@ test("lean worker inventory failure is pre-launch with no global opt-out", async
 })
 
 const COMMON_PROFILE_FEATURE_ARGS = [
+  "features.unbounded_connection_retries=false",
   "features.apps=false",
   "features.enable_mcp_apps=false",
   "features.browser_use=false",

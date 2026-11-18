@@ -6,6 +6,8 @@ export interface RetryOptions {
   attempts?: number
   baseMs?: number
   maxMs?: number
+  /** Opt in to a longer Codex reconnect window only before any provider work. */
+  beforeProviderProgress?: (failure: AgentError) => boolean
   onRetry?: (event: RetryEvent) => void | Promise<void>
 }
 
@@ -17,6 +19,26 @@ export interface RetryEvent {
   error: AgentError
 }
 
+const CODEX_RECONNECT_WINDOW_MS = 120_000
+// At the default backoff the deadline limits the final wait.
+const CODEX_RECONNECT_ATTEMPTS = 9
+
+export function isCodexStreamConnectionError(
+  code: string | undefined,
+): code is "responseStreamConnectionFailed" | "responseStreamDisconnected" {
+  return code === "responseStreamConnectionFailed" || code === "responseStreamDisconnected"
+}
+
+function isCodexReconnect(error: AgentError): boolean {
+  return error.provider === "codex" && (
+    isCodexStreamConnectionError(error.code)
+    // Codex also reports request-send failures as a generic stream error or
+    // an HTTP connection error. Do not extend retries for an HTTP status.
+    || ((error.code === "codex_error" || error.code === "httpConnectionFailed")
+      && /^(stream disconnected before completion|connection failed): error sending request\b/i.test(error.message))
+  )
+}
+
 /** Run `fn`, retrying on retryable AgentErrors with exponential backoff.
  *  App-server ingress overloads use full jitter to avoid synchronized retry waves. */
 export async function withRetry<T>(
@@ -24,26 +46,34 @@ export async function withRetry<T>(
   signal: AbortSignal,
   opts: RetryOptions = {},
 ): Promise<T> {
-  const attempts = opts.attempts ?? 4
   const base = opts.baseMs ?? 1000
   const max = opts.maxMs ?? 30_000
-  let lastErr: unknown
-  for (let i = 0; i < attempts; i++) {
+  let reconnectDeadline: number | undefined
+  for (let attempt = 1; ; attempt++) {
     if (signal.aborted) throw new AgentInterrupted()
     try {
       return await fn()
     } catch (err) {
-      lastErr = err
-      if (!(err instanceof AgentError) || !err.retryable || i === attempts - 1) throw err
-      const cappedDelay = Math.min(max, base * 2 ** i)
+      if (!(err instanceof AgentError) || !err.retryable) throw err
+      const beforeProgress = opts.beforeProviderProgress?.(err) === true
+      const reconnect = opts.attempts === undefined && beforeProgress && isCodexReconnect(err)
+      const maxAttempts = opts.attempts ?? (reconnect ? CODEX_RECONNECT_ATTEMPTS : 4)
+      if (attempt >= maxAttempts) throw err
+      let cappedDelay = Math.min(max, base * 2 ** (attempt - 1))
+      if (reconnect) {
+        const now = Date.now()
+        reconnectDeadline ??= now + CODEX_RECONNECT_WINDOW_MS
+        if (now >= reconnectDeadline) throw err
+        cappedDelay = Math.min(cappedDelay, reconnectDeadline - now)
+      }
       const delay = err.code === "server_overloaded"
         ? Math.max(1, Math.floor(Math.random() * cappedDelay) + 1)
         : cappedDelay
-      await opts.onRetry?.({ attempt: i + 2, maxAttempts: attempts, delayMs: delay, error: err })
+      await opts.onRetry?.({ attempt: attempt + 1, maxAttempts, delayMs: delay, error: err })
       await sleep(delay, signal)
+      if (reconnect && reconnectDeadline !== undefined && Date.now() >= reconnectDeadline) throw err
     }
   }
-  throw lastErr
 }
 
 /** Abort-aware sleep; rejects with AgentInterrupted if the signal fires (or is already aborted). */

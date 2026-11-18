@@ -14,6 +14,7 @@ import { emptyUsage } from "../dsl/types.js"
 import { Semaphore } from "../runtime/semaphore.js"
 import type { Worker, WorkerContext } from "./index.js"
 import { AgentError, AgentInterrupted } from "./index.js"
+import { isCodexStreamConnectionError } from "./errors.js"
 import { codexProfileToolSelectionError, resolveCodexExecutionProfile, type CodexExecutionProfileName } from "./codex-profile.js"
 import { toCodexOutputSchema, parseJsonLoose, parseValidJson } from "./schema.js"
 import { JsonRpcStdioClient, StdioTransportError, JsonRpcResponseError, type SpawnChild } from "./jsonrpc-stdio.js"
@@ -397,20 +398,21 @@ function renderProfileMcpOverride(
 export function selectCodexFeatureOverrides(
   stdout: string,
   overrides: readonly { key: string; value: boolean }[],
+  optionalOverrides: readonly { key: string; value: boolean }[] = [],
 ): { selected: readonly { key: string; value: boolean }[]; skippedKeys: readonly string[] } {
   const knownNames = new Set(stdout.split(/\r?\n/).map((line) => line.trim().split(/\s+/, 1)[0]).filter(Boolean))
   if (knownNames.size === 0) throw new Error("Codex feature inventory contained zero feature names")
+  const isKnown = ({ key }: { key: string }) => knownNames.has(key.replace(/^features\./, ""))
   const selected: Array<{ key: string; value: boolean }> = []
   const skippedKeys: string[] = []
   for (const override of overrides) {
-    const name = override.key.startsWith("features.") ? override.key.slice("features.".length) : override.key
-    if (knownNames.has(name)) selected.push(override)
+    if (isKnown(override)) selected.push(override)
     else skippedKeys.push(override.key)
   }
   if (overrides.length > 0 && selected.length === 0) {
     throw new Error(`Codex feature inventory recognized none of ${overrides.length} profile feature override keys`)
   }
-  return { selected, skippedKeys }
+  return { selected: [...optionalOverrides.filter(isKnown), ...selected], skippedKeys }
 }
 
 /** An inventory read whose codex binary is missing or not executable. Node rejects execFile with a
@@ -1043,8 +1045,12 @@ export class CodexWorker implements Worker {
       })
     }
     try {
+      // Headless callers need a terminal error to apply Omega's bounded retry policy.
+      // Codex's interactive reconnect loop otherwise sends willRetry frames indefinitely.
       const requested = profile?.featureOverrides ?? LEAN_DISABLED_FEATURES.map((key) => ({ key, value: false }))
-      const selected = selectCodexFeatureOverrides(await this.readFeatureInventory(this.bin), requested)
+      const selected = selectCodexFeatureOverrides(await this.readFeatureInventory(this.bin), requested, [
+        { key: "features.unbounded_connection_retries", value: false },
+      ])
       featureOverrides = selected.selected
       if (selected.skippedKeys.length > 0) {
         this.logProfileWarning(`[omegacode] Codex ${profile ? `execution profile ${profile.name}` : "lean worker"} skipped unknown features: ${selected.skippedKeys.join(", ")}`)
@@ -1277,9 +1283,10 @@ export class CodexWorker implements Worker {
         const message = readErrorNotificationMessage(params)
         const notificationCode = readErrorNotificationCode(params)
         const usageLimitExceeded = notificationCode === "usageLimitExceeded"
+        const transportError = notificationCode === "httpConnectionFailed" || isCodexStreamConnectionError(notificationCode)
         const err = new AgentError({
           provider: PROVIDER,
-          code: usageLimitExceeded ? notificationCode : "codex_error",
+          code: usageLimitExceeded || transportError ? notificationCode : "codex_error",
           message,
           retryable: !usageLimitExceeded,
         })

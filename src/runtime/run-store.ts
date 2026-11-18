@@ -2,7 +2,7 @@ import { existsSync } from "node:fs"
 import { readFile, readdir, stat } from "node:fs/promises"
 import { basename, join } from "node:path"
 import type { ProviderId } from "../dsl/types.js"
-import type { AgentState, WorkflowEvent } from "./events.js"
+import type { AgentState, RunErrorCode, WorkflowEvent } from "./events.js"
 import { dataRoot, runDir } from "./journal.js"
 
 export type AgentSnapshot = {
@@ -59,6 +59,7 @@ export interface RunSnapshot {
   name?: string
   workflowFile?: string
   error?: string
+  errorCode?: RunErrorCode
   startedAt?: number
   endedAt?: number
   phases: PhaseSnapshot[]
@@ -139,12 +140,16 @@ export function foldSnapshot(runId: string, events: WorkflowEvent[], lastBeat?: 
   let workflowFile: string | undefined
   let workflowName: string | undefined
   let error: string | undefined
+  let errorCode: RunErrorCode | undefined
 
   for (const ev of events) {
     switch (ev.type) {
       case "run": {
         if (ev.status === "started") {
           status = "started"
+          endedAt = undefined
+          error = undefined
+          errorCode = undefined
           currentAttemptStates.clear()
           if (startedAt === undefined) startedAt = ev.t
           if (ev.workflowFile) workflowFile = ev.workflowFile
@@ -152,7 +157,8 @@ export function foldSnapshot(runId: string, events: WorkflowEvent[], lastBeat?: 
         } else {
           status = ev.status
           endedAt = ev.t
-          if (ev.error) error = ev.error
+          errorCode = ev.errorCode
+          error = ev.error
         }
         break
       }
@@ -216,7 +222,7 @@ export function foldSnapshot(runId: string, events: WorkflowEvent[], lastBeat?: 
 
   const name = workflowName ?? (workflowFile ? basename(workflowFile).replace(/\.workflow\.[cm]?[jt]s$/i, "").replace(/\.[cm]?[jt]s$/i, "") : undefined)
   const finalStatus = raw ? status : applyDeadman(status, startedAt, lastBeat)
-  return { runId, status: finalStatus, agentCounts: countAgentStates(currentAttemptStates.values()), name, workflowFile, error, startedAt, endedAt, phases, agents, logs }
+  return { runId, status: finalStatus, agentCounts: countAgentStates(currentAttemptStates.values()), name, workflowFile, error, errorCode, startedAt, endedAt, phases, agents, logs }
 }
 
 export function applyDeadman(status: RunStatus, startedAt: number | undefined, lastBeat: number | undefined): RunStatus {
@@ -251,10 +257,12 @@ export async function loadRunStatus(runId: string): Promise<RunStatusSnapshot | 
   const snapshot = foldSnapshot(runId, events, await heartbeatMtime(runId))
   const logPath = join(runDir(runId), "run.log")
   let result: unknown
-  try {
-    result = JSON.parse(await readFile(join(runDir(runId), "result.json"), "utf8"))
-  } catch {
-    result = undefined
+  if (snapshot.status === "completed") {
+    try {
+      result = JSON.parse(await readFile(join(runDir(runId), "result.json"), "utf8"))
+    } catch {
+      // No result file (for example, if an older run did not persist one).
+    }
   }
   return { ...snapshot, runDir: runDir(runId), logPath, result }
 }

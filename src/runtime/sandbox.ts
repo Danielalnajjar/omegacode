@@ -4,6 +4,7 @@
 
 import { Script, createContext, type Context } from "node:vm"
 import type { Meta, WorkflowGlobals } from "../dsl/types.js"
+import { MODELS } from "../dsl/models.js"
 
 export class WorkflowSyntaxError extends Error {
   constructor(message: string) {
@@ -240,6 +241,7 @@ export async function runInSandbox(opts: RunInSandboxOptions): Promise<unknown> 
     random: opts.globals.random,
     budget: opts.globals.budget,
     args: opts.globals.args,
+    models: opts.globals.models ?? MODELS,
     console,
     setTimeout,
     clearTimeout,

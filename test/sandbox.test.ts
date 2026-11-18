@@ -27,6 +27,7 @@ function fakeGlobals(over: Partial<WorkflowGlobals> = {}): WorkflowGlobals {
     random: () => 0,
     budget: { total: null, spent: () => 0, remaining: () => Infinity },
     args: undefined,
+    models: Object.freeze({ sol: "model-sol-1", fable: "model-fable-1", opus: "model-opus-1" }),
     ...over,
   }
 }

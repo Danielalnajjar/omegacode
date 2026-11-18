@@ -104,6 +104,9 @@ declare global {
 
   /** The CLI-supplied input (--args '<json>'); undefined if not passed. */
   const args: unknown
+
+  /** Current model id per family; pin with `{ provider: "codex", model: models.sol }`. */
+  const models: { readonly sol: string; readonly fable: string; readonly opus: string }
 }
 
 export {}

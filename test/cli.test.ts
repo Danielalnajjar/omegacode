@@ -5,7 +5,7 @@
 
 import { strict as assert } from "node:assert"
 import { execFileSync, spawn } from "node:child_process"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { get as httpGet } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -13,7 +13,7 @@ import { PROVIDER_IDS } from "../src/dsl/types.js"
 import { fileURLToPath } from "node:url"
 import { after, before, describe, test } from "node:test"
 
-import { parseArgs, UsageError, isUserFacingError, browserOpenCommand, openBrowser } from "../src/cli.ts"
+import { parseArgs, UsageError, isUserFacingError, browserOpenCommand, openBrowser, linkSkill } from "../src/cli.ts"
 import { WorkflowSyntaxError } from "../src/runtime/sandbox.ts"
 import { WorkflowError } from "../src/runtime/primitives.ts"
 import { JournalNotFoundError, ResumePreconditionError } from "../src/runtime/journal.ts"
@@ -921,6 +921,154 @@ describe("CLI misc commands", () => {
     assert.equal(r.code, 1)
     assert.match(r.stderr, /omegacode run: missing workflow file or name/)
     assert.match(r.stdout, /--args-file <f>/)
+  })
+})
+
+describe("install-skill links the agent skill dirs to the package skill", () => {
+  const DIR_LINK = process.platform === "win32" ? "junction" : "dir"
+  const OWN_SKILL = "---\nname: omegacode\ndescription: an older copy\n---\n# old\n"
+
+  function fixture(): { temp: string; source: string; dest: string } {
+    const temp = realpathSync(mkdtempSync(join(tmpdir(), "omega-skill-link-")))
+    const source = join(temp, "package", "skill")
+    mkdirSync(source, { recursive: true })
+    writeFileSync(join(source, "SKILL.md"), "---\nname: omegacode\n---\n# current\n")
+    return { temp, source, dest: join(temp, "home", ".agents", "skills", "omegacode") }
+  }
+
+  function assertLinked(dest: string, source: string): void {
+    assert.equal(lstatSync(dest).isSymbolicLink(), true, `${dest} is not a link`)
+    assert.equal(realpathSync(dest), source)
+    assert.match(readFileSync(join(dest, "SKILL.md"), "utf8"), /# current/)
+  }
+
+  test("creates the link, then reports it already linked", () => {
+    const { temp, source, dest } = fixture()
+    try {
+      assert.match(linkSkill(source, dest), /^linked skill/)
+      assertLinked(dest, source)
+      assert.match(linkSkill(source, dest), /^skill already linked/)
+      assertLinked(dest, source)
+    } finally { rmSync(temp, { recursive: true, force: true }) }
+  })
+
+  test("replaces an empty directory, which holds nothing to lose", () => {
+    const { temp, source, dest } = fixture()
+    try {
+      mkdirSync(dest, { recursive: true })
+      linkSkill(source, dest)
+      assertLinked(dest, source)
+    } finally { rmSync(temp, { recursive: true, force: true }) }
+  })
+
+  test("replaces an earlier copy that holds only omegacode's SKILL.md", () => {
+    const { temp, source, dest } = fixture()
+    try {
+      mkdirSync(dest, { recursive: true })
+      writeFileSync(join(dest, "SKILL.md"), OWN_SKILL)
+      linkSkill(source, dest)
+      assertLinked(dest, source)
+    } finally { rmSync(temp, { recursive: true, force: true }) }
+  })
+
+  test("repoints a link that resolves elsewhere", () => {
+    const { temp, source, dest } = fixture()
+    try {
+      const other = join(temp, "other-skill")
+      mkdirSync(other)
+      writeFileSync(join(other, "SKILL.md"), OWN_SKILL)
+      mkdirSync(join(dest, ".."), { recursive: true })
+      symlinkSync(other, dest, DIR_LINK)
+      linkSkill(source, dest)
+      assertLinked(dest, source)
+      assert.equal(readFileSync(join(other, "SKILL.md"), "utf8"), OWN_SKILL, "repointing touched the old link's target")
+    } finally { rmSync(temp, { recursive: true, force: true }) }
+  })
+
+  for (const [name, files] of [
+    ["an extra file", { "SKILL.md": OWN_SKILL, "notes.md": "mine\n" }],
+    ["another skill's SKILL.md", { "SKILL.md": "---\nname: something-else\n---\n" }],
+    ["a SKILL.md whose frontmatter never closes on its own line", { "SKILL.md": "---\nname: omegacode\n---notes I keep here\n" }],
+  ] as const) {
+    test(`refuses a directory holding ${name}, naming the path and changing nothing`, () => {
+      const { temp, source, dest } = fixture()
+      try {
+        mkdirSync(dest, { recursive: true })
+        for (const [file, text] of Object.entries(files)) writeFileSync(join(dest, file), text)
+        assert.throws(() => linkSkill(source, dest), (err: Error) => err.message.includes(`refusing to replace ${dest}`))
+        assert.equal(lstatSync(dest).isDirectory(), true)
+        assert.deepEqual(readdirSync(dest).sort(), Object.keys(files).sort())
+        for (const [file, text] of Object.entries(files)) assert.equal(readFileSync(join(dest, file), "utf8"), text)
+      } finally { rmSync(temp, { recursive: true, force: true }) }
+    })
+  }
+
+  test("a package whose SKILL.md is a directory fails loudly and leaves the existing skill in place", () => {
+    const { temp, source, dest } = fixture()
+    try {
+      rmSync(join(source, "SKILL.md"))
+      mkdirSync(join(source, "SKILL.md"))
+      mkdirSync(dest, { recursive: true })
+      writeFileSync(join(dest, "SKILL.md"), OWN_SKILL)
+      assert.throws(() => linkSkill(source, dest), /skill source is not a file/)
+      assert.equal(readFileSync(join(dest, "SKILL.md"), "utf8"), OWN_SKILL)
+    } finally { rmSync(temp, { recursive: true, force: true }) }
+  })
+
+  test("a leftover staged entry is refused by name and the existing skill stays in place", () => {
+    const { temp, source, dest } = fixture()
+    try {
+      mkdirSync(dest, { recursive: true })
+      writeFileSync(join(dest, "SKILL.md"), OWN_SKILL)
+      mkdirSync(`${dest}.replaced-by-install-skill`)
+      assert.throws(() => linkSkill(source, dest), (err: Error) => err.message.includes(`${dest}.replaced-by-install-skill`))
+      assert.equal(readFileSync(join(dest, "SKILL.md"), "utf8"), OWN_SKILL)
+    } finally { rmSync(temp, { recursive: true, force: true }) }
+  })
+
+  test("a non-writable parent fails before anything is deleted", { skip: process.platform === "win32" || process.getuid?.() === 0 }, () => {
+    const { temp, source, dest } = fixture()
+    const parent = join(dest, "..")
+    try {
+      mkdirSync(dest, { recursive: true })
+      writeFileSync(join(dest, "SKILL.md"), OWN_SKILL)
+      chmodSync(parent, 0o555)
+      assert.throws(() => linkSkill(source, dest))
+      assert.equal(readFileSync(join(dest, "SKILL.md"), "utf8"), OWN_SKILL, "the failed migration deleted the prior skill")
+    } finally {
+      chmodSync(parent, 0o755)
+      rmSync(temp, { recursive: true, force: true })
+    }
+  })
+
+  test("a package without SKILL.md fails loudly and leaves the existing skill in place", () => {
+    const { temp, source, dest } = fixture()
+    try {
+      rmSync(join(source, "SKILL.md"))
+      mkdirSync(dest, { recursive: true })
+      writeFileSync(join(dest, "SKILL.md"), OWN_SKILL)
+      assert.throws(() => linkSkill(source, dest), /skill source not found/)
+      assert.equal(lstatSync(dest).isDirectory(), true)
+      assert.equal(readFileSync(join(dest, "SKILL.md"), "utf8"), OWN_SKILL)
+    } finally { rmSync(temp, { recursive: true, force: true }) }
+  })
+
+  test("the command links both homes to this package's skill and exits 1 when one is refused", async () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "omega-skill-home-")))
+    try {
+      const packageSkill = fileURLToPath(new URL("../skill", import.meta.url))
+      const refused = join(home, ".agents", "skills", "omegacode")
+      mkdirSync(refused, { recursive: true })
+      writeFileSync(join(refused, "notes.md"), "mine\n")
+      const r = await runCli(["install-skill"], { HOME: home, USERPROFILE: home })
+      assert.equal(r.code, 1, r.stdout)
+      assert.ok(r.stderr.includes(`refusing to replace ${refused}`), r.stderr)
+      assert.equal(realpathSync(join(home, ".claude", "skills", "omegacode")), realpathSync(packageSkill))
+      rmSync(refused, { recursive: true })
+      const again = await runCli(["install-skill", "--agents"], { HOME: home, USERPROFILE: home })
+      assert.equal(again.code, 0, again.stderr)
+      assert.equal(realpathSync(refused), realpathSync(packageSkill))
+    } finally { rmSync(home, { recursive: true, force: true }) }
   })
 })
 

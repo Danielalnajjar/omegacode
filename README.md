@@ -16,9 +16,12 @@ bun add -g omegacode
 omegacode install-skill
 ```
 
-`install-skill` teaches your agents how to author and run workflows by copying the skill into
-`~/.claude/skills/` (Claude Code) and `~/.agents/skills/` (Codex and other agents). Pass
-`--claude` or `--agents` to install to just one.
+`install-skill` teaches your agents how to author and run workflows by linking
+`~/.claude/skills/omegacode` (Claude Code) and `~/.agents/skills/omegacode` (Codex and other agents)
+to the installed package's `skill/` directory, so upgrading the package upgrades the skill; run it
+from a global install, not a temporary `npx` copy. It replaces an earlier copy that holds only
+omegacode's SKILL.md (or nothing) and refuses a directory holding anything else. Pass `--claude` or `--agents`
+to link just one.
 
 You'll need Node 20+ and at least one worker installed: `codex` (the default provider), `claude`,
 `opencode` (≥ 1.16.2), `pi` (≥ 0.79.1, `bun add -g @earendil-works/pi-coding-agent`),
@@ -65,7 +68,7 @@ const findings = await parallel(
 phase("Verify")
 return await pipeline(
   findings.filter(Boolean).flatMap((f) => f.issues),
-  (issue) => agent(`Try to refute: ${issue.desc}`, { provider: "claude-code", model: "claude-fable-5-2", schema: VERDICT }),
+  (issue) => agent(`Try to refute: ${issue.desc}`, { provider: "claude-code", model: models.fable, schema: VERDICT }),
 )
 ```
 

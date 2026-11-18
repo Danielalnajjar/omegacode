@@ -17,8 +17,8 @@ export const meta = {
 }
 
 const CONTENDERS = [
-  { provider: "codex", model: "gpt-6.2-sol", name: "Codex" },
-  { provider: "claude-code", model: "claude-fable-5-2", name: "Claude" },
+  { provider: "codex", model: models.sol, name: "Codex" },
+  { provider: "claude-code", model: models.fable, name: "Claude" },
 ]
 
 const task =

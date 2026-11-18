@@ -7,6 +7,7 @@ import {query,type SDKMessage} from "@anthropic-ai/claude-agent-sdk"
 import {loadClaudeIsolation,isolatedClaudeOptions,isolatedToolPermission,ISOLATED_TOOLS, type ClaudeIsolation} from "./claude-isolation.js"
 import {toClaudeOutputFormat} from "./schema.js"
 import {resolveClaudeProfile} from "./claude-profile.js"
+import {MODELS} from "../dsl/models.js"
 
 function execute(command:string,cwd:string,timeoutMs=30000):Promise<{code:number|null;stdout:string;stderr:string}> {
   return new Promise((resolveResult,reject)=>{
@@ -145,7 +146,7 @@ async function proveStartup(config:ClaudeIsolation,profileId:string,assert:(labe
     yield {type:"user" as const,message:{role:"user" as const,content:"/context"},parent_tool_use_id:null,session_id:""}
     await pending
   }
-  const q=query({prompt:localCommand(),options:{...isolatedClaudeOptions(config),cwd:config.workspace,env,pathToClaudeCodeExecutable:profile.claudeCodeExecutable,model:config.model ?? "claude-opus-5-5",effort:config.effort,
+  const q=query({prompt:localCommand(),options:{...isolatedClaudeOptions(config),cwd:config.workspace,env,pathToClaudeCodeExecutable:profile.claudeCodeExecutable,model:config.model ?? MODELS.opus,effort:config.effort,
     ...(config.schema?{outputFormat:toClaudeOutputFormat(config.schema)}:{}),
     ...(config.instructions?{systemPrompt:{type:"preset",preset:"claude_code",append:config.instructions} as const}:{}),abortController:controller,stderr:()=>{},
     // Only the no-inference startup probe gets this outer network denial. Live

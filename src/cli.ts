@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process"
-import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, type Stats } from "node:fs"
 import { get as httpGet } from "node:http"
 import { homedir } from "node:os"
 import { dirname, join, resolve, sep } from "node:path"
@@ -870,9 +870,13 @@ async function cmdDoctor(): Promise<void> {
  * package/skill). `install-skill` and `guide` both read it through here.
  */
 function readSkill(): string {
-  const src = join(dirname(fileURLToPath(import.meta.url)), "..", "skill", "SKILL.md")
+  const src = join(skillDir(), "SKILL.md")
   if (!existsSync(src)) throw new Error(`skill source not found at ${src}`)
   return readFileSync(src, "utf8")
+}
+
+function skillDir(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), "..", "skill")
 }
 
 async function cmdGuide(): Promise<void> {
@@ -881,14 +885,6 @@ async function cmdGuide(): Promise<void> {
 }
 
 async function cmdInstallSkill(flags: Flags): Promise<void> {
-  let body: string
-  try {
-    body = readSkill()
-  } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err))
-    process.exitCode = 1
-    return
-  }
   const wantClaude = flags.claude === true
   const wantAgents = flags.agents === true
   const both = !wantClaude && !wantAgents // default: install to both
@@ -896,18 +892,111 @@ async function cmdInstallSkill(flags: Flags): Promise<void> {
   if (both || wantClaude) targets.push(join(homedir(), ".claude", "skills"))
   if (both || wantAgents) targets.push(join(homedir(), ".agents", "skills"))
   for (const base of targets) {
-    const dest = join(base, "omegacode")
-    mkdirSync(dest, { recursive: true })
-    writeFileSync(join(dest, "SKILL.md"), body)
-    console.log(`installed skill → ${join(dest, "SKILL.md")}`)
+    try {
+      console.log(linkSkill(skillDir(), join(base, "omegacode")))
+    } catch (err) {
+      console.error(`error: ${err instanceof Error ? err.message : String(err)}`)
+      process.exitCode = 1
+    }
   }
+}
+
+/**
+ * Make `dest` a link to the package's skill directory, so refreshing the package refreshes the
+ * skill. An existing link is repointed. An existing directory is replaced only when it holds nothing
+ * but omegacode's own SKILL.md (the copy earlier versions wrote) or nothing at all; anything else is
+ * refused, so no hand-added file is lost. The source SKILL.md is read first, so a broken install
+ * throws before `dest` moves; the old entry is then staged aside by rename and deleted only after
+ * the new link verifies, so any failure in between renames it back byte-for-byte.
+ */
+export function linkSkill(source: string, dest: string): string {
+  const sourceSkill = join(source, "SKILL.md")
+  let sourceStat: Stats
+  try {
+    sourceStat = lstatSync(sourceSkill)
+  } catch {
+    throw new Error(`skill source not found at ${sourceSkill}`)
+  }
+  if (!sourceStat.isFile()) throw new Error(`skill source is not a file at ${sourceSkill}`)
+  readFileSync(sourceSkill, "utf8") // prove it readable, as the copy this replaces did; the link serves it
+  const target = realpathSync(source)
+  const existing = lstatOrUndefined(dest)
+  if (existing?.isSymbolicLink() && resolvesTo(dest, target) && isFileAt(join(dest, "SKILL.md"))) {
+    return `skill already linked → ${dest} → ${target}`
+  }
+  if (existing && !existing.isSymbolicLink()) {
+    const skill = join(dest, "SKILL.md")
+    const entries = existing.isDirectory() ? readdirSync(dest) : []
+    // An empty directory holds nothing to lose; a lone SKILL.md must be omegacode's own copy.
+    const ownCopy = existing.isDirectory() && (entries.length === 0 ||
+      (entries.length === 1 && entries[0] === "SKILL.md" && lstatSync(skill).isFile() && isOmegacodeSkill(readFileSync(skill, "utf8"))))
+    if (!ownCopy) {
+      throw new Error(`refusing to replace ${dest}: it holds more than omegacode's own SKILL.md; move its other contents and rerun install-skill`)
+    }
+  }
+  let staged: string | undefined
+  if (existing) {
+    staged = `${dest}.replaced-by-install-skill`
+    if (lstatOrUndefined(staged)) {
+      throw new Error(`refusing to replace ${dest}: ${staged} already exists (an interrupted install-skill may have left it); inspect it, move it away, and rerun`)
+    }
+    renameSync(dest, staged)
+  } else {
+    mkdirSync(dirname(dest), { recursive: true })
+  }
+  try {
+    symlinkSync(target, dest, DIR_LINK)
+    if (!resolvesTo(dest, target) || !isFileAt(join(dest, "SKILL.md"))) {
+      throw new Error(`linked ${dest} → ${target}, but the link does not resolve to the package's SKILL.md`)
+    }
+  } catch (err) {
+    try { unlinkSync(dest) } catch { /* the link may never have been created */ }
+    if (staged) renameSync(staged, dest)
+    throw err
+  }
+  if (staged) rmSync(staged, { recursive: true, force: true })
+  return `linked skill → ${dest} → ${target}`
+}
+
+function lstatOrUndefined(path: string): Stats | undefined {
+  try {
+    return lstatSync(path)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined
+    throw err
+  }
+}
+
+function isFileAt(path: string): boolean {
+  try {
+    return lstatSync(path).isFile()
+  } catch {
+    return false
+  }
+}
+
+// A junction needs no privilege on Windows; POSIX ignores the type.
+const DIR_LINK = process.platform === "win32" ? "junction" : "dir"
+
+function resolvesTo(path: string, target: string): boolean {
+  try {
+    return realpathSync(path) === target
+  } catch {
+    return false
+  }
+}
+
+function isOmegacodeSkill(text: string): boolean {
+  // Both delimiters must be complete lines, so a hand-written `---notes` never reads as frontmatter.
+  const frontmatter = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(text)
+  return frontmatter !== null && /^name:[ \t]*omegacode[ \t]*$/m.test(frontmatter[1]!)
 }
 
 function printHelp(): void {
   console.log(`omegacode — run JS workflow files that orchestrate coding agents
 
 A workflow is a .js file: \`export const meta = {...}\` then a body using the injected
-DSL — agent() / parallel() / pipeline() / phase() / log() / now() / random() / budget / args.
+DSL — agent() / parallel() / pipeline() / phase() / log() / now() / random() / budget / args / models.
 Each agent() spawns a real provider agent; choose the provider per call or inherit the run default.
 
 Usage:
@@ -947,7 +1036,7 @@ Usage:
   omegacode capabilities [--json]               Report integration support without provider/auth probes
   omegacode doctor                              Check provider availability, versions, and data dir
   omegacode guide                               Print the full authoring guide (the skill text)
-  omegacode install-skill [--claude] [--agents] Install the authoring skill into agent skill dirs
+  omegacode install-skill [--claude] [--agents] Link agent skill dirs to this package's authoring skill
 
 Named workflows resolve by meta.name across three tiers (highest first): project
 (.omegacode/workflows/ from cwd up to the repo root), user (~/.omegacode/workflows/), and the

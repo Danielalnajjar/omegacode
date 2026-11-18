@@ -925,15 +925,17 @@ export function linkSkill(source: string, dest: string): string {
   } else if (existing) {
     const skill = join(dest, "SKILL.md")
     const entries = existing.isDirectory() ? readdirSync(dest) : []
-    const copy = entries.length === 1 && entries[0] === "SKILL.md" && lstatSync(skill).isFile() ? readFileSync(skill, "utf8") : undefined
-    if (copy === undefined || !isOmegacodeSkill(copy)) {
+    // An empty directory holds nothing to lose; a lone SKILL.md must be omegacode's own copy.
+    const copy = entries.length === 0 && existing.isDirectory() ? null :
+      entries.length === 1 && entries[0] === "SKILL.md" && lstatSync(skill).isFile() ? readFileSync(skill, "utf8") : undefined
+    if (copy === undefined || (copy !== null && !isOmegacodeSkill(copy))) {
       throw new Error(`refusing to replace ${dest}: it holds more than omegacode's own SKILL.md; move its other contents and rerun install-skill`)
     }
-    rmSync(skill)
+    if (copy !== null) rmSync(skill)
     rmdirSync(dest)
     restore = () => {
       mkdirSync(dest)
-      writeFileSync(skill, copy)
+      if (copy !== null) writeFileSync(skill, copy)
     }
   } else {
     mkdirSync(dirname(dest), { recursive: true })
@@ -945,6 +947,8 @@ export function linkSkill(source: string, dest: string): string {
     throw err
   }
   if (!resolvesTo(dest, target) || !existsSync(join(dest, "SKILL.md"))) {
+    unlinkSync(dest)
+    restore()
     throw new Error(`linked ${dest} → ${target}, but the link does not resolve to the package's SKILL.md`)
   }
   return `linked skill → ${dest} → ${target}`

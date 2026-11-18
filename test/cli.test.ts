@@ -952,6 +952,15 @@ describe("install-skill links the agent skill dirs to the package skill", () => 
     } finally { rmSync(temp, { recursive: true, force: true }) }
   })
 
+  test("replaces an empty directory, which holds nothing to lose", () => {
+    const { temp, source, dest } = fixture()
+    try {
+      mkdirSync(dest, { recursive: true })
+      linkSkill(source, dest)
+      assertLinked(dest, source)
+    } finally { rmSync(temp, { recursive: true, force: true }) }
+  })
+
   test("replaces an earlier copy that holds only omegacode's SKILL.md", () => {
     const { temp, source, dest } = fixture()
     try {

@@ -20,7 +20,7 @@ omegacode install-skill
 `~/.claude/skills/omegacode` (Claude Code) and `~/.agents/skills/omegacode` (Codex and other agents)
 to the installed package's `skill/` directory, so upgrading the package upgrades the skill; run it
 from a global install, not a temporary `npx` copy. It replaces an earlier copy that holds only
-omegacode's SKILL.md and refuses a directory holding anything else. Pass `--claude` or `--agents`
+omegacode's SKILL.md (or nothing) and refuses a directory holding anything else. Pass `--claude` or `--agents`
 to link just one.
 
 You'll need Node 20+ and at least one worker installed: `codex` (the default provider), `claude`,

@@ -49,6 +49,20 @@ if (process.argv.includes("mcp") && process.argv.includes("list")) {
         notify("turn/completed", { turn: { status: "completed" } });
       } else if (mode === "fail" || (mode === "handoff" && prompt === "fresh")) {
         notify("error", { error: { message: "provider rejected startup", codexErrorInfo: "usageLimitExceeded" } });
+      } else if (mode === "late-success") {
+        if (prompt === "fresh") {
+          notify("error", { error: { message: "provider rejected startup", codexErrorInfo: "usageLimitExceeded" } });
+        } else {
+          const release = ${JSON.stringify(join(home, "release"))};
+          const finish = () => {
+            if (!fs.existsSync(release)) return;
+            fs.unwatchFile(release);
+            notify("item/agentMessage/delta", { delta: "sibling work finished" });
+            notify("turn/completed", { turn: { status: "completed" } });
+          };
+          fs.watchFile(release, { interval: 10 }, finish);
+          finish();
+        }
       } else if (mode === "extract-disconnect" && !params.outputSchema) {
         notify("item/completed", { item: { type: "agentMessage", text: "working turn returned prose" } });
         notify("turn/completed", { turn: { status: "completed" } });
@@ -99,6 +113,31 @@ test("a typed restart failure preserves the workflow's own error", { skip: proce
   assert.equal(resumed.errorCode, "agent_restart_failed")
   assert.match(first.error ?? "", /The workflow could not assemble its report/)
   assert.equal(resumed.error, first.error)
+})
+
+test("a sibling that finishes after an early workflow rejection prevents a no-progress code", { skip: process.platform === "win32", timeout: 10_000 }, async (t) => {
+  const { file, home, mode } = setup(t)
+  writeFileSync(file, `
+    export const meta = { name: "early-rejection", description: "test" }
+    return await Promise.all([agent("fresh"), agent("quiet")])
+  `)
+  const first = await runWorkflow({ file, quiet: true })
+  assert.equal(first.status, "failed")
+  mode("late-success")
+  const abort = new AbortController()
+  t.after(() => abort.abort())
+  const resumed = await runWorkflow({
+    file, resumeRunId: first.runId, quiet: true, signal: abort.signal,
+    onEvent(event) {
+      if (event.type === "agent" && event.label === "fresh" && event.state === "failed") {
+        setImmediate(() => writeFileSync(join(home, "release"), ""))
+      }
+    },
+  })
+  assert.equal(resumed.status, "failed")
+  assert.match(resumed.error ?? "", /provider rejected startup/)
+  assert.equal(resumed.agentCounts.done, 1)
+  assert.equal(resumed.errorCode, undefined)
 })
 
 for (const providerMode of ["silent", "progress"]) {

@@ -250,15 +250,18 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     status = ac.signal.aborted ? "interrupted" : "failed"
     if (status === "interrupted") result = undefined
     error = err instanceof Error ? err.message : String(err)
+  } finally {
+    // A workflow rejection can race live siblings. Only a settled attempt
+    // establishes that no fresh agent made progress.
+    await runtime.settle()
     if (errorCode === "agent_start_stalled") {
       status = "failed"
+      result = undefined
       error = "No agent made provider progress before the active startup deadlines expired."
-    } else if (status === "failed" && allFreshAgentsFailed()) {
+    } else if (status === "failed" && !ac.signal.aborted && allFreshAgentsFailed()) {
       errorCode = "agent_restart_failed"
       result = undefined
     }
-  } finally {
-    await runtime.settle()
     clearInterval(heartbeat)
     process.removeListener("SIGINT", onSig)
     process.removeListener("SIGTERM", onSig)

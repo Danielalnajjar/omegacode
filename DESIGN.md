@@ -237,7 +237,7 @@ return await agent(
 )
 ```
 
-`agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `now`, `random`, `budget` are **injected
+`agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `now`, `random`, `budget`, `models` are **injected
 globals** (no import line). Shipped ambient type declarations (`src/dsl/ambient.d.ts`, the
 `omegacode/ambient` types) type them so authors — human or agent — still get full editor autocomplete
 and typechecking. Schemas are **JSON Schema** (the portable default that maps straight to Codex
@@ -256,6 +256,7 @@ and typechecking. Schemas are **JSON Schema** (the portable default that maps st
 | `now` | `() => number` | Journal-seeded clock (deterministic across resume, unlike `Date.now()`). |
 | `random` | `() => number` | Journal-seeded RNG (deterministic across resume, unlike `Math.random()`). |
 | `budget` | `{ total, spent(), remaining() }` | The run's output-token ceiling (`--budget`, §8); `total` is `null` when no ceiling is set. |
+| `models` | `{ sol, fable, opus }` (frozen) | The current model id per family, owned by `src/dsl/models.ts`; built-ins pin with `model: models.sol` so a model move edits only that file. |
 
 **`AgentOpts`:** `{ provider?: "codex" | "claude-code" | "opencode" | "pi" | "grok" | "muse", label?, phase?, model?, effort?:
 "none"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max" (the shared provider union; each worker maps
@@ -704,7 +705,7 @@ omegacode save <file> [--project] [--force]   # save a workflow into the user (o
 omegacode validate <file.workflow.js | name>  # parse the file + print its meta (no plan / no run)
 omegacode doctor                        # check provider binaries/versions + print the data dir
 omegacode guide                         # print the authoring guide (the body of skill/SKILL.md)
-omegacode install-skill [--claude] [--agents]   # install skill/SKILL.md into agent skill dirs
+omegacode install-skill [--claude] [--agents]   # link agent skill dirs to the package's skill/
 ```
 
 `--provider` sets the **default** worker for the run and must be paired with `--model`

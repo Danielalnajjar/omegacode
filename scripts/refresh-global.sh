@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Refresh the bun-global omegacode CLI from a verified packed tarball.
+# Refresh the bun-global omegacode CLI from a verified packed tarball, then link the agent skill
+# directories to its skill/, so this one command is a host's whole rollout.
 #
 # The checkout is never installed directly. The script first proves a tarball
 # under an isolated BUN_INSTALL prefix, then snapshots the active package/bin
@@ -254,6 +255,13 @@ node scripts/verify-packed-install.mjs \
   "$active_prefix/bin/omegacode" \
   "$stable_tarball" >/dev/null
 committed=1
+
+# Link ~/.claude/skills/omegacode and ~/.agents/skills/omegacode to the package just installed, so
+# the skill follows every refresh. The install above is verified and kept; a failure here is loud.
+if ! "$active_prefix/bin/omegacode" install-skill; then
+  echo "error: omegacode refreshed, but linking its skill failed; fix the path named above and rerun: $active_prefix/bin/omegacode install-skill" >&2
+  exit 1
+fi
 
 dirty=""
 git -C "$repo" diff --quiet HEAD -- src/ package.json 2>/dev/null || dirty=" (dirty working tree)"

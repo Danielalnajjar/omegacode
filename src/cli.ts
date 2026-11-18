@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process"
-import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync, type Stats } from "node:fs"
 import { get as httpGet } from "node:http"
 import { homedir } from "node:os"
 import { dirname, join, resolve, sep } from "node:path"
@@ -873,9 +873,13 @@ async function cmdDoctor(): Promise<void> {
  * package/skill). `install-skill` and `guide` both read it through here.
  */
 function readSkill(): string {
-  const src = join(dirname(fileURLToPath(import.meta.url)), "..", "skill", "SKILL.md")
+  const src = join(skillDir(), "SKILL.md")
   if (!existsSync(src)) throw new Error(`skill source not found at ${src}`)
   return readFileSync(src, "utf8")
+}
+
+function skillDir(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), "..", "skill")
 }
 
 async function cmdGuide(): Promise<void> {
@@ -884,14 +888,6 @@ async function cmdGuide(): Promise<void> {
 }
 
 async function cmdInstallSkill(flags: Flags): Promise<void> {
-  let body: string
-  try {
-    body = readSkill()
-  } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err))
-    process.exitCode = 1
-    return
-  }
   const wantClaude = flags.claude === true
   const wantAgents = flags.agents === true
   const both = !wantClaude && !wantAgents // default: install to both
@@ -899,18 +895,85 @@ async function cmdInstallSkill(flags: Flags): Promise<void> {
   if (both || wantClaude) targets.push(join(homedir(), ".claude", "skills"))
   if (both || wantAgents) targets.push(join(homedir(), ".agents", "skills"))
   for (const base of targets) {
-    const dest = join(base, "omegacode")
-    mkdirSync(dest, { recursive: true })
-    writeFileSync(join(dest, "SKILL.md"), body)
-    console.log(`installed skill → ${join(dest, "SKILL.md")}`)
+    try {
+      console.log(linkSkill(skillDir(), join(base, "omegacode")))
+    } catch (err) {
+      console.error(`error: ${err instanceof Error ? err.message : String(err)}`)
+      process.exitCode = 1
+    }
   }
+}
+
+/**
+ * Make `dest` a link to the package's skill directory, so refreshing the package refreshes the
+ * skill. An existing link is repointed. An existing directory is replaced only when it holds nothing
+ * but omegacode's own SKILL.md (the copy earlier versions wrote); anything else is refused, so no
+ * hand-added file is lost. A source without SKILL.md (a broken install) throws before `dest` changes.
+ */
+export function linkSkill(source: string, dest: string): string {
+  if (!existsSync(join(source, "SKILL.md"))) throw new Error(`skill source not found at ${join(source, "SKILL.md")}`)
+  const target = realpathSync(source)
+  let existing: Stats | undefined
+  try {
+    existing = lstatSync(dest)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err
+  }
+  let restore = (): void => {}
+  if (existing?.isSymbolicLink()) {
+    if (resolvesTo(dest, target)) return `skill already linked → ${dest} → ${target}`
+    const previous = readlinkSync(dest)
+    unlinkSync(dest)
+    restore = () => symlinkSync(previous, dest, DIR_LINK)
+  } else if (existing) {
+    const skill = join(dest, "SKILL.md")
+    const entries = existing.isDirectory() ? readdirSync(dest) : []
+    const copy = entries.length === 1 && entries[0] === "SKILL.md" && lstatSync(skill).isFile() ? readFileSync(skill, "utf8") : undefined
+    if (copy === undefined || !isOmegacodeSkill(copy)) {
+      throw new Error(`refusing to replace ${dest}: it holds more than omegacode's own SKILL.md; move its other contents and rerun install-skill`)
+    }
+    rmSync(skill)
+    rmdirSync(dest)
+    restore = () => {
+      mkdirSync(dest)
+      writeFileSync(skill, copy)
+    }
+  } else {
+    mkdirSync(dirname(dest), { recursive: true })
+  }
+  try {
+    symlinkSync(target, dest, DIR_LINK)
+  } catch (err) {
+    restore()
+    throw err
+  }
+  if (!resolvesTo(dest, target) || !existsSync(join(dest, "SKILL.md"))) {
+    throw new Error(`linked ${dest} → ${target}, but the link does not resolve to the package's SKILL.md`)
+  }
+  return `linked skill → ${dest} → ${target}`
+}
+
+// A junction needs no privilege on Windows; POSIX ignores the type.
+const DIR_LINK = process.platform === "win32" ? "junction" : "dir"
+
+function resolvesTo(path: string, target: string): boolean {
+  try {
+    return realpathSync(path) === target
+  } catch {
+    return false
+  }
+}
+
+function isOmegacodeSkill(text: string): boolean {
+  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)
+  return frontmatter !== null && /^name:\s*omegacode\s*$/m.test(frontmatter[1]!)
 }
 
 function printHelp(): void {
   console.log(`omegacode — run JS workflow files that orchestrate coding agents
 
 A workflow is a .js file: \`export const meta = {...}\` then a body using the injected
-DSL — agent() / parallel() / pipeline() / phase() / log() / now() / random() / budget / args.
+DSL — agent() / parallel() / pipeline() / phase() / log() / now() / random() / budget / args / models.
 Each agent() spawns a real provider agent; choose the provider per call or inherit the run default.
 
 Usage:
@@ -950,7 +1013,7 @@ Usage:
   omegacode capabilities [--json]               Report integration support without provider/auth probes
   omegacode doctor                              Check provider availability, versions, and data dir
   omegacode guide                               Print the full authoring guide (the skill text)
-  omegacode install-skill [--claude] [--agents] Install the authoring skill into agent skill dirs
+  omegacode install-skill [--claude] [--agents] Link agent skill dirs to this package's authoring skill
 
 Named workflows resolve by meta.name across three tiers (highest first): project
 (.omegacode/workflows/ from cwd up to the repo root), user (~/.omegacode/workflows/), and the

@@ -19,6 +19,7 @@ import type {
   WorkflowGlobals,
 } from "../dsl/types.js"
 import { addUsage, emptyUsage, PROVIDER_IDS } from "../dsl/types.js"
+import { MODELS } from "../dsl/models.js"
 import type { WorkerFactory, WorkerProgress } from "../worker/index.js"
 import { AgentError, AgentInterrupted } from "../worker/index.js"
 import { CODEX_SERVICE_TIERS } from "../worker/codex.js"
@@ -195,6 +196,7 @@ export class Runtime {
       random: this.random.bind(this),
       budget,
       args: this.o.args,
+      models: MODELS,
     }
   }
 

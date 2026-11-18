@@ -240,6 +240,7 @@ export async function runInSandbox(opts: RunInSandboxOptions): Promise<unknown> 
     random: opts.globals.random,
     budget: opts.globals.budget,
     args: opts.globals.args,
+    models: opts.globals.models,
     console,
     setTimeout,
     clearTimeout,

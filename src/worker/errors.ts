@@ -20,7 +20,7 @@ export interface RetryEvent {
 }
 
 const CODEX_RECONNECT_WINDOW_MS = 120_000
-// At the default backoff this permits probes after 1/2/4/8/16/30/30/29s.
+// At the default backoff the deadline limits the final wait.
 const CODEX_RECONNECT_ATTEMPTS = 9
 
 export function isCodexStreamConnectionError(
@@ -71,6 +71,7 @@ export async function withRetry<T>(
         : cappedDelay
       await opts.onRetry?.({ attempt: attempt + 1, maxAttempts, delayMs: delay, error: err })
       await sleep(delay, signal)
+      if (reconnect && reconnectDeadline !== undefined && Date.now() >= reconnectDeadline) throw err
     }
   }
 }

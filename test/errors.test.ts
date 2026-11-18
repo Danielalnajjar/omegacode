@@ -110,6 +110,28 @@ test("a slow Codex connection attempt consumes the reconnect retry window", asyn
   assert.equal(calls, 2)
 })
 
+test("a Codex retry cannot start after its backoff outlives the reconnect window", async (t) => {
+  let now = 0
+  t.mock.method(Date, "now", () => now)
+  const failure = new AgentError({
+    provider: "codex",
+    code: "responseStreamDisconnected",
+    message: "connection lost",
+    retryable: true,
+  })
+  let calls = 0
+  await assert.rejects(withRetry(async () => {
+    calls++
+    throw failure
+  }, never(), {
+    baseMs: 1,
+    maxMs: 1,
+    beforeProviderProgress: () => true,
+    onRetry: () => { now = 120_001 },
+  }), (error) => error === failure)
+  assert.equal(calls, 1)
+})
+
 test("other transient failures retain the original four attempts", async () => {
   const failures = [
     new AgentError({ provider: "codex", code: "httpConnectionFailed", message: "unexpected status 401 Unauthorized", retryable: true }),

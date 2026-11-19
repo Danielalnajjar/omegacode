@@ -216,19 +216,23 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
       // best effort — never let heartbeat failure break a run
     }
     if (ac.signal.aborted) return
-    if (startCriticalAgents.size > 0) {
-      if (sawCriticalProgress) return
+    let criticalStartupActive = false
+    if (!sawCriticalProgress) {
       // Give each worker its own provider window. A silent worker must release
       // its slot rather than canceling a sibling that is still queued.
       for (const { index } of startCriticalAgents) {
         if (index === undefined) continue
         const startup = providerStartups.get(index)
-        if (startup && now >= startup.deadline) {
+        if (!startup) continue
+        criticalStartupActive = true
+        if (now >= startup.deadline) {
           providerStartups.delete(index)
           startup.expire()
         }
       }
-    } else if (!sawProviderProgress && providerStartups.size > 0
+    }
+    // A queued critical call does not displace the ordinary watchdog before dispatch.
+    if (!criticalStartupActive && !sawProviderProgress && providerStartups.size > 0
       && [...providerStartups.values()].every(({ deadline }) => now >= deadline)) {
       failStartup("No agent made provider progress before the active startup deadlines expired.")
     }

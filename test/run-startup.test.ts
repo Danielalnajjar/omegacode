@@ -181,6 +181,33 @@ test("all unmarked agents can fail on a fresh run without a typed startup failur
   assert.deepEqual(outcome.result, [null, null])
 })
 
+test("queued critical calls do not displace the ordinary startup watchdog", { skip: process.platform === "win32", timeout: 10_000 }, async (t) => {
+  const { file, mode } = setup(t)
+  mode("silent")
+  writeFileSync(file, `
+    export const meta = { name: "initial-probes", description: "queued initial probes" }
+    return await parallel([
+      () => agent("quiet", { label: "helper" }),
+      () => agent("fresh", { startCritical: true }),
+      () => agent("fresh", { startCritical: true }),
+    ])
+  `)
+  const abort = new AbortController()
+  t.after(() => abort.abort())
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: Date.now() })
+  const outcome = await runWorkflow({
+    file, quiet: true, signal: abort.signal, overrides: { concurrency: 1 },
+    onEvent(event) {
+      if (event.type === "agent" && event.label === "helper" && event.inputTokens === 0 && event.outputTokens === 0) {
+        t.mock.timers.tick(300_000)
+      }
+    },
+  })
+  assert.equal(outcome.status, "failed")
+  assert.equal(outcome.errorCode, "agent_start_stalled")
+  assert.match(outcome.error ?? "", /No agent made provider progress/)
+})
+
 test("a resumed fan-out that makes no progress fails, even when a previous lane is cached", { skip: process.platform === "win32", timeout: 10_000 }, async (t) => {
   const { file } = setup(t)
   const first = await runWorkflow({ file, quiet: true })

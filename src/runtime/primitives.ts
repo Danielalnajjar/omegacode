@@ -101,8 +101,9 @@ export interface RuntimeOpts {
   seed: number
   baseTimeMs: number
   signal: AbortSignal
-  /** Reports the start of provider work, after any checkout preparation. */
-  onProviderDispatch?: (index: number, provider: AgentSpec["provider"]) => void
+  onAgentQueued?: (index: number, schema: AgentSpec["schema"]) => void
+  /** Reports dispatch after checkout preparation; expire only this worker if startup stalls. */
+  onProviderDispatch?: (index: number, provider: AgentSpec["provider"], expire: () => void) => void
   onProviderProgress?: (index: number) => void
   /** meta.phases, announced as pending phase events up front so the viewer shows the full plan. */
   declaredPhases?: Array<{ title: string; detail?: string }>
@@ -447,6 +448,7 @@ export class Runtime {
       return cached.result as T
     }
 
+    this.o.onAgentQueued?.(index, spec.schema)
     this.o.events.emit({
       type: "agent",
       ...where,
@@ -476,6 +478,11 @@ export class Runtime {
       let rejectDeadline!: (reason: Error) => void
       const deadline = new Promise<never>((_resolve, reject) => { rejectDeadline = reject })
       void deadline.catch(() => {})
+      const expireAgent = (error: AgentError) => {
+        timeoutError = error
+        agentAbort.abort()
+        rejectDeadline(error)
+      }
       const onRunAbort = () => {
         agentAbort.abort()
         rejectDeadline(new AgentInterrupted())
@@ -492,14 +499,11 @@ export class Runtime {
         if (this.o.defaults.agentTimeoutMs > 0) {
           deadlineTimer = setTimeout(() => {
             if (this.o.signal.aborted) return onRunAbort()
-            timeoutError = new AgentError({
+            expireAgent(new AgentError({
               provider: spec.provider,
               code: "agent_timeout",
               message: `agent exceeded wall-clock limit of ${this.o.defaults.agentTimeoutMs}ms`,
-              retryable: false,
-            })
-            agentAbort.abort()
-            rejectDeadline(timeoutError)
+            }))
           }, this.o.defaults.agentTimeoutMs)
         }
         this.o.events.emit({ type: "agent", ...where, index, phaseIndex, phaseTitle, label, provider: spec.provider, model: spec.model, state: "running", startedAt })
@@ -653,7 +657,11 @@ export class Runtime {
             }
           },
         }
-        this.o.onProviderDispatch?.(index, spec.provider)
+        this.o.onProviderDispatch?.(index, spec.provider, () => expireAgent(new AgentError({
+          provider: spec.provider,
+          code: "agent_start_stalled",
+          message: "Reviewer did not reach authenticated provider work before its startup deadline.",
+        })))
         const prepared = runSpec.claudeProfile !== undefined && worker.prepareAgentCall
           ? await withinDeadline(worker.prepareAgentCall(runSpec, workerCtx))
           : undefined

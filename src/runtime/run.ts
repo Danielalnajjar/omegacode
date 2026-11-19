@@ -90,8 +90,9 @@ export interface RunOutcome {
 const HEARTBEAT_MS = 5000
 /** Over 3x the slowest observed healthy generation's first provider event (75s). */
 const STARTUP_STALL_MS = 5 * 60_000
-// The saved cycle review wave uses these stable IDs regardless of provider.
-const BLIND_REVIEW_LANES = new Set(["review:opus-a", "review:opus-b"])
+// The saved cycle review wave declares these identities in its output contract.
+const REVIEW_RECEIPT_SCHEMA = "workflow-cycle.adversarial-review-receipt.v1"
+const BLIND_REVIEW_LANES = new Set(["opus-a", "opus-b"])
 const REVIEW_STARTUP_FAILURE = "Review launch blocked: neither blind reviewer reached authenticated provider work."
 
 export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
@@ -153,8 +154,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
 
   const renderer = new TerminalRenderer({ enabled: !opts.quiet })
   const agentStates = new Map<number, AgentState>()
-  const providerStartupDeadlines = new Map<number, number>()
-  const firstReviewWave = opts.resumeRunId === undefined && parsed.meta.name === "workflow-cycle-review-wave"
+  const providerStartups = new Map<number, { deadline: number; expire: () => void }>()
   const reviewers = new Map<string, number>()
   const ac = new AbortController()
   let sawProviderProgress = false
@@ -171,16 +171,14 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   }
   const countAgent: EventListener = (event) => {
     if (event.type !== "agent") return
-    const reviewer = firstReviewWave && event.phaseTitle === "Review" && BLIND_REVIEW_LANES.has(event.label)
-    if (reviewer) reviewers.set(event.label, event.index)
     agentStates.set(event.index, event.state)
-    if (event.state !== "running") providerStartupDeadlines.delete(event.index)
+    if (event.state !== "running") providerStartups.delete(event.index)
     if (!event.cached && (event.state === "done"
       || (event.inputTokens ?? 0) > 0 || (event.outputTokens ?? 0) > 0)) {
       noteProviderProgress(event.index)
     }
     // Abort before the saved recipe can catch both failures and launch its packet worker.
-    if (reviewer && event.state === "failed" && !sawReviewerProgress
+    if (event.state === "failed" && !sawReviewerProgress
       && reviewers.size === BLIND_REVIEW_LANES.size
       && [...reviewers.values()].every((index) => agentStates.get(index) === "failed")) {
       failStartup(REVIEW_STARTUP_FAILURE)
@@ -226,15 +224,20 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     } catch {
       // best effort — never let heartbeat failure break a run
     }
-    const reviewerDeadlines = [...reviewers.values()]
-      .map((index) => providerStartupDeadlines.get(index))
-      .filter((deadline) => deadline !== undefined)
-    if (reviewerDeadlines.length > 0) {
-      if (!sawReviewerProgress && reviewerDeadlines.every((deadline) => now >= deadline)) {
-        failStartup(REVIEW_STARTUP_FAILURE)
+    if (ac.signal.aborted) return
+    if (reviewers.size > 0) {
+      if (sawReviewerProgress) return
+      // Give each lane its own provider window. A silent lane must release
+      // its slot rather than canceling a sibling that is still queued.
+      for (const index of reviewers.values()) {
+        const startup = providerStartups.get(index)
+        if (startup && now >= startup.deadline) {
+          providerStartups.delete(index)
+          startup.expire()
+        }
       }
-    } else if (!sawProviderProgress && providerStartupDeadlines.size > 0
-      && [...providerStartupDeadlines.values()].every((deadline) => now >= deadline)) {
+    } else if (!sawProviderProgress && providerStartups.size > 0
+      && [...providerStartups.values()].every(({ deadline }) => now >= deadline)) {
       failStartup("No agent made provider progress before the active startup deadlines expired.")
     }
   }
@@ -250,10 +253,17 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   const restartFailure = "All fresh agents failed on resume without any provider progress; inspect the agent errors."
   const runtime = new Runtime({
     runId, defaults, factory, journal, loaded, events, args: opts.args, seed, baseTimeMs, signal: ac.signal, declaredPhases: parsed.meta.phases,
-    onProviderDispatch: (index, provider) => {
+    onAgentQueued: opts.resumeRunId === undefined ? (index, schema) => {
+      const properties = schema?.properties as { schema?: { const?: unknown }; lane?: { const?: unknown } } | undefined
+      const lane = properties?.lane?.const
+      if (properties?.schema?.const === REVIEW_RECEIPT_SCHEMA && typeof lane === "string" && BLIND_REVIEW_LANES.has(lane)) {
+        reviewers.set(lane, index)
+      }
+    } : undefined,
+    onProviderDispatch: (index, provider, expire) => {
       // Muse's max-reasoning turns can be silent past the ordinary startup limit.
       const limit = provider === "muse" ? MUSE_DEFAULT_STALL_TIMEOUT_MS : STARTUP_STALL_MS
-      providerStartupDeadlines.set(index, Date.now() + limit)
+      providerStartups.set(index, { deadline: Date.now() + limit, expire })
     },
     onProviderProgress: noteProviderProgress,
     machines,

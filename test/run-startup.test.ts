@@ -47,6 +47,9 @@ if (process.argv.includes("mcp") && process.argv.includes("list")) {
       if (prompt === "cached" || (mode === "progress" && prompt === "fresh")) {
         notify("item/agentMessage/delta", { delta: "actual model work" });
         notify("turn/completed", { turn: { status: "completed" } });
+      } else if (mode === "serial" && prompt === "quiet") {
+        notify("item/agentMessage/delta", { delta: JSON.stringify({ schema: "workflow-cycle.adversarial-review-receipt.v1", lane: "opus-b" }) });
+        notify("turn/completed", { turn: { status: "completed" } });
       } else if (mode === "fail" || mode === "started-then-refused" || (mode === "handoff" && prompt === "fresh")) {
         if (mode === "started-then-refused" && prompt === "fresh") {
           notify("item/agentMessage/delta", { delta: "actual model work before failure" });
@@ -91,12 +94,17 @@ if (process.argv.includes("mcp") && process.argv.includes("list")) {
 function reviewWave(t: TestContext) {
   const fixture = setup(t)
   writeFileSync(fixture.file, `
-    export const meta = { name: "workflow-cycle-review-wave", description: "two blind reviewers and a packet" }
+    export const meta = { name: "renamed-review-wave", description: "two blind reviewers and a packet" }
+    const reviewReceipt = (lane) => ({
+      type: "object",
+      required: ["schema", "lane"],
+      properties: { schema: { const: "workflow-cycle.adversarial-review-receipt.v1" }, lane: { const: lane } },
+    })
     await agent("cached", { label: "setup" })
-    phase("Review")
+    phase("Adversarial review")
     const reviews = await parallel([
-      () => agent("fresh", { label: "review:opus-a" }).catch(() => null),
-      () => agent("quiet", { label: "review:opus-b" }).catch(() => null),
+      () => agent("fresh", { label: "Blind A", schema: reviewReceipt("opus-a") }).catch(() => null),
+      () => agent("quiet", { label: "Blind B", schema: reviewReceipt("opus-b") }).catch(() => null),
     ])
     phase("Packet")
     return { reviews, packet: await agent("cached", { label: "packet:fable" }) }
@@ -113,7 +121,7 @@ test("a first review wave with two refused starts blocks before launching the pa
   assert.match(terminal.error ?? "", /neither blind reviewer reached authenticated provider work/i)
   assert.equal(terminal.result, undefined)
   assert.deepEqual(terminal.agents.map(({ label, state }) => [label, state]), [
-    ["setup", "done"], ["review:opus-a", "failed"], ["review:opus-b", "failed"],
+    ["setup", "done"], ["Blind A", "failed"], ["Blind B", "failed"],
   ])
 })
 
@@ -127,7 +135,7 @@ test("successful non-reviewer work does not mask a silent reviewer startup", { s
   const pending = runWorkflow({
     file, quiet: true, signal: abort.signal,
     onEvent(event) {
-      if (event.type === "agent" && event.phaseTitle === "Review"
+      if (event.type === "agent" && event.phaseTitle === "Adversarial review"
         && event.inputTokens === 0 && event.outputTokens === 0) {
         waiting.add(event.index)
         if (waiting.size === 2) t.mock.timers.tick(300_000)
@@ -138,6 +146,33 @@ test("successful non-reviewer work does not mask a silent reviewer startup", { s
     const outcome = await Promise.race([pending, new Promise<null>((resolve) => setTimeout(() => resolve(null), 500))])
     assert.equal(outcome?.status, "failed")
     assert.equal(outcome.errorCode, "agent_start_stalled")
+  } finally {
+    abort.abort()
+    await pending
+  }
+})
+
+test("a silent reviewer relinquishes its only slot so a queued reviewer can start", { skip: process.platform === "win32", timeout: 10_000 }, async (t) => {
+  const { file, mode } = reviewWave(t)
+  mode("serial")
+  const abort = new AbortController()
+  t.after(() => abort.abort())
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: Date.now() })
+  const pending = runWorkflow({
+    file, quiet: true, signal: abort.signal, overrides: { concurrency: 1 },
+    onEvent(event) {
+      if (event.type === "agent" && event.label === "Blind A" && event.inputTokens === 0 && event.outputTokens === 0) {
+        t.mock.timers.tick(300_000)
+      }
+    },
+  })
+  try {
+    const outcome = await Promise.race([pending, new Promise<null>((resolve) => setTimeout(() => resolve(null), 500))])
+    assert.equal(outcome?.status, "completed")
+    const terminal = await loadRunStatus(outcome.runId)
+    assert.deepEqual(terminal?.agents.map(({ label, state }) => [label, state]), [
+      ["setup", "done"], ["Blind A", "failed"], ["Blind B", "done"], ["packet:fable", "done"],
+    ])
   } finally {
     abort.abort()
     await pending

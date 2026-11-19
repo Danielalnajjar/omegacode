@@ -123,6 +123,12 @@ export class JsonRpcStdioClient {
     // the tail for crash diagnostics.
     child.stderr.setEncoding("utf8")
     child.stderr.on("data", (chunk: string) => this.onStderr(chunk))
+    child.stdin.on("error", (err) =>
+      this.handleProcessGone(new StdioTransportError("write_failed", errMessage(err))),
+    )
+    child.once("close", () => {
+      if (this.child === child) this.child = null
+    })
     child.on("error", (err) =>
       this.handleProcessGone(new StdioTransportError("process_error", errMessage(err))),
     )
@@ -162,7 +168,7 @@ export class JsonRpcStdioClient {
    * child is gone, rejects with a JsonRpcResponseError if the server returns an
    * error member, and rejects with a timeout if no response arrives in time.
    */
-  request(method: string, params?: unknown): Promise<unknown> {
+  request(method: string, params?: unknown, timeoutMs = this.requestTimeoutMs): Promise<unknown> {
     return new Promise<unknown>((resolve, reject) => {
       if (this.dead || !this.child) {
         reject(new StdioTransportError("not_writable", "child is not running"))
@@ -171,11 +177,11 @@ export class JsonRpcStdioClient {
       const id = this.allocId()
       const entry: Pending = { resolve, reject }
       this.pending.set(id, entry)
-      if (this.requestTimeoutMs > 0) {
+      if (timeoutMs > 0) {
         entry.timer = setTimeout(() => {
           if (!this.pending.delete(id)) return
-          reject(new StdioTransportError("request_timeout", `request ${method} timed out after ${this.requestTimeoutMs}ms`))
-        }, this.requestTimeoutMs)
+          reject(new StdioTransportError("request_timeout", `request ${method} timed out after ${timeoutMs}ms`))
+        }, timeoutMs)
         // Do not keep the event loop alive purely for a pending timeout.
         entry.timer.unref?.()
       }
@@ -194,6 +200,7 @@ export class JsonRpcStdioClient {
    */
   shutdown(): void {
     const child = this.child
+    this.child = null
     this.markDead(new StdioTransportError("shutdown", "client shut down"))
     if (child) {
       child.removeAllListeners()
@@ -203,6 +210,33 @@ export class JsonRpcStdioClient {
         // best-effort
       }
     }
+  }
+
+  /** Close a one-shot peer. Flush queued frames (such as cancellation) before signalling it. */
+  async close(killGraceMs: number): Promise<void> {
+    const child = this.child
+    this.markDead(new StdioTransportError("shutdown", "client shut down"))
+    if (!child) return
+    if (child.exitCode === null && child.signalCode === null) {
+      await new Promise<void>((resolve) => {
+        const finish = () => {
+          clearTimeout(term)
+          clearTimeout(kill)
+          child.off("exit", finish)
+          child.off("close", finish)
+          resolve()
+        }
+        const term = setTimeout(() => child.kill("SIGTERM"), 100)
+        const kill = setTimeout(() => child.kill("SIGKILL"), 100 + killGraceMs)
+        child.once("exit", finish)
+        child.once("close", finish)
+        child.stdin.end()
+      })
+    }
+    // Do not keep inherited stdio pipes open after the peer exits.
+    child.stdin.destroy()
+    child.stdout.destroy()
+    child.stderr.destroy()
   }
 
   /** Recent stderr tail (for diagnostics / tests). */
@@ -229,6 +263,7 @@ export class JsonRpcStdioClient {
   }
 
   private onStderr(chunk: string): void {
+    if (this.stderrLimit === 0) return
     this.stderrBuf += chunk
     if (this.stderrBuf.length > this.stderrLimit) {
       this.stderrBuf = this.stderrBuf.slice(this.stderrBuf.length - this.stderrLimit)
@@ -273,7 +308,6 @@ export class JsonRpcStdioClient {
   private markDead(err: StdioTransportError): void {
     if (this.dead) return
     this.dead = true
-    this.child = null
     // Reset framing state so a future client never parses a corrupt first frame.
     this.stdoutBuf = ""
     const entries = [...this.pending.entries()]

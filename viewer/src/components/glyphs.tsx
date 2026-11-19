@@ -62,6 +62,7 @@ export function ProviderIcon({ provider, className }: { provider: ProviderId; cl
   if (provider === "pi") return <MonogramBadge label="π" className={className} />
   if (provider === "muse") return <MonogramBadge label="M" className={className} />
   if (provider === "grok") return <MonogramBadge label="G" className={className} />
+  if (provider === "acp-cursor") return <MonogramBadge label="C" className={className} />
   return <MonogramBadge label="·" className={className} />
 }
 

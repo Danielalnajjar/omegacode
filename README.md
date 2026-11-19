@@ -25,7 +25,7 @@ to link just one.
 
 You'll need Node 20+ and at least one worker installed: `codex` (the default provider), `claude`,
 `opencode` (≥ 1.16.2), `pi` (≥ 0.79.1, `bun add -g @earendil-works/pi-coding-agent`),
-`grok` (≥ 0.2.112), and/or `muse` (≥ 1.3.0). Run
+`grok` (≥ 0.2.112), `muse` (≥ 1.3.0), or `cursor-agent` (see Cursor ACP workers below). Run
 `omegacode doctor` to check — it flags binaries below the minimum versions, which the workers
 refuse at runtime.
 
@@ -73,7 +73,7 @@ return await pipeline(
 ```
 
 Plain JavaScript, no imports — the DSL is injected. Each `agent()` spawns a real Codex, Claude
-Code, OpenCode, pi, Grok, or Muse agent; omit `provider`/`model` to inherit whatever the run was started with
+Code, OpenCode, pi, Grok, Muse, or Cursor agent; omit `provider`/`model` to inherit whatever the run was started with
 (`--provider --model`, default `codex`), or pin them per call when you want cross-provider
 diversity. Provider and model are **both-or-neither** at every site (per-call, meta defaults,
 CLI flags): a lone `provider:` or `model:` is rejected, so a model meant for one provider can
@@ -170,6 +170,44 @@ matching the Codex and Grok silence guards. It aborts the query and raises retry
 message resets the interval. The programmatic `ClaudeWorker` option
 `stallTimeoutMs` overrides it (`0` disables it). The wall-clock limit still applies
 when messages keep arriving.
+
+### Cursor ACP workers
+
+```js
+return await agent("Find the primary source for this claim and cite it.", {
+  provider: "acp-cursor",
+  model: "grok-4.7",
+  effort: "medium",
+  sandbox: "read-only",
+})
+```
+
+For run defaults, pass `--provider acp-cursor --model grok-4.7 --effort medium`.
+The worker uses `cursor-agent acp` (protocol fixture pinned to CLI
+`2026.11.19-f005e9d`; override the executable with `CURSOR_AGENT_BIN`). It
+requires an explicit model and effort advertised by the connected Cursor
+catalog. A missing or unconfirmed selection fails before the prompt. It
+does not substitute model variants or call another provider.
+
+Only Cursor's read-only Ask mode and unattended `approval: "never"` are
+supported; `maxTurns` is not supported. The client approves Cursor's native web search and fetch once
+per request, rejects other tool approvals, and provides no client filesystem,
+terminal, or MCP tools. Ask mode is enforced by Cursor, not an OS sandbox.
+Project CLI settings are disabled. The launch home and workspace must have
+no native MCP, hooks, or private-inference config: Cursor can run these
+extensions outside ACP approvals. OmegaCode refuses the local files without
+reading or modifying them. Use an account without Cursor team-managed hooks;
+ACP does not expose a switch that disables them.
+Each attempt keeps Cursor's session and model selection in private scratch
+state. The CLI uses its existing host login or an inherited `CURSOR_API_KEY`;
+OmegaCode does not authenticate or pass through `CURSOR_AUTH_TOKEN`, which
+would write to the login store. Missing authentication is `auth_required`.
+Cursor can stream backend errors as assistant text. OmegaCode verifies an
+internal completion marker before publishing the answer and removes it from
+the returned text. The normal schema validation and corrective retry apply to
+JSON answers. The ACP prompt has a 30-minute request deadline in addition
+to the workflow's agent timeout. Cursor does not report per-turn token usage
+on this wire.
 
 ### Muse workers
 

@@ -1,0 +1,10 @@
+Cursor CLI 2026.11.19-f005e9d
+Embedded ACP SDK 0.14.1
+
+The executable peer is synthetic. initialize/session/new error behavior was
+observed on the unauthenticated installed CLI. Config option and permission
+shapes are based on the version's bundled Cursor ACP handlers and the ACP v1
+docs. The catalog entries and result text are fixture data, not a live capture.
+
+https://cursor.com/docs/cli/acp
+https://agentclientprotocol.com/protocol/v1/session-config-options

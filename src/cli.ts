@@ -861,6 +861,7 @@ async function cmdDoctor(): Promise<void> {
   console.log(`  pi           : ${withMin(piOut, PI_MIN_VERSION, "bun add -g @earendil-works/pi-coding-agent")}`)
   console.log(`  grok         : ${withMin(check(grokBin, ["--version"]), GROK_MIN_VERSION, "upgrade the grok CLI")}`)
   console.log(`  muse         : ${withMin(check(museBin, ["--version"]), MUSE_MIN_VERSION, "upgrade the Muse CLI")}`)
+  console.log(`  acp-cursor   : ${check(process.env.CURSOR_AGENT_BIN ?? "cursor-agent", ["--version"])}`)
   console.log(`  data dir     : ${dataRoot()}`)
 }
 
@@ -1002,7 +1003,7 @@ Each agent() spawns a real provider agent; choose the provider per call or inher
 Usage:
   omegacode run <file.workflow.js | name> [options]   Run a workflow (by path or saved name)
       --args '<json>' | --args-file <f>    input exposed as the \`args\` global
-      --provider codex|claude-code|opencode|pi|grok|muse   default provider (per-agent opts override)
+      --provider ${PROVIDER_IDS.join("|")}   default provider (per-agent opts override)
       --model <m>                          default model — set together with --provider (both or neither)
       --effort <e>  --sandbox read-only|workspace-write|danger-full-access
       --cwd <dir>  --concurrency <N>       working dir; max concurrent agents (default ${DEFAULTS.concurrency})

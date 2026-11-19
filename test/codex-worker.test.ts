@@ -42,7 +42,7 @@ after(() => clearInterval(keepAlive))
 // via `onWrite`, and reply by pushing stdout lines or emitting error/exit.
 // ---------------------------------------------------------------------------
 
-interface FakeStdin {
+interface FakeStdin extends EventEmitter {
   writable: boolean
   write(chunk: string, cb?: (err?: Error | null) => void): boolean
 }
@@ -65,7 +65,7 @@ class FakeChild extends EventEmitter {
     ;(this.stdout as any).setEncoding = () => {}
     ;(this.stderr as any).setEncoding = () => {}
     const self = this
-    this.stdin = {
+    this.stdin = Object.assign(new EventEmitter(), {
       writable: true,
       write(chunk: string, cb?: (err?: Error | null) => void): boolean {
         self.writes.push(chunk)
@@ -96,7 +96,7 @@ class FakeChild extends EventEmitter {
         }
         return true
       },
-    }
+    })
   }
 
   pushLine(obj: unknown): void {

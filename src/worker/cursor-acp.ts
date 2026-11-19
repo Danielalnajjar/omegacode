@@ -1,6 +1,6 @@
-import { mkdtemp, rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { lstat, mkdtemp, realpath, rm } from "node:fs/promises"
+import { homedir, tmpdir } from "node:os"
+import { dirname, join } from "node:path"
 import { emptyUsage, type AgentResult, type AgentSpec } from "../dsl/types.js"
 import { encodeNotification, encodeResult, type JsonRpcId } from "./codex-protocol.js"
 import { AgentError, AgentInterrupted, type Worker, type WorkerContext } from "./index.js"
@@ -11,6 +11,7 @@ import { DEFAULT_KILL_GRACE_MS, DEFAULT_STALL_TIMEOUT_MS } from "./subprocess-js
 const PROVIDER = "acp-cursor"
 const ASK = "ask"
 const SETUP_TIMEOUT_MS = 60_000
+const AUTH_REQUIRED = "Cursor ACP requires preconfigured host login or an inherited CURSOR_API_KEY"
 
 export interface CursorAcpWorkerOptions {
   bin?: string
@@ -59,27 +60,36 @@ export class CursorAcpWorker implements Worker {
   }
 
   private async runAttempt(spec: AgentSpec, model: string, effort: string, ctx: WorkerContext): Promise<AgentResult> {
+    const cwd = await realpath(spec.cwd).catch(() => {
+      throw failure("invalid_config", "Cursor ACP could not resolve the working directory")
+    })
+    await assertNoNativeMcp(cwd)
+    if (ctx.signal.aborted) throw new AgentInterrupted()
+
     // Cursor persists ACP sessions and model selection. Keep each process's state
     // private; the native CLI can still use inherited auth or its normal login.
     const state = await mkdtemp(join(tmpdir(), "omega-cursor-acp-"))
-    const cwd = resolve(spec.cwd)
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      CURSOR_CONFIG_DIR: state,
+      CURSOR_DATA_DIR: state,
+      CURSOR_AGENT_DISABLE_DEBUG_LOG: "1",
+    }
+    // This token route writes to the native login store, unlike inherited API-key auth.
+    delete env.CURSOR_AUTH_TOKEN
     let sessionId: string | undefined
     let prompting = false
     let text = ""
+    let promptError: AgentError | undefined
     const client = new JsonRpcStdioClient({
       bin: this.opts.bin ?? process.env.CURSOR_AGENT_BIN ?? "cursor-agent",
       args: ["--disable-auto-update", "acp"],
       cwd,
-      env: {
-        ...process.env,
-        CURSOR_CONFIG_DIR: state,
-        CURSOR_DATA_DIR: state,
-        CURSOR_AGENT_DISABLE_DEBUG_LOG: "1",
-      },
+      env,
       requestTimeoutMs: this.opts.requestTimeoutMs ?? SETUP_TIMEOUT_MS,
       stderrLimit: 0,
       onServerRequest: (id, method, params) => {
-        const frame = serverReply(id, method, params, prompting ? sessionId : undefined)
+        const frame = serverReply(id, method, params, prompting && !promptError ? sessionId : undefined)
         // If the pipe broke, the transport owns rejection of pending requests.
         try { client.send(frame) } catch (err) {
           if (!(err instanceof StdioTransportError)) throw err
@@ -87,7 +97,7 @@ export class CursorAcpWorker implements Worker {
         }
       },
       onNotification: (method, params) => {
-        if (!prompting || method !== "session/update") return
+        if (!prompting || promptError || method !== "session/update") return
         const message = asRecord(params)
         if (!message || message.sessionId !== sessionId) return
         const update = asRecord(message.update)
@@ -97,8 +107,11 @@ export class CursorAcpWorker implements Worker {
         }
         if (content?.type !== "text" || typeof content.text !== "string") return
         if (update?.sessionUpdate === "agent_message_chunk") {
-          text += content.text
-          ctx.onProgress({ kind: "text", text: content.text })
+          promptError = backendFailure(content.text)
+          if (!promptError) {
+            text += content.text
+            ctx.onProgress({ kind: "text", text: content.text })
+          }
         } else if (update?.sessionUpdate === "agent_thought_chunk") {
           ctx.onProgress({ kind: "reasoning", text: content.text })
         }
@@ -156,6 +169,7 @@ export class CursorAcpWorker implements Worker {
         prompt: [{ type: "text", text: researchPrompt(spec) }],
       }, this.opts.promptTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS))
       prompting = false
+      if (promptError) throw promptError
       if (result?.stopReason !== "end_turn") {
         throw failure("turn_incomplete", "Cursor did not complete the ACP prompt turn")
       }
@@ -172,7 +186,7 @@ export class CursorAcpWorker implements Worker {
       if (ctx.signal.aborted || err instanceof AgentInterrupted) throw new AgentInterrupted()
       if (err instanceof JsonRpcResponseError) {
         if (err.rpc.code === -32000) {
-          throw failure("auth_required", "Cursor ACP requires preconfigured host login or an inherited CURSOR_API_KEY", err)
+          throw failure("auth_required", AUTH_REQUIRED, err)
         }
         throw failure("provider_error", "Cursor rejected an ACP request", err)
       }
@@ -193,6 +207,51 @@ export class CursorAcpWorker implements Worker {
       }
     }
   }
+}
+
+/** Cursor opens native MCP clients at session/new, before any permission request or
+ * Ask-mode selection. Inspect paths only; those configs can contain credentials. */
+async function assertNoNativeMcp(cwd: string): Promise<void> {
+  if (process.env.CURSOR_PRIVATE_INFERENCE_CONFIG?.trim()) {
+    throw failure("invalid_config", "Cursor ACP requires a launch without private-inference configuration")
+  }
+
+  const configs = [
+    join(homedir(), ".cursor", "mcp.json"),
+    "/etc/cursor/private-inference.toml",
+  ]
+  if (process.platform === "darwin") configs.push("/Library/Application Support/Cursor/private-inference.toml")
+  if (process.platform === "win32") configs.push("C:\\ProgramData\\Cursor\\private-inference.toml")
+  // The CLI uses the git root when one exists, otherwise the process cwd.
+  for (let dir = cwd; ; dir = dirname(dir)) {
+    configs.push(join(dir, ".cursor", "mcp.json"))
+    if (dirname(dir) === dir) break
+  }
+
+  for (const path of configs) {
+    try {
+      await lstat(path)
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      if (code === "ENOENT" || code === "ENOTDIR") continue
+    }
+    throw failure("invalid_config", "Cursor ACP requires a home and workspace without native MCP or private-inference configuration")
+  }
+}
+
+/** Cursor 2026.11.19 sends these backend failures as single message chunks, then ends the turn. */
+function backendFailure(chunk: string): AgentError | undefined {
+  if (chunk === "\n\nPlease sign in to continue" || chunk.startsWith("\n\nError: [unauthenticated] ")) {
+    return failure("auth_required", AUTH_REQUIRED)
+  }
+  if (chunk.startsWith("\n\nError: ") || [
+    "\n\nUpgrade your plan to continue",
+    "\n\nAdd a payment method to continue",
+    "\n\nCheck your settings to continue",
+  ].includes(chunk)) {
+    return failure("provider_error", "Cursor backend could not complete the ACP prompt")
+  }
+  return undefined
 }
 
 function researchPrompt(spec: AgentSpec): string {

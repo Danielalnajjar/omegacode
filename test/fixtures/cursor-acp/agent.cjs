@@ -15,6 +15,7 @@ const config = process.env.CURSOR_CONFIG_DIR
 assert.ok(fs.statSync(config).isDirectory())
 assert.equal(process.env.CURSOR_DATA_DIR, config)
 assert.equal(process.env.CURSOR_AGENT_DISABLE_DEBUG_LOG, "1")
+assert.equal("CURSOR_AUTH_TOKEN" in process.env, false)
 function note(event) { fs.appendFileSync(record, JSON.stringify(event) + "\n") }
 note({ pid: process.pid, config, cwd })
 
@@ -87,6 +88,12 @@ readline.createInterface({ input: process.stdin }).on("line", line => {
       promptId = id
       message("agent_thought_chunk", "Checking source")
       if (scenario === "timeout" || scenario === "cancel") return
+      if (scenario === "backend-auth" || scenario === "backend-failure") {
+        message("agent_message_chunk", "A partial answer.")
+        const error = scenario === "backend-auth" ? "[unauthenticated] " : ""
+        message("agent_message_chunk", `\n\nError: ${error}fixture-private-diagnostic`)
+        return reply({ stopReason: "end_turn" })
+      }
       permission("web", "search", "web_search_fixture")
       permission("edit", "edit", "write_fixture")
       permission("mcp", "search", "mcp_fixture")

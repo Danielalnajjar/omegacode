@@ -1,7 +1,7 @@
 import { test, type TestContext } from "node:test"
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
-import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
@@ -18,10 +18,21 @@ const exec = promisify(execFile)
 
 function setup(t: TestContext, scenario: string) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "omega-cursor-fixture-")))
-  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const home = join(dir, "home")
+  mkdirSync(home)
+  const previousHome = process.env.HOME
+  process.env.HOME = home
   writeFileSync(join(dir, "scenario"), scenario)
   const worker = new CursorAcpWorker({ bin, requestTimeoutMs: 3000, promptTimeoutMs: 1000, killGraceMs: 50 })
-  t.after(() => worker.shutdown())
+  t.after(async () => {
+    try {
+      await worker.shutdown()
+      rmSync(dir, { recursive: true, force: true })
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME
+      else process.env.HOME = previousHome
+    }
+  })
   const spec: AgentSpec = {
     cwd: dir, provider: "acp-cursor", model: "grok-4.7", effort: "medium",
     sandbox: "read-only", approval: "never", prompt: "Inspect the fixture",
@@ -32,12 +43,13 @@ function setup(t: TestContext, scenario: string) {
     assert.equal(existsSync(record[0].config), false, "scratch state was removed")
     assert.throws(() => process.kill(record[0].pid, 0), { code: "ESRCH" }, "fixture process exited")
   }
-  return { dir, worker, spec, records, assertClean }
+  return { dir, home, worker, spec, records, assertClean }
 }
 
 test("CLI capabilities and parallel Cursor ACP research use the exact configured model and return validated JSON", posixOnly, async (t) => {
   const { dir, records, assertClean } = setup(t, "research")
-  const env = { ...process.env, OMEGACODE_HOME: join(dir, "omega-home"), CURSOR_AGENT_BIN: bin }
+  const env = { ...process.env, OMEGACODE_HOME: join(dir, "omega-home"), CURSOR_AGENT_BIN: bin,
+    CURSOR_AUTH_TOKEN: "fixture-not-a-credential" }
   const flags = { cwd: dir, env, timeout: 20_000 }
   const { stdout: caps } = await exec(process.execPath, ["--import", register, cli, "capabilities", "--json"], flags)
   assert.ok(JSON.parse(caps).providers.includes("acp-cursor"))
@@ -97,6 +109,32 @@ test("Cursor ACP rejects writable sandbox requests before spawn", posixOnly, asy
   }), { code: "unsupported_option" })
   assert.deepEqual(records(), [])
 })
+
+for (const scope of ["home", "workspace"] as const) {
+  test(`Cursor ACP refuses native MCP configuration before launch: ${scope}`, posixOnly, async (t) => {
+    const { dir, home, worker, spec, records } = setup(t, "research")
+    const config = join(scope === "home" ? home : dir, ".cursor")
+    mkdirSync(config)
+    writeFileSync(join(config, "mcp.json"), "fixture configuration; must not be read")
+    await assert.rejects(worker.runAgent(spec, { signal: new AbortController().signal, onProgress() {} }),
+      { code: "invalid_config", message: /without native MCP/ })
+    assert.deepEqual(records(), [])
+  })
+}
+
+for (const [scenario, code] of [["backend-auth", "auth_required"], ["backend-failure", "provider_error"]]) {
+  test(`Cursor ACP treats error chunks before end_turn as sanitized failures: ${scenario}`, posixOnly, async (t) => {
+    const { worker, spec, records, assertClean } = setup(t, scenario)
+    const output: string[] = []
+    await assert.rejects(worker.runAgent(spec, {
+      signal: new AbortController().signal,
+      onProgress(progress) { if (progress.kind === "text") output.push(progress.text) },
+    }), (error: unknown) => error instanceof AgentError && error.code === code &&
+      !error.retryable && !error.message.includes("fixture-private-diagnostic"))
+    assert.deepEqual(output, ["A partial answer."])
+    assertClean(records()[0])
+  })
+}
 
 test("Cursor ACP timeout cancels and reaps a peer that ignores SIGTERM", posixOnly, async (t) => {
   const { worker, spec, records, assertClean } = setup(t, "timeout")

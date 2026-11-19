@@ -193,9 +193,14 @@ Only Cursor's read-only Ask mode and unattended `approval: "never"` are
 supported; `maxTurns` is not supported. The client approves Cursor's native web search and fetch once
 per request, rejects other tool approvals, and provides no client filesystem,
 terminal, or MCP tools. Ask mode is enforced by Cursor, not an OS sandbox.
+The launch home and workspace must have no native Cursor MCP or
+private-inference config: Cursor can start its own servers before permission
+requests are possible. OmegaCode refuses these configurations without
+reading or modifying them.
 Each attempt keeps Cursor's session and model selection in private scratch
 state. The CLI uses its existing host login or an inherited `CURSOR_API_KEY`;
-OmegaCode does not authenticate. Missing authentication is `auth_required`.
+OmegaCode does not authenticate or pass through `CURSOR_AUTH_TOKEN`, which
+would write to the login store. Missing authentication is `auth_required`.
 The normal workflow schema validation and corrective retry apply to JSON
 returned as text. The ACP prompt has a 30-minute request deadline in addition
 to the workflow's agent timeout. Cursor does not report per-turn token usage

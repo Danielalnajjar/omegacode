@@ -188,6 +188,7 @@ export class ClaudeWorker implements Worker {
     let observedUsage: AgentUsage | undefined
     let usageIsPartial = false
     let terminalResult: Extract<SDKMessage, { type: "result" }> | undefined
+    let assistantDiagnostic: string | undefined
     let subscriptionRejected = false
     let stalledError: AgentError | undefined
     let stream: AsyncIterator<SDKMessage> | undefined
@@ -254,18 +255,28 @@ export class ClaudeWorker implements Worker {
           // Subagent (Task) messages relay through the same stream with parent_tool_use_id set —
           // keep them out of the recovery bookkeeping (progress events still flow below).
           const topLevel = message.parent_tool_use_id == null
+          const messageUsage = usageFromResult({ usage: m.usage })
           // Best-effort usage for the no-result recovery path (a result message supersedes this).
           // The SDK repeats one API message across consecutive assistant events with the same
           // (final) usage, so count each id once; cost stays 0 — only a result message knows it.
           if (topLevel && typeof m.id === "string" && m.id !== lastUsageId) {
             lastUsageId = m.id
-            streamUsage = addUsage(streamUsage, usageFromResult({ usage: m.usage }))
+            streamUsage = addUsage(streamUsage, messageUsage)
             if (!anyResult && m.usage != null) {
               observedUsage = streamUsage
               usageIsPartial = true
             }
           }
-          for (const block of asBlocks(m.content)) {
+          const blocks = asBlocks(m.content)
+          if (message.error && messageUsage.inputTokens === 0 && messageUsage.outputTokens === 0) {
+            // The CLI can send a local refusal as an assistant message before any model work.
+            if (topLevel) {
+              const diagnostics = blocks.flatMap(block => block.type === "text" && typeof block.text === "string" ? [block.text] : [])
+              assistantDiagnostic = [message.error, ...diagnostics].join(": ")
+            }
+            continue
+          }
+          for (const block of blocks) {
             if (block.type === "text" && typeof block.text === "string") {
               if (topLevel) lastText = block.text
               ctx.onProgress({ kind: "text", text: block.text })
@@ -316,12 +327,13 @@ export class ClaudeWorker implements Worker {
       if (!lastResult) {
         // Free-form agents have no completion marker (partial text from a truncated stream must
         // not pass as an answer), so without the StructuredOutput evidence the error stays hard.
-        throw new AgentError({ provider: "claude-code", code: "no_result", message: `claude query ended without a result${usageIsPartial ? "; usage is a token lower bound; cost unknown" : ""}`, usage: observedUsage })
+        const detail = assistantDiagnostic ? `: ${assistantDiagnostic}` : ""
+        throw new AgentError({ provider: "claude-code", code: "no_result", message: `claude query ended without a result${detail}${usageIsPartial ? "; usage is a token lower bound; cost unknown" : ""}`, usage: observedUsage })
       }
       const usage = usageFromResult(lastResult)
       if (lastResult.subtype !== "success" || lastResult.is_error) {
         const detail = lastResult.subtype === "success" ? lastResult.result : lastResult.errors?.join("; ") ?? ""
-        throw claudeFailure(lastResult.subtype, `${subscriptionRejected ? "subscription allowance exhausted; " : ""}claude result: ${lastResult.subtype}: ${detail}`, usage)
+        throw claudeFailure(lastResult.subtype, `${subscriptionRejected ? "subscription allowance exhausted; " : ""}claude result: ${lastResult.subtype}: ${detail || assistantDiagnostic || ""}`, usage)
       }
       return {
         text: lastResult.result,
@@ -341,7 +353,8 @@ export class ClaudeWorker implements Worker {
       if (err instanceof AgentError || err instanceof AgentInterrupted) throw err
       const detail = err instanceof Error ? err.message : String(err)
       const resultDetail = terminalResult
-        ? `claude result: ${terminalResult.subtype}: ${terminalResult.subtype === "success" ? terminalResult.result : terminalResult.errors?.join("; ") ?? ""}; ` : ""
+        ? `claude result: ${terminalResult.subtype}: ${terminalResult.subtype === "success" ? terminalResult.result : terminalResult.errors?.join("; ") || assistantDiagnostic || ""}; `
+        : assistantDiagnostic ? `${assistantDiagnostic}; ` : ""
       const usageDetail = usageIsPartial ? "; usage is a token lower bound; cost unknown" : ""
       throw claudeFailure(
         terminalResult?.subtype ?? "sdk_error",

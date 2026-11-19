@@ -60,11 +60,12 @@ if (process.argv.includes("mcp") && process.argv.includes("list")) {
           const release = ${JSON.stringify(join(home, "release"))};
           const finish = () => {
             if (!fs.existsSync(release)) return;
-            fs.unwatchFile(release);
+            clearInterval(releasePoll);
             notify("item/agentMessage/delta", { delta: "sibling work finished" });
             notify("turn/completed", { turn: { status: "completed" } });
           };
-          fs.watchFile(release, { interval: 10 }, finish);
+          // watchFile can miss creation between the first existence check and its initial stat.
+          const releasePoll = setInterval(finish, 10);
           finish();
         }
       } else if (mode === "extract-disconnect" && !params.outputSchema) {

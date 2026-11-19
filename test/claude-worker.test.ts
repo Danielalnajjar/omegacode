@@ -571,6 +571,45 @@ test("a stream that ends without a result message → no_result (and is NOT re-w
   await assert.rejects(partial.runAgent(spec(), ctx()), (e) => e instanceof AgentError && e.code === "no_result")
 })
 
+test("a zero-token Claude sign-in error keeps its diagnostic without reporting model progress", async () => {
+  const usage = { input_tokens: 0, output_tokens: 0 }
+  const refusal = {
+    type: "assistant",
+    error: "authentication_failed",
+    parent_tool_use_id: null,
+    message: { id: "synthetic", model: "<synthetic>", usage, content: [{ type: "text", text: "Please sign in first" }] },
+  }
+  for (const terminal of [[], [resultMsg({ subtype: "error_during_execution", errors: [], usage, total_cost_usd: 0 })]]) {
+    const context = ctx()
+    const worker = new ClaudeWorker({ queryFn: scripted([refusal, ...terminal]) })
+    const error = await worker.runAgent(spec(), context).catch(e => e)
+    assert.ok(error instanceof AgentError)
+    assert.equal(error.code, terminal.length ? "error_during_execution" : "no_result")
+    assert.equal(error.retryable, false)
+    assert.match(error.message, /authentication_failed: Please sign in first/)
+    assert.equal(error.usage?.inputTokens, 0)
+    assert.equal(error.usage?.outputTokens, 0)
+    assert.deepEqual(context.events, [])
+  }
+})
+
+test("a Claude assistant message with actual usage still reports model progress when marked with an error", async () => {
+  const context = ctx()
+  const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 7 }
+  const worker = new ClaudeWorker({ queryFn: scripted([
+    {
+      type: "assistant",
+      error: "max_output_tokens",
+      message: { id: "model", usage, content: [{ type: "text", text: "model work" }] },
+    },
+    resultMsg({ result: "model work", usage }),
+  ]) })
+  const result = await worker.runAgent(spec(), context)
+  assert.equal(result.status, "completed")
+  assert.equal(result.usage.inputTokens, 7)
+  assert.deepEqual(context.events, [{ kind: "text", text: "model work" }])
+})
+
 test("non-success result → AgentError with the subtype as code; retryable only for rate/overload shapes", async () => {
   async function failWith(subtype: string): Promise<AgentError> {
     const worker = new ClaudeWorker({ queryFn: scripted([resultMsg({ subtype })]) })

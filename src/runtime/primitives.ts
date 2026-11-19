@@ -90,6 +90,11 @@ export function checkProviderModelPair(provider: string | undefined, model: stri
   )
 }
 
+export interface StartCriticalAgent {
+  index?: number
+  failed: boolean
+}
+
 export interface RuntimeOpts {
   runId: string
   defaults: RunDefaults
@@ -101,9 +106,10 @@ export interface RuntimeOpts {
   seed: number
   baseTimeMs: number
   signal: AbortSignal
-  /** Reports the start of provider work, after any checkout preparation. */
-  onProviderDispatch?: (index: number, provider: AgentSpec["provider"]) => void
-  onProviderProgress?: () => void
+  observeStartCriticalAgent?: (agent: StartCriticalAgent) => void
+  /** Reports dispatch after checkout preparation; expire only this worker if startup stalls. */
+  onProviderDispatch?: (index: number, provider: AgentSpec["provider"], expire: () => void) => void
+  onProviderProgress?: (index: number) => void
   /** meta.phases, announced as pending phase events up front so the viewer shows the full plan. */
   declaredPhases?: Array<{ title: string; detail?: string }>
   /** The machines validated from meta.machines (ADR 0003). Absent: every agent is local. */
@@ -238,6 +244,7 @@ export class Runtime {
   }
 
   private phase(title: string): void {
+    if (this.o.signal.aborted) throw new AgentInterrupted()
     const t = String(title)
     this.currentPhase = { index: this.ensurePhase(t), title: t }
   }
@@ -366,12 +373,23 @@ export class Runtime {
   }
 
   private agent<T = string>(prompt: string, opts?: AgentOpts): Promise<T> {
+    const observeStartup = this.o.observeStartCriticalAgent
+    const startup: StartCriticalAgent | undefined = opts?.startCritical === true && observeStartup
+      ? { failed: false }
+      : undefined
+    if (startup) observeStartup?.(startup)
     // Track every agent() promise so the run loop can await settlement (an agent() launched without
     // `await` would otherwise reject after the body "completed" → unhandledRejection crash).
-    const p = this.agentImpl<T>(prompt, opts)
+    const p = this.agentImpl<T>(prompt, opts, startup)
     this.inFlight.add(p)
     const done = () => this.inFlight.delete(p)
-    p.then(done, done)
+    p.then(done, (error) => {
+      done()
+      if (startup && !isControlFlow(error)) {
+        startup.failed = true
+        observeStartup?.(startup)
+      }
+    })
     return p
   }
 
@@ -382,7 +400,8 @@ export class Runtime {
     }
   }
 
-  private async agentImpl<T = string>(prompt: string, opts?: AgentOpts): Promise<T> {
+  private async agentImpl<T = string>(prompt: string, opts?: AgentOpts, startup?: StartCriticalAgent): Promise<T> {
+    if (this.o.signal.aborted) throw new AgentInterrupted()
     // Synchronous prefix: chain the key off THIS branch's lineage + local index (concurrency-
     // invariant), then assign the display index (journal-stable, see below).
     const ctx = this.ctx()
@@ -417,6 +436,7 @@ export class Runtime {
     // truncates only its OWN transcript, and a cached replay's drilldown finds the original one.
     // Keys not in the journal allocate fresh indices past the journaled maximum (no collision).
     const index = this.o.loaded.indexByKey.get(key) ?? ++this.displayIndex
+    if (startup) startup.index = index
     const label = opts?.label ?? firstLine(spec.prompt)
     // opts.phase overrides the ambient phase() group for this call.
     const phaseRef = opts?.phase != null ? { index: this.ensurePhase(String(opts.phase)), title: String(opts.phase) } : this.currentPhase
@@ -475,6 +495,11 @@ export class Runtime {
       let rejectDeadline!: (reason: Error) => void
       const deadline = new Promise<never>((_resolve, reject) => { rejectDeadline = reject })
       void deadline.catch(() => {})
+      const expireAgent = (error: AgentError) => {
+        timeoutError = error
+        agentAbort.abort()
+        rejectDeadline(error)
+      }
       const onRunAbort = () => {
         agentAbort.abort()
         rejectDeadline(new AgentInterrupted())
@@ -491,14 +516,11 @@ export class Runtime {
         if (this.o.defaults.agentTimeoutMs > 0) {
           deadlineTimer = setTimeout(() => {
             if (this.o.signal.aborted) return onRunAbort()
-            timeoutError = new AgentError({
+            expireAgent(new AgentError({
               provider: spec.provider,
               code: "agent_timeout",
               message: `agent exceeded wall-clock limit of ${this.o.defaults.agentTimeoutMs}ms`,
-              retryable: false,
-            })
-            agentAbort.abort()
-            rejectDeadline(timeoutError)
+            }))
           }, this.o.defaults.agentTimeoutMs)
         }
         this.o.events.emit({ type: "agent", ...where, index, phaseIndex, phaseTitle, label, provider: spec.provider, model: spec.model, state: "running", startedAt })
@@ -580,7 +602,7 @@ export class Runtime {
         const noteProviderProgress = () => {
           if (sawProviderProgress) return
           sawProviderProgress = true
-          this.o.onProviderProgress?.()
+          this.o.onProviderProgress?.(index)
         }
         const workerCtx = {
           signal: agentAbort.signal,
@@ -652,7 +674,11 @@ export class Runtime {
             }
           },
         }
-        this.o.onProviderDispatch?.(index, spec.provider)
+        this.o.onProviderDispatch?.(index, spec.provider, () => expireAgent(new AgentError({
+          provider: spec.provider,
+          code: "agent_start_stalled",
+          message: "Start-critical agent did not reach authenticated provider work before its startup deadline.",
+        })))
         const prepared = runSpec.claudeProfile !== undefined && worker.prepareAgentCall
           ? await withinDeadline(worker.prepareAgentCall(runSpec, workerCtx))
           : undefined

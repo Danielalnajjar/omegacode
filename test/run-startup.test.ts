@@ -44,10 +44,14 @@ if (process.argv.includes("mcp") && process.argv.includes("list")) {
     else if (method === "turn/start") {
       reply({ turn: { id: "turn-" + id, status: "inProgress" } });
       const prompt = params.input[0].text;
-      if (prompt === "cached" || (mode === "progress" && prompt === "fresh")) {
+      if (prompt === "cached" || (mode === "progress" && prompt === "fresh")
+        || (mode === "serial" && prompt === "quiet")) {
         notify("item/agentMessage/delta", { delta: "actual model work" });
         notify("turn/completed", { turn: { status: "completed" } });
-      } else if (mode === "fail" || (mode === "handoff" && prompt === "fresh")) {
+      } else if (mode === "fail" || mode === "started-then-refused" || (mode === "handoff" && prompt === "fresh")) {
+        if (mode === "started-then-refused" && prompt === "fresh") {
+          notify("item/agentMessage/delta", { delta: "actual model work before failure" });
+        }
         notify("error", { error: { message: "provider rejected startup", codexErrorInfo: "usageLimitExceeded" } });
       } else if (mode === "late-success") {
         if (prompt === "fresh") {
@@ -56,11 +60,12 @@ if (process.argv.includes("mcp") && process.argv.includes("list")) {
           const release = ${JSON.stringify(join(home, "release"))};
           const finish = () => {
             if (!fs.existsSync(release)) return;
-            fs.unwatchFile(release);
+            clearInterval(releasePoll);
             notify("item/agentMessage/delta", { delta: "sibling work finished" });
             notify("turn/completed", { turn: { status: "completed" } });
           };
-          fs.watchFile(release, { interval: 10 }, finish);
+          // watchFile can miss creation between the first existence check and its initial stat.
+          const releasePoll = setInterval(finish, 10);
           finish();
         }
       } else if (mode === "extract-disconnect" && !params.outputSchema) {
@@ -84,6 +89,125 @@ if (process.argv.includes("mcp") && process.argv.includes("list")) {
   mode("fail")
   return { file, home, mode }
 }
+
+function startupCohort(t: TestContext) {
+  const fixture = setup(t)
+  writeFileSync(fixture.file, `
+    export const meta = { name: "import-audit", description: "two input probes and their summary" }
+    await agent("cached", { label: "setup" })
+    phase("Probe")
+    const probes = await parallel([
+      () => agent("fresh", { label: "Probe A", startCritical: true }).catch(() => null),
+      () => agent("quiet", { label: "Probe B", startCritical: true }).catch(() => null),
+    ])
+    return { probes, summary: await agent("cached", { label: "summary" }) }
+  `)
+  return fixture
+}
+
+test("two refused start-critical agents block a fresh workflow before its unmarked downstream agent", { skip: process.platform === "win32", timeout: 10_000 }, async (t) => {
+  const { file } = startupCohort(t)
+  const outcome = await runWorkflow({ file, quiet: true })
+  const terminal = await loadRunStatus(outcome.runId)
+  assert.equal(terminal?.status, "failed")
+  assert.equal(terminal.errorCode, "agent_start_stalled")
+  assert.match(terminal.error ?? "", /no start-critical agent reached authenticated provider work/i)
+  assert.equal(terminal.result, undefined)
+  assert.deepEqual(terminal.agents.map(({ label, state }) => [label, state]), [
+    ["setup", "done"], ["Probe A", "failed"], ["Probe B", "failed"],
+  ])
+})
+
+test("successful unmarked work does not mask a silent start-critical cohort", { skip: process.platform === "win32", timeout: 10_000 }, async (t) => {
+  const { file, mode } = startupCohort(t)
+  mode("silent")
+  const abort = new AbortController()
+  t.after(() => abort.abort())
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: Date.now() })
+  const waiting = new Set<number>()
+  const outcome = await runWorkflow({
+    file, quiet: true, signal: abort.signal,
+    onEvent(event) {
+      if (event.type === "agent" && event.phaseTitle === "Probe"
+        && event.inputTokens === 0 && event.outputTokens === 0) {
+        waiting.add(event.index)
+        if (waiting.size === 2) t.mock.timers.tick(300_000)
+      }
+    },
+  })
+  assert.equal(outcome.status, "failed")
+  assert.equal(outcome.errorCode, "agent_start_stalled")
+})
+
+test("a silent start-critical agent releases its only slot so a queued agent can start", { skip: process.platform === "win32", timeout: 10_000 }, async (t) => {
+  const { file, mode } = startupCohort(t)
+  mode("serial")
+  const abort = new AbortController()
+  t.after(() => abort.abort())
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: Date.now() })
+  const outcome = await runWorkflow({
+    file, quiet: true, signal: abort.signal, overrides: { concurrency: 1 },
+    onEvent(event) {
+      if (event.type === "agent" && event.label === "Probe A" && event.inputTokens === 0 && event.outputTokens === 0) {
+        t.mock.timers.tick(300_000)
+      }
+    },
+  })
+  assert.equal(outcome.status, "completed")
+  const terminal = await loadRunStatus(outcome.runId)
+  assert.deepEqual(terminal?.agents.map(({ label, state }) => [label, state]), [
+    ["setup", "done"], ["Probe A", "failed"], ["Probe B", "done"], ["summary", "done"],
+  ])
+})
+
+test("one start-critical agent's provider progress preserves downstream recovery", { skip: process.platform === "win32", timeout: 10_000 }, async (t) => {
+  const { file, mode } = startupCohort(t)
+  mode("started-then-refused")
+  const outcome = await runWorkflow({ file, quiet: true })
+  const terminal = await loadRunStatus(outcome.runId)
+  assert.equal(terminal?.status, "completed")
+  assert.equal(terminal.errorCode, undefined)
+  assert.deepEqual(terminal.result, { probes: [null, null], summary: "actual model work" })
+})
+
+test("all unmarked agents can fail on a fresh run without a typed startup failure", { skip: process.platform === "win32", timeout: 10_000 }, async (t) => {
+  const { file } = setup(t)
+  writeFileSync(file, `
+    export const meta = { name: "optional-sources", description: "best-effort input probes" }
+    return await parallel([() => agent("fresh"), () => agent("quiet")])
+  `)
+  const outcome = await runWorkflow({ file, quiet: true })
+  assert.equal(outcome.status, "completed")
+  assert.equal(outcome.errorCode, undefined)
+  assert.deepEqual(outcome.result, [null, null])
+})
+
+test("queued critical calls do not displace the ordinary startup watchdog", { skip: process.platform === "win32", timeout: 10_000 }, async (t) => {
+  const { file, mode } = setup(t)
+  mode("silent")
+  writeFileSync(file, `
+    export const meta = { name: "initial-probes", description: "queued initial probes" }
+    return await parallel([
+      () => agent("quiet", { label: "helper" }),
+      () => agent("fresh", { startCritical: true }),
+      () => agent("fresh", { startCritical: true }),
+    ])
+  `)
+  const abort = new AbortController()
+  t.after(() => abort.abort())
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: Date.now() })
+  const outcome = await runWorkflow({
+    file, quiet: true, signal: abort.signal, overrides: { concurrency: 1 },
+    onEvent(event) {
+      if (event.type === "agent" && event.label === "helper" && event.inputTokens === 0 && event.outputTokens === 0) {
+        t.mock.timers.tick(300_000)
+      }
+    },
+  })
+  assert.equal(outcome.status, "failed")
+  assert.equal(outcome.errorCode, "agent_start_stalled")
+  assert.match(outcome.error ?? "", /No agent made provider progress/)
+})
 
 test("a resumed fan-out that makes no progress fails, even when a previous lane is cached", { skip: process.platform === "win32", timeout: 10_000 }, async (t) => {
   const { file } = setup(t)

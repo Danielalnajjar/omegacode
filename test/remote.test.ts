@@ -11,6 +11,7 @@ import { dirname, join } from "node:path"
 import { PassThrough } from "node:stream"
 import { fileURLToPath } from "node:url"
 import { runWorkflow } from "../src/runtime/run.ts"
+import { loadRunStatus } from "../src/runtime/run-store.ts"
 import { Journal } from "../src/runtime/journal.ts"
 import { MachineError, resolveMachines, type LiveMachine, type MachineSources, type RemoteMachine } from "../src/remote/machines.ts"
 import { planMachines, RemoteWorker } from "../src/remote/agent.ts"
@@ -244,10 +245,14 @@ test("meta.machines must be a list of names", () => {
 
 test("an agent naming an undeclared machine aborts the run", async () => {
   await withFixture(async (f) => {
-    const file = workflow(f, `return await parallel([() => agent("commit:x.txt", { machine: "Off" })])`)
+    const file = workflow(f, `
+      const placement = { machine: "Off", startCritical: true }
+      return await parallel([() => agent("probe A", placement), () => agent("probe B", placement)])
+    `)
     const out = await runWorkflow({ file, quiet: true, overrides: { cwd: f.repo }, machineSources: f.sources, remoteTransport: f.transport })
     assert.equal(out.status, "failed")
     assert.match(out.error ?? "", /machine "Off" is not declared in meta\.machines/)
+    assert.equal(out.errorCode, undefined)
   })
 })
 
@@ -257,6 +262,24 @@ test("a provider the machine table does not list for that machine fails the agen
     const out = await runWorkflow({ file, quiet: true, overrides: { cwd: f.repo }, machineSources: f.sources, remoteTransport: f.transport })
     assert.equal(out.status, "completed")
     assert.deepEqual(out.result, [null])
+    assert.deepEqual(calls(f), [])
+  })
+})
+
+test("start-critical placement refusals block the first run before a downstream agent", { skip: process.platform === "win32" }, async () => {
+  await withFixture(async (f) => {
+    const file = workflow(f, `
+      const placement = { machine: "Far", provider: "claude-code", model: "x", startCritical: true }
+      await parallel([() => agent("probe A", placement), () => agent("probe B", placement)])
+      return await agent("summary", { machine: "Far" })
+    `)
+    const out = await runWorkflow({ file, quiet: true, overrides: { cwd: f.repo }, machineSources: f.sources, remoteTransport: f.transport })
+    assert.equal(out.status, "failed")
+    assert.equal(out.errorCode, "agent_start_stalled")
+    assert.equal(out.result, undefined)
+    const terminal = await loadRunStatus(out.runId)
+    assert.equal(terminal?.status, "failed")
+    assert.equal(terminal.errorCode, "agent_start_stalled")
     assert.deepEqual(calls(f), [])
   })
 })

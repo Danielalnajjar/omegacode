@@ -21,7 +21,7 @@ import {
   runDir,
   writeResult,
 } from "./journal.js"
-import { checkProviderModelPair, checkSpecEnum, Runtime } from "./primitives.js"
+import { checkProviderModelPair, checkSpecEnum, Runtime, type StartCriticalAgent } from "./primitives.js"
 import { parseWorkflow } from "./sandbox.js"
 import { TerminalRenderer } from "./progress.js"
 import { runInSandbox } from "./sandbox.js"
@@ -90,6 +90,7 @@ export interface RunOutcome {
 const HEARTBEAT_MS = 5000
 /** Over 3x the slowest observed healthy generation's first provider event (75s). */
 const STARTUP_STALL_MS = 5 * 60_000
+const CRITICAL_STARTUP_FAILURE = "Startup blocked: no start-critical agent reached authenticated provider work."
 
 export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   if (opts.runId && opts.resumeRunId) throw new Error("runId and resumeRunId are mutually exclusive")
@@ -150,15 +151,28 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
 
   const renderer = new TerminalRenderer({ enabled: !opts.quiet })
   const agentStates = new Map<number, AgentState>()
-  const providerStartupDeadlines = new Map<number, number>()
+  const providerStartups = new Map<number, { deadline: number; expire: () => void }>()
+  const startCriticalAgents = new Set<StartCriticalAgent>()
+  const ac = new AbortController()
   let sawProviderProgress = false
+  let sawCriticalProgress = false
+  let startupFailure: string | undefined
+  const failStartup = (message: string) => {
+    if (ac.signal.aborted) return
+    startupFailure = message
+    ac.abort()
+  }
+  const noteProviderProgress = (index: number) => {
+    sawProviderProgress = true
+    if ([...startCriticalAgents].some((agent) => agent.index === index)) sawCriticalProgress = true
+  }
   const countAgent: EventListener = (event) => {
     if (event.type !== "agent") return
     agentStates.set(event.index, event.state)
-    if (event.state !== "running") providerStartupDeadlines.delete(event.index)
+    if (event.state !== "running") providerStartups.delete(event.index)
     if (!event.cached && (event.state === "done"
       || (event.inputTokens ?? 0) > 0 || (event.outputTokens ?? 0) > 0)) {
-      sawProviderProgress = true
+      noteProviderProgress(event.index)
     }
   }
   const listeners: EventListener[] = [renderer.handle, countAgent]
@@ -179,7 +193,6 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     pathToClaudeCodeExecutable: opts.overrides?.pathToClaudeCodeExecutable,
   })
 
-  const ac = new AbortController()
   const onSig = () => ac.abort()
   process.once("SIGINT", onSig)
   process.once("SIGTERM", onSig)
@@ -202,10 +215,26 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     } catch {
       // best effort — never let heartbeat failure break a run
     }
-    if (!ac.signal.aborted && !sawProviderProgress && providerStartupDeadlines.size > 0
-      && [...providerStartupDeadlines.values()].every((deadline) => now >= deadline)) {
-      errorCode = "agent_start_stalled"
-      ac.abort()
+    if (ac.signal.aborted) return
+    let criticalStartupActive = false
+    if (!sawCriticalProgress) {
+      // Give each worker its own provider window. A silent worker must release
+      // its slot rather than canceling a sibling that is still queued.
+      for (const { index } of startCriticalAgents) {
+        if (index === undefined) continue
+        const startup = providerStartups.get(index)
+        if (!startup) continue
+        criticalStartupActive = true
+        if (now >= startup.deadline) {
+          providerStartups.delete(index)
+          startup.expire()
+        }
+      }
+    }
+    // A queued critical call does not displace the ordinary watchdog before dispatch.
+    if (!criticalStartupActive && !sawProviderProgress && providerStartups.size > 0
+      && [...providerStartups.values()].every(({ deadline }) => now >= deadline)) {
+      failStartup("No agent made provider progress before the active startup deadlines expired.")
     }
   }
   beat()
@@ -220,12 +249,19 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   const restartFailure = "All fresh agents failed on resume without any provider progress; inspect the agent errors."
   const runtime = new Runtime({
     runId, defaults, factory, journal, loaded, events, args: opts.args, seed, baseTimeMs, signal: ac.signal, declaredPhases: parsed.meta.phases,
-    onProviderDispatch: (index, provider) => {
+    observeStartCriticalAgent: opts.resumeRunId === undefined ? (agent) => {
+      startCriticalAgents.add(agent)
+      // A workflow can catch individual failures; the engine still owns required startup.
+      if (agent.failed && !sawCriticalProgress && [...startCriticalAgents].every((member) => member.failed)) {
+        failStartup(CRITICAL_STARTUP_FAILURE)
+      }
+    } : undefined,
+    onProviderDispatch: (index, provider, expire) => {
       // Muse's max-reasoning turns can be silent past the ordinary startup limit.
       const limit = provider === "muse" ? MUSE_DEFAULT_STALL_TIMEOUT_MS : STARTUP_STALL_MS
-      providerStartupDeadlines.set(index, Date.now() + limit)
+      providerStartups.set(index, { deadline: Date.now() + limit, expire })
     },
-    onProviderProgress: () => { sawProviderProgress = true },
+    onProviderProgress: noteProviderProgress,
     machines,
     remote: { transport: remoteTransport, fake: modes.fake, claudeModel: opts.overrides?.claudeModel ?? (defaults.provider === "claude-code" ? defaults.model : undefined) },
   })
@@ -254,10 +290,11 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     // A workflow rejection can race live siblings. Only a settled attempt
     // establishes that no fresh agent made progress.
     await runtime.settle()
-    if (errorCode === "agent_start_stalled") {
+    if (startupFailure !== undefined) {
       status = "failed"
       result = undefined
-      error = "No agent made provider progress before the active startup deadlines expired."
+      error = startupFailure
+      errorCode = "agent_start_stalled"
     } else if (status === "failed" && !ac.signal.aborted && allFreshAgentsFailed()) {
       errorCode = "agent_restart_failed"
       result = undefined

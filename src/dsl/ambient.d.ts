@@ -25,6 +25,7 @@ declare global {
 
   /** Options an author passes to `agent()`. All optional; defaults come from meta/config/CLI. */
   interface OmegacodeAgentBaseOpts {
+    startCritical?: boolean
     label?: string
     phase?: string
     effort?: OmegacodeEffort

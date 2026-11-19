@@ -36,6 +36,9 @@ export type ProviderModelPair =
 interface AgentOptsBase {
   label?: string
   phase?: string
+  /** Mark agents in the same initial startup cohort, dispatched together. On a fresh run,
+   * these agents get individual startup windows and the run fails if none starts. */
+  startCritical?: boolean
   effort?: Effort
   cwd?: string
   sandbox?: Sandbox

@@ -124,7 +124,7 @@ test("successful unmarked work does not mask a silent start-critical cohort", { 
   t.after(() => abort.abort())
   t.mock.timers.enable({ apis: ["Date", "setInterval"], now: Date.now() })
   const waiting = new Set<number>()
-  const pending = runWorkflow({
+  const outcome = await runWorkflow({
     file, quiet: true, signal: abort.signal,
     onEvent(event) {
       if (event.type === "agent" && event.phaseTitle === "Probe"
@@ -134,14 +134,8 @@ test("successful unmarked work does not mask a silent start-critical cohort", { 
       }
     },
   })
-  try {
-    const outcome = await Promise.race([pending, new Promise<null>((resolve) => setTimeout(() => resolve(null), 500))])
-    assert.equal(outcome?.status, "failed")
-    assert.equal(outcome.errorCode, "agent_start_stalled")
-  } finally {
-    abort.abort()
-    await pending
-  }
+  assert.equal(outcome.status, "failed")
+  assert.equal(outcome.errorCode, "agent_start_stalled")
 })
 
 test("a silent start-critical agent releases its only slot so a queued agent can start", { skip: process.platform === "win32", timeout: 10_000 }, async (t) => {
@@ -150,7 +144,7 @@ test("a silent start-critical agent releases its only slot so a queued agent can
   const abort = new AbortController()
   t.after(() => abort.abort())
   t.mock.timers.enable({ apis: ["Date", "setInterval"], now: Date.now() })
-  const pending = runWorkflow({
+  const outcome = await runWorkflow({
     file, quiet: true, signal: abort.signal, overrides: { concurrency: 1 },
     onEvent(event) {
       if (event.type === "agent" && event.label === "Probe A" && event.inputTokens === 0 && event.outputTokens === 0) {
@@ -158,17 +152,11 @@ test("a silent start-critical agent releases its only slot so a queued agent can
       }
     },
   })
-  try {
-    const outcome = await Promise.race([pending, new Promise<null>((resolve) => setTimeout(() => resolve(null), 500))])
-    assert.equal(outcome?.status, "completed")
-    const terminal = await loadRunStatus(outcome.runId)
-    assert.deepEqual(terminal?.agents.map(({ label, state }) => [label, state]), [
-      ["setup", "done"], ["Probe A", "failed"], ["Probe B", "done"], ["summary", "done"],
-    ])
-  } finally {
-    abort.abort()
-    await pending
-  }
+  assert.equal(outcome.status, "completed")
+  const terminal = await loadRunStatus(outcome.runId)
+  assert.deepEqual(terminal?.agents.map(({ label, state }) => [label, state]), [
+    ["setup", "done"], ["Probe A", "failed"], ["Probe B", "done"], ["summary", "done"],
+  ])
 })
 
 test("one start-critical agent's provider progress preserves downstream recovery", { skip: process.platform === "win32", timeout: 10_000 }, async (t) => {

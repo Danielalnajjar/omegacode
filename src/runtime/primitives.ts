@@ -383,9 +383,9 @@ export class Runtime {
     const p = this.agentImpl<T>(prompt, opts, startup)
     this.inFlight.add(p)
     const done = () => this.inFlight.delete(p)
-    p.then(done, () => {
+    p.then(done, (error) => {
       done()
-      if (startup) {
+      if (startup && !isControlFlow(error)) {
         startup.failed = true
         observeStartup?.(startup)
       }

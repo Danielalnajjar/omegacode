@@ -245,10 +245,14 @@ test("meta.machines must be a list of names", () => {
 
 test("an agent naming an undeclared machine aborts the run", async () => {
   await withFixture(async (f) => {
-    const file = workflow(f, `return await parallel([() => agent("commit:x.txt", { machine: "Off" })])`)
+    const file = workflow(f, `
+      const placement = { machine: "Off", startCritical: true }
+      return await parallel([() => agent("probe A", placement), () => agent("probe B", placement)])
+    `)
     const out = await runWorkflow({ file, quiet: true, overrides: { cwd: f.repo }, machineSources: f.sources, remoteTransport: f.transport })
     assert.equal(out.status, "failed")
     assert.match(out.error ?? "", /machine "Off" is not declared in meta\.machines/)
+    assert.equal(out.errorCode, undefined)
   })
 })
 

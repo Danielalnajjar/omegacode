@@ -101,7 +101,7 @@ export interface RuntimeOpts {
   seed: number
   baseTimeMs: number
   signal: AbortSignal
-  onAgentQueued?: (index: number, schema: AgentSpec["schema"]) => void
+  onAgentQueued?: (index: number, startCritical: boolean) => void
   /** Reports dispatch after checkout preparation; expire only this worker if startup stalls. */
   onProviderDispatch?: (index: number, provider: AgentSpec["provider"], expire: () => void) => void
   onProviderProgress?: (index: number) => void
@@ -385,6 +385,7 @@ export class Runtime {
   }
 
   private async agentImpl<T = string>(prompt: string, opts?: AgentOpts): Promise<T> {
+    if (this.o.signal.aborted) throw new AgentInterrupted()
     // Synchronous prefix: chain the key off THIS branch's lineage + local index (concurrency-
     // invariant), then assign the display index (journal-stable, see below).
     const ctx = this.ctx()
@@ -448,7 +449,7 @@ export class Runtime {
       return cached.result as T
     }
 
-    this.o.onAgentQueued?.(index, spec.schema)
+    this.o.onAgentQueued?.(index, opts?.startCritical === true)
     this.o.events.emit({
       type: "agent",
       ...where,
@@ -660,7 +661,7 @@ export class Runtime {
         this.o.onProviderDispatch?.(index, spec.provider, () => expireAgent(new AgentError({
           provider: spec.provider,
           code: "agent_start_stalled",
-          message: "Reviewer did not reach authenticated provider work before its startup deadline.",
+          message: "Start-critical agent did not reach authenticated provider work before its startup deadline.",
         })))
         const prepared = runSpec.claudeProfile !== undefined && worker.prepareAgentCall
           ? await withinDeadline(worker.prepareAgentCall(runSpec, workerCtx))

@@ -90,10 +90,7 @@ export interface RunOutcome {
 const HEARTBEAT_MS = 5000
 /** Over 3x the slowest observed healthy generation's first provider event (75s). */
 const STARTUP_STALL_MS = 5 * 60_000
-// The saved cycle review wave declares these identities in its output contract.
-const REVIEW_RECEIPT_SCHEMA = "workflow-cycle.adversarial-review-receipt.v1"
-const BLIND_REVIEW_LANES = new Set(["opus-a", "opus-b"])
-const REVIEW_STARTUP_FAILURE = "Review launch blocked: neither blind reviewer reached authenticated provider work."
+const CRITICAL_STARTUP_FAILURE = "Startup blocked: no start-critical agent reached authenticated provider work."
 
 export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   if (opts.runId && opts.resumeRunId) throw new Error("runId and resumeRunId are mutually exclusive")
@@ -155,10 +152,10 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   const renderer = new TerminalRenderer({ enabled: !opts.quiet })
   const agentStates = new Map<number, AgentState>()
   const providerStartups = new Map<number, { deadline: number; expire: () => void }>()
-  const reviewers = new Map<string, number>()
+  const startCriticalAgents = new Set<number>()
   const ac = new AbortController()
   let sawProviderProgress = false
-  let sawReviewerProgress = false
+  let sawCriticalProgress = false
   let startupFailure: string | undefined
   const failStartup = (message: string) => {
     if (ac.signal.aborted) return
@@ -167,7 +164,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   }
   const noteProviderProgress = (index: number) => {
     sawProviderProgress = true
-    if ([...reviewers.values()].includes(index)) sawReviewerProgress = true
+    if (startCriticalAgents.has(index)) sawCriticalProgress = true
   }
   const countAgent: EventListener = (event) => {
     if (event.type !== "agent") return
@@ -177,11 +174,10 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
       || (event.inputTokens ?? 0) > 0 || (event.outputTokens ?? 0) > 0)) {
       noteProviderProgress(event.index)
     }
-    // Abort before the saved recipe can catch both failures and launch its packet worker.
-    if (event.state === "failed" && !sawReviewerProgress
-      && reviewers.size === BLIND_REVIEW_LANES.size
-      && [...reviewers.values()].every((index) => agentStates.get(index) === "failed")) {
-      failStartup(REVIEW_STARTUP_FAILURE)
+    // An authored workflow can catch failure and continue; the required startup cohort cannot.
+    if (event.state === "failed" && startCriticalAgents.has(event.index) && !sawCriticalProgress
+      && [...startCriticalAgents].every((index) => agentStates.get(index) === "failed")) {
+      failStartup(CRITICAL_STARTUP_FAILURE)
     }
   }
   const listeners: EventListener[] = [renderer.handle, countAgent]
@@ -225,11 +221,11 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
       // best effort — never let heartbeat failure break a run
     }
     if (ac.signal.aborted) return
-    if (reviewers.size > 0) {
-      if (sawReviewerProgress) return
-      // Give each lane its own provider window. A silent lane must release
+    if (startCriticalAgents.size > 0) {
+      if (sawCriticalProgress) return
+      // Give each worker its own provider window. A silent worker must release
       // its slot rather than canceling a sibling that is still queued.
-      for (const index of reviewers.values()) {
+      for (const index of startCriticalAgents) {
         const startup = providerStartups.get(index)
         if (startup && now >= startup.deadline) {
           providerStartups.delete(index)
@@ -253,12 +249,8 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   const restartFailure = "All fresh agents failed on resume without any provider progress; inspect the agent errors."
   const runtime = new Runtime({
     runId, defaults, factory, journal, loaded, events, args: opts.args, seed, baseTimeMs, signal: ac.signal, declaredPhases: parsed.meta.phases,
-    onAgentQueued: opts.resumeRunId === undefined ? (index, schema) => {
-      const properties = schema?.properties as { schema?: { const?: unknown }; lane?: { const?: unknown } } | undefined
-      const lane = properties?.lane?.const
-      if (properties?.schema?.const === REVIEW_RECEIPT_SCHEMA && typeof lane === "string" && BLIND_REVIEW_LANES.has(lane)) {
-        reviewers.set(lane, index)
-      }
+    onAgentQueued: opts.resumeRunId === undefined ? (index, startCritical) => {
+      if (startCritical) startCriticalAgents.add(index)
     } : undefined,
     onProviderDispatch: (index, provider, expire) => {
       // Muse's max-reasoning turns can be silent past the ordinary startup limit.

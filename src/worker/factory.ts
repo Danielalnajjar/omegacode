@@ -7,6 +7,7 @@ import { OpencodeWorker } from "./opencode.js"
 import { PiWorker } from "./pi.js"
 import { MuseWorker } from "./muse.js"
 import { GrokWorker } from "./grok.js"
+import { CursorAcpWorker } from "./cursor-acp.js"
 import type { CodexExecutionProfileName } from "./codex-profile.js"
 
 export interface FactoryOpts {
@@ -21,6 +22,7 @@ export interface FactoryOpts {
   piBin?: string
   museBin?: string
   grokBin?: string
+  cursorAcpBin?: string
 }
 
 export class DefaultWorkerFactory implements WorkerFactory {
@@ -60,6 +62,8 @@ export class DefaultWorkerFactory implements WorkerFactory {
         return new MuseWorker({ bin: this.opts.museBin })
       case "grok":
         return new GrokWorker({ bin: this.opts.grokBin })
+      case "acp-cursor":
+        return new CursorAcpWorker({ bin: this.opts.cursorAcpBin })
       default: {
         // Exhaustive: a new ProviderId must be handled here, and an unknown runtime value
         // must fail loudly instead of silently routing to a billed provider.

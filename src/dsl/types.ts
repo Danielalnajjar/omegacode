@@ -5,7 +5,7 @@ import type { MuseExecutionProfileName } from "../worker/muse-profile.js"
 import type { Models } from "./models.js"
 
 /** The closed set of backend providers. Model strings stay open — each backend is authoritative. */
-export const PROVIDER_IDS = ["codex", "claude-code", "opencode", "pi", "grok", "muse"] as const
+export const PROVIDER_IDS = ["codex", "claude-code", "opencode", "pi", "grok", "muse", "acp-cursor"] as const
 export type ProviderId = (typeof PROVIDER_IDS)[number]
 
 /** read-only: no writes; workspace-write: write within cwd; danger-full-access: unrestricted. */

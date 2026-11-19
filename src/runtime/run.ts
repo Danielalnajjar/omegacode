@@ -49,6 +49,7 @@ export interface RunOverrides {
   piBin?: string
   museBin?: string
   grokBin?: string
+  cursorAcpBin?: string
   /** Bound concurrent Codex thread initialization without reducing model-turn concurrency. */
   codexThreadStartConcurrency?: number
 }
@@ -186,6 +187,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     piBin: opts.overrides?.piBin ?? process.env.PI_BIN,
     museBin: opts.overrides?.museBin ?? process.env.MUSE_BIN,
     grokBin: opts.overrides?.grokBin ?? process.env.GROK_BIN,
+    cursorAcpBin: opts.overrides?.cursorAcpBin,
     codexThreadStartConcurrency: opts.overrides?.codexThreadStartConcurrency,
     // Claude-specific factory defaults (L5). Only forwarded when the provider is claude-code; a
     // per-call opts.model still overrides via AgentSpec.model.

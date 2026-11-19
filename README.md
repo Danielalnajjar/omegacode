@@ -193,10 +193,11 @@ Only Cursor's read-only Ask mode and unattended `approval: "never"` are
 supported; `maxTurns` is not supported. The client approves Cursor's native web search and fetch once
 per request, rejects other tool approvals, and provides no client filesystem,
 terminal, or MCP tools. Ask mode is enforced by Cursor, not an OS sandbox.
-The launch home and workspace must have no native Cursor MCP or
-private-inference config: Cursor can start its own servers before permission
-requests are possible. OmegaCode refuses these configurations without
-reading or modifying them.
+Project CLI settings are disabled. The launch home and workspace must have
+no native MCP, hooks, or private-inference config: Cursor can run these
+extensions outside ACP approvals. OmegaCode refuses the local files without
+reading or modifying them. Use an account without Cursor team-managed hooks;
+ACP does not expose a switch that disables them.
 Each attempt keeps Cursor's session and model selection in private scratch
 state. The CLI uses its existing host login or an inherited `CURSOR_API_KEY`;
 OmegaCode does not authenticate or pass through `CURSOR_AUTH_TOKEN`, which

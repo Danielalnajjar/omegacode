@@ -65,7 +65,7 @@ export class CursorAcpWorker implements Worker {
     const cwd = await realpath(spec.cwd).catch(() => {
       throw failure("invalid_config", "Cursor ACP could not resolve the working directory")
     })
-    await assertNoNativeMcp(cwd)
+    await assertNoNativeExtensions(cwd)
     if (ctx.signal.aborted) throw new AgentInterrupted()
 
     // Cursor persists ACP sessions and model selection. Keep each process's state
@@ -87,7 +87,7 @@ export class CursorAcpWorker implements Worker {
     const marker = `OMEGA_CURSOR_COMPLETE_${randomUUID()}`
     const client = new JsonRpcStdioClient({
       bin: this.opts.bin ?? process.env.CURSOR_AGENT_BIN ?? "cursor-agent",
-      args: ["--disable-auto-update", "acp"],
+      args: ["--disable-auto-update", "--disable-project-configs", "acp"],
       cwd,
       env,
       requestTimeoutMs: this.opts.requestTimeoutMs ?? SETUP_TIMEOUT_MS,
@@ -227,24 +227,32 @@ export class CursorAcpWorker implements Worker {
   }
 }
 
-/** Cursor opens native MCP clients at session/new, before any permission request or
- * Ask-mode selection. Inspect paths only; those configs can contain credentials. */
-async function assertNoNativeMcp(cwd: string): Promise<void> {
+/** Native MCP startup and hooks run outside ACP tool approvals. Inspect
+ * paths only, never config contents. */
+async function assertNoNativeExtensions(cwd: string): Promise<void> {
   if (process.env.CURSOR_PRIVATE_INFERENCE_CONFIG?.trim()) {
     throw failure("invalid_config", "Cursor ACP requires a launch without private-inference configuration")
   }
 
-  const configs = [
-    join(homedir(), ".cursor", "mcp.json"),
+  const managedDir = process.platform === "darwin" ? "/Library/Application Support/Cursor"
+    : process.platform === "win32" ? "C:\\ProgramData\\Cursor" : "/etc/cursor"
+  const configs = new Set([
     "/etc/cursor/private-inference.toml",
-    join(cwd, ".cursor", "mcp.json"),
-  ]
-  if (process.platform === "darwin") configs.push("/Library/Application Support/Cursor/private-inference.toml")
-  if (process.platform === "win32") configs.push("C:\\ProgramData\\Cursor\\private-inference.toml")
+    join(managedDir, "private-inference.toml"),
+    join(managedDir, "hooks.json"),
+  ])
+  const addNativeConfigs = (dir: string, project: boolean) => {
+    configs.add(join(dir, ".cursor", "mcp.json"))
+    configs.add(join(dir, ".cursor", "hooks.json"))
+    configs.add(join(dir, ".claude", "settings.json"))
+    if (project) configs.add(join(dir, ".claude", "settings.local.json"))
+  }
+  addNativeConfigs(homedir(), false)
+  addNativeConfigs(cwd, true)
   // Only the nearest git root is a project config source in the CLI.
   for (let dir = cwd; ; dir = dirname(dir)) {
     if (existsSync(join(dir, ".git"))) {
-      if (dir !== cwd) configs.push(join(dir, ".cursor", "mcp.json"))
+      addNativeConfigs(dir, true)
       break
     }
     const parent = dirname(dir)
@@ -258,7 +266,7 @@ async function assertNoNativeMcp(cwd: string): Promise<void> {
       const code = (err as NodeJS.ErrnoException).code
       if (code === "ENOENT" || code === "ENOTDIR") continue
     }
-    throw failure("invalid_config", "Cursor ACP requires a home and workspace without native MCP or private-inference configuration")
+    throw failure("invalid_config", "Cursor ACP requires a home and workspace without native MCP, hooks, or private-inference configuration")
   }
 }
 

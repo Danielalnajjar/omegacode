@@ -6,7 +6,7 @@ const fs = require("node:fs")
 const readline = require("node:readline")
 const path = require("node:path")
 
-assert.deepEqual(process.argv.slice(2), ["--disable-auto-update", "acp"])
+assert.deepEqual(process.argv.slice(2), ["--disable-auto-update", "--disable-project-configs", "acp"])
 const cwd = process.cwd()
 const scenario = fs.readFileSync(path.join(cwd, "scenario"), "utf8")
 const sessionId = `fixture-${process.pid}`

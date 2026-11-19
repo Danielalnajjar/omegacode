@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { promisify } from "node:util"
 import { fileURLToPath } from "node:url"
 import type { AgentSpec } from "../src/dsl/types.js"
@@ -53,6 +53,8 @@ test("CLI capabilities and parallel Cursor ACP research use the exact configured
   writeFileSync(join(dir, ".cursor", "mcp.json"), "fixture configuration outside the checkout")
   const project = join(dir, "project")
   mkdirSync(join(project, ".git"), { recursive: true })
+  mkdirSync(join(project, ".cursor"))
+  writeFileSync(join(project, ".cursor", "cli.json"), "{}")
   writeFileSync(join(project, "scenario"), "research")
   const env = { ...process.env, OMEGACODE_HOME: join(dir, "omega-home"), CURSOR_AGENT_BIN: bin,
     CURSOR_AUTH_TOKEN: "fixture-not-a-credential" }
@@ -116,12 +118,17 @@ test("Cursor ACP rejects writable sandbox requests before spawn", posixOnly, asy
   assert.deepEqual(records(), [])
 })
 
-for (const scope of ["home", "workspace"] as const) {
-  test(`Cursor ACP refuses native MCP configuration before launch: ${scope}`, posixOnly, async (t) => {
+for (const [scope, file] of [
+  ["home", ".cursor/mcp.json"],
+  ["workspace", ".cursor/mcp.json"],
+  ["home", ".cursor/hooks.json"],
+  ["workspace", ".claude/settings.local.json"],
+]) {
+  test(`Cursor ACP refuses native extension configuration before launch: ${scope} ${file}`, posixOnly, async (t) => {
     const { dir, home, worker, spec, records } = setup(t, "research")
-    const config = join(scope === "home" ? home : dir, ".cursor")
-    mkdirSync(config)
-    writeFileSync(join(config, "mcp.json"), "fixture configuration; must not be read")
+    const config = join(scope === "home" ? home : dir, file)
+    mkdirSync(dirname(config), { recursive: true })
+    writeFileSync(config, "fixture configuration; must not be read")
     await assert.rejects(worker.runAgent(spec, { signal: new AbortController().signal, onProgress() {} }),
       { code: "invalid_config", message: /without native MCP/ })
     assert.deepEqual(records(), [])

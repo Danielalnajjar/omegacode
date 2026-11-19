@@ -103,7 +103,7 @@ export interface RuntimeOpts {
   signal: AbortSignal
   /** Reports the start of provider work, after any checkout preparation. */
   onProviderDispatch?: (index: number, provider: AgentSpec["provider"]) => void
-  onProviderProgress?: () => void
+  onProviderProgress?: (index: number) => void
   /** meta.phases, announced as pending phase events up front so the viewer shows the full plan. */
   declaredPhases?: Array<{ title: string; detail?: string }>
   /** The machines validated from meta.machines (ADR 0003). Absent: every agent is local. */
@@ -238,6 +238,7 @@ export class Runtime {
   }
 
   private phase(title: string): void {
+    if (this.o.signal.aborted) throw new AgentInterrupted()
     const t = String(title)
     this.currentPhase = { index: this.ensurePhase(t), title: t }
   }
@@ -580,7 +581,7 @@ export class Runtime {
         const noteProviderProgress = () => {
           if (sawProviderProgress) return
           sawProviderProgress = true
-          this.o.onProviderProgress?.()
+          this.o.onProviderProgress?.(index)
         }
         const workerCtx = {
           signal: agentAbort.signal,

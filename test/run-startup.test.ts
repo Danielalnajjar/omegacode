@@ -47,7 +47,10 @@ if (process.argv.includes("mcp") && process.argv.includes("list")) {
       if (prompt === "cached" || (mode === "progress" && prompt === "fresh")) {
         notify("item/agentMessage/delta", { delta: "actual model work" });
         notify("turn/completed", { turn: { status: "completed" } });
-      } else if (mode === "fail" || (mode === "handoff" && prompt === "fresh")) {
+      } else if (mode === "fail" || mode === "started-then-refused" || (mode === "handoff" && prompt === "fresh")) {
+        if (mode === "started-then-refused" && prompt === "fresh") {
+          notify("item/agentMessage/delta", { delta: "actual model work before failure" });
+        }
         notify("error", { error: { message: "provider rejected startup", codexErrorInfo: "usageLimitExceeded" } });
       } else if (mode === "late-success") {
         if (prompt === "fresh") {
@@ -84,6 +87,72 @@ if (process.argv.includes("mcp") && process.argv.includes("list")) {
   mode("fail")
   return { file, home, mode }
 }
+
+function reviewWave(t: TestContext) {
+  const fixture = setup(t)
+  writeFileSync(fixture.file, `
+    export const meta = { name: "workflow-cycle-review-wave", description: "two blind reviewers and a packet" }
+    await agent("cached", { label: "setup" })
+    phase("Review")
+    const reviews = await parallel([
+      () => agent("fresh", { label: "review:opus-a" }).catch(() => null),
+      () => agent("quiet", { label: "review:opus-b" }).catch(() => null),
+    ])
+    phase("Packet")
+    return { reviews, packet: await agent("cached", { label: "packet:fable" }) }
+  `)
+  return fixture
+}
+
+test("a first review wave with two refused starts blocks before launching the packet", { skip: process.platform === "win32", timeout: 10_000 }, async (t) => {
+  const { file } = reviewWave(t)
+  const outcome = await runWorkflow({ file, quiet: true })
+  const terminal = await loadRunStatus(outcome.runId)
+  assert.equal(terminal?.status, "failed")
+  assert.equal(terminal.errorCode, "agent_start_stalled")
+  assert.match(terminal.error ?? "", /neither blind reviewer reached authenticated provider work/i)
+  assert.equal(terminal.result, undefined)
+  assert.deepEqual(terminal.agents.map(({ label, state }) => [label, state]), [
+    ["setup", "done"], ["review:opus-a", "failed"], ["review:opus-b", "failed"],
+  ])
+})
+
+test("successful non-reviewer work does not mask a silent reviewer startup", { skip: process.platform === "win32", timeout: 10_000 }, async (t) => {
+  const { file, mode } = reviewWave(t)
+  mode("silent")
+  const abort = new AbortController()
+  t.after(() => abort.abort())
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: Date.now() })
+  const waiting = new Set<number>()
+  const pending = runWorkflow({
+    file, quiet: true, signal: abort.signal,
+    onEvent(event) {
+      if (event.type === "agent" && event.phaseTitle === "Review"
+        && event.inputTokens === 0 && event.outputTokens === 0) {
+        waiting.add(event.index)
+        if (waiting.size === 2) t.mock.timers.tick(300_000)
+      }
+    },
+  })
+  try {
+    const outcome = await Promise.race([pending, new Promise<null>((resolve) => setTimeout(() => resolve(null), 500))])
+    assert.equal(outcome?.status, "failed")
+    assert.equal(outcome.errorCode, "agent_start_stalled")
+  } finally {
+    abort.abort()
+    await pending
+  }
+})
+
+test("real reviewer progress preserves packet recovery even when neither reviewer finishes", { skip: process.platform === "win32", timeout: 10_000 }, async (t) => {
+  const { file, mode } = reviewWave(t)
+  mode("started-then-refused")
+  const outcome = await runWorkflow({ file, quiet: true })
+  const terminal = await loadRunStatus(outcome.runId)
+  assert.equal(terminal?.status, "completed")
+  assert.equal(terminal.errorCode, undefined)
+  assert.deepEqual(terminal.result, { reviews: [null, null], packet: "actual model work" })
+})
 
 test("a resumed fan-out that makes no progress fails, even when a previous lane is cached", { skip: process.platform === "win32", timeout: 10_000 }, async (t) => {
   const { file } = setup(t)

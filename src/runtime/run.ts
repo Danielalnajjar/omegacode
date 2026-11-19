@@ -90,6 +90,9 @@ export interface RunOutcome {
 const HEARTBEAT_MS = 5000
 /** Over 3x the slowest observed healthy generation's first provider event (75s). */
 const STARTUP_STALL_MS = 5 * 60_000
+// The saved cycle review wave uses these stable IDs regardless of provider.
+const BLIND_REVIEW_LANES = new Set(["review:opus-a", "review:opus-b"])
+const REVIEW_STARTUP_FAILURE = "Review launch blocked: neither blind reviewer reached authenticated provider work."
 
 export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   if (opts.runId && opts.resumeRunId) throw new Error("runId and resumeRunId are mutually exclusive")
@@ -151,14 +154,36 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   const renderer = new TerminalRenderer({ enabled: !opts.quiet })
   const agentStates = new Map<number, AgentState>()
   const providerStartupDeadlines = new Map<number, number>()
+  const firstReviewWave = opts.resumeRunId === undefined && parsed.meta.name === "workflow-cycle-review-wave"
+  const reviewers = new Map<string, number>()
+  const ac = new AbortController()
   let sawProviderProgress = false
+  let sawReviewerProgress = false
+  let startupFailure: string | undefined
+  const failStartup = (message: string) => {
+    if (ac.signal.aborted) return
+    startupFailure = message
+    ac.abort()
+  }
+  const noteProviderProgress = (index: number) => {
+    sawProviderProgress = true
+    if ([...reviewers.values()].includes(index)) sawReviewerProgress = true
+  }
   const countAgent: EventListener = (event) => {
     if (event.type !== "agent") return
+    const reviewer = firstReviewWave && event.phaseTitle === "Review" && BLIND_REVIEW_LANES.has(event.label)
+    if (reviewer) reviewers.set(event.label, event.index)
     agentStates.set(event.index, event.state)
     if (event.state !== "running") providerStartupDeadlines.delete(event.index)
     if (!event.cached && (event.state === "done"
       || (event.inputTokens ?? 0) > 0 || (event.outputTokens ?? 0) > 0)) {
-      sawProviderProgress = true
+      noteProviderProgress(event.index)
+    }
+    // Abort before the saved recipe can catch both failures and launch its packet worker.
+    if (reviewer && event.state === "failed" && !sawReviewerProgress
+      && reviewers.size === BLIND_REVIEW_LANES.size
+      && [...reviewers.values()].every((index) => agentStates.get(index) === "failed")) {
+      failStartup(REVIEW_STARTUP_FAILURE)
     }
   }
   const listeners: EventListener[] = [renderer.handle, countAgent]
@@ -179,7 +204,6 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     pathToClaudeCodeExecutable: opts.overrides?.pathToClaudeCodeExecutable,
   })
 
-  const ac = new AbortController()
   const onSig = () => ac.abort()
   process.once("SIGINT", onSig)
   process.once("SIGTERM", onSig)
@@ -202,10 +226,16 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     } catch {
       // best effort — never let heartbeat failure break a run
     }
-    if (!ac.signal.aborted && !sawProviderProgress && providerStartupDeadlines.size > 0
+    const reviewerDeadlines = [...reviewers.values()]
+      .map((index) => providerStartupDeadlines.get(index))
+      .filter((deadline) => deadline !== undefined)
+    if (reviewerDeadlines.length > 0) {
+      if (!sawReviewerProgress && reviewerDeadlines.every((deadline) => now >= deadline)) {
+        failStartup(REVIEW_STARTUP_FAILURE)
+      }
+    } else if (!sawProviderProgress && providerStartupDeadlines.size > 0
       && [...providerStartupDeadlines.values()].every((deadline) => now >= deadline)) {
-      errorCode = "agent_start_stalled"
-      ac.abort()
+      failStartup("No agent made provider progress before the active startup deadlines expired.")
     }
   }
   beat()
@@ -225,7 +255,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
       const limit = provider === "muse" ? MUSE_DEFAULT_STALL_TIMEOUT_MS : STARTUP_STALL_MS
       providerStartupDeadlines.set(index, Date.now() + limit)
     },
-    onProviderProgress: () => { sawProviderProgress = true },
+    onProviderProgress: noteProviderProgress,
     machines,
     remote: { transport: remoteTransport, fake: modes.fake, claudeModel: opts.overrides?.claudeModel ?? (defaults.provider === "claude-code" ? defaults.model : undefined) },
   })
@@ -254,10 +284,11 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     // A workflow rejection can race live siblings. Only a settled attempt
     // establishes that no fresh agent made progress.
     await runtime.settle()
-    if (errorCode === "agent_start_stalled") {
+    if (startupFailure !== undefined) {
       status = "failed"
       result = undefined
-      error = "No agent made provider progress before the active startup deadlines expired."
+      error = startupFailure
+      errorCode = "agent_start_stalled"
     } else if (status === "failed" && !ac.signal.aborted && allFreshAgentsFailed()) {
       errorCode = "agent_restart_failed"
       result = undefined

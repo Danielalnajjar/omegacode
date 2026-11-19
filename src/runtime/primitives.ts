@@ -90,6 +90,11 @@ export function checkProviderModelPair(provider: string | undefined, model: stri
   )
 }
 
+export interface StartCriticalAgent {
+  index?: number
+  failed: boolean
+}
+
 export interface RuntimeOpts {
   runId: string
   defaults: RunDefaults
@@ -101,7 +106,7 @@ export interface RuntimeOpts {
   seed: number
   baseTimeMs: number
   signal: AbortSignal
-  onAgentQueued?: (index: number, startCritical: boolean) => void
+  observeStartCriticalAgent?: (agent: StartCriticalAgent) => void
   /** Reports dispatch after checkout preparation; expire only this worker if startup stalls. */
   onProviderDispatch?: (index: number, provider: AgentSpec["provider"], expire: () => void) => void
   onProviderProgress?: (index: number) => void
@@ -368,12 +373,23 @@ export class Runtime {
   }
 
   private agent<T = string>(prompt: string, opts?: AgentOpts): Promise<T> {
+    const observeStartup = this.o.observeStartCriticalAgent
+    const startup: StartCriticalAgent | undefined = opts?.startCritical === true && observeStartup
+      ? { failed: false }
+      : undefined
+    if (startup) observeStartup?.(startup)
     // Track every agent() promise so the run loop can await settlement (an agent() launched without
     // `await` would otherwise reject after the body "completed" → unhandledRejection crash).
-    const p = this.agentImpl<T>(prompt, opts)
+    const p = this.agentImpl<T>(prompt, opts, startup)
     this.inFlight.add(p)
     const done = () => this.inFlight.delete(p)
-    p.then(done, done)
+    p.then(done, () => {
+      done()
+      if (startup) {
+        startup.failed = true
+        observeStartup?.(startup)
+      }
+    })
     return p
   }
 
@@ -384,7 +400,7 @@ export class Runtime {
     }
   }
 
-  private async agentImpl<T = string>(prompt: string, opts?: AgentOpts): Promise<T> {
+  private async agentImpl<T = string>(prompt: string, opts?: AgentOpts, startup?: StartCriticalAgent): Promise<T> {
     if (this.o.signal.aborted) throw new AgentInterrupted()
     // Synchronous prefix: chain the key off THIS branch's lineage + local index (concurrency-
     // invariant), then assign the display index (journal-stable, see below).
@@ -420,6 +436,7 @@ export class Runtime {
     // truncates only its OWN transcript, and a cached replay's drilldown finds the original one.
     // Keys not in the journal allocate fresh indices past the journaled maximum (no collision).
     const index = this.o.loaded.indexByKey.get(key) ?? ++this.displayIndex
+    if (startup) startup.index = index
     const label = opts?.label ?? firstLine(spec.prompt)
     // opts.phase overrides the ambient phase() group for this call.
     const phaseRef = opts?.phase != null ? { index: this.ensurePhase(String(opts.phase)), title: String(opts.phase) } : this.currentPhase
@@ -449,7 +466,6 @@ export class Runtime {
       return cached.result as T
     }
 
-    this.o.onAgentQueued?.(index, opts?.startCritical === true)
     this.o.events.emit({
       type: "agent",
       ...where,

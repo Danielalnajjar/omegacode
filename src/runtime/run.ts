@@ -21,7 +21,7 @@ import {
   runDir,
   writeResult,
 } from "./journal.js"
-import { checkProviderModelPair, checkSpecEnum, Runtime } from "./primitives.js"
+import { checkProviderModelPair, checkSpecEnum, Runtime, type StartCriticalAgent } from "./primitives.js"
 import { parseWorkflow } from "./sandbox.js"
 import { TerminalRenderer } from "./progress.js"
 import { runInSandbox } from "./sandbox.js"
@@ -152,7 +152,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   const renderer = new TerminalRenderer({ enabled: !opts.quiet })
   const agentStates = new Map<number, AgentState>()
   const providerStartups = new Map<number, { deadline: number; expire: () => void }>()
-  const startCriticalAgents = new Set<number>()
+  const startCriticalAgents = new Set<StartCriticalAgent>()
   const ac = new AbortController()
   let sawProviderProgress = false
   let sawCriticalProgress = false
@@ -164,7 +164,7 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   }
   const noteProviderProgress = (index: number) => {
     sawProviderProgress = true
-    if (startCriticalAgents.has(index)) sawCriticalProgress = true
+    if ([...startCriticalAgents].some((agent) => agent.index === index)) sawCriticalProgress = true
   }
   const countAgent: EventListener = (event) => {
     if (event.type !== "agent") return
@@ -173,11 +173,6 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
     if (!event.cached && (event.state === "done"
       || (event.inputTokens ?? 0) > 0 || (event.outputTokens ?? 0) > 0)) {
       noteProviderProgress(event.index)
-    }
-    // An authored workflow can catch failure and continue; the required startup cohort cannot.
-    if (event.state === "failed" && startCriticalAgents.has(event.index) && !sawCriticalProgress
-      && [...startCriticalAgents].every((index) => agentStates.get(index) === "failed")) {
-      failStartup(CRITICAL_STARTUP_FAILURE)
     }
   }
   const listeners: EventListener[] = [renderer.handle, countAgent]
@@ -225,7 +220,8 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
       if (sawCriticalProgress) return
       // Give each worker its own provider window. A silent worker must release
       // its slot rather than canceling a sibling that is still queued.
-      for (const index of startCriticalAgents) {
+      for (const { index } of startCriticalAgents) {
+        if (index === undefined) continue
         const startup = providerStartups.get(index)
         if (startup && now >= startup.deadline) {
           providerStartups.delete(index)
@@ -249,8 +245,12 @@ export async function runWorkflow(opts: RunOptions): Promise<RunOutcome> {
   const restartFailure = "All fresh agents failed on resume without any provider progress; inspect the agent errors."
   const runtime = new Runtime({
     runId, defaults, factory, journal, loaded, events, args: opts.args, seed, baseTimeMs, signal: ac.signal, declaredPhases: parsed.meta.phases,
-    onAgentQueued: opts.resumeRunId === undefined ? (index, startCritical) => {
-      if (startCritical) startCriticalAgents.add(index)
+    observeStartCriticalAgent: opts.resumeRunId === undefined ? (agent) => {
+      startCriticalAgents.add(agent)
+      // A workflow can catch individual failures; the engine still owns required startup.
+      if (agent.failed && !sawCriticalProgress && [...startCriticalAgents].every((member) => member.failed)) {
+        failStartup(CRITICAL_STARTUP_FAILURE)
+      }
     } : undefined,
     onProviderDispatch: (index, provider, expire) => {
       // Muse's max-reasoning turns can be silent past the ordinary startup limit.

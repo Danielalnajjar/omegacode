@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto"
+import { existsSync } from "node:fs"
 import { lstat, mkdtemp, realpath, rm } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { dirname, join } from "node:path"
@@ -80,7 +82,9 @@ export class CursorAcpWorker implements Worker {
     let sessionId: string | undefined
     let prompting = false
     let text = ""
-    let promptError: AgentError | undefined
+    let lastChunk = ""
+    let sawAnswerBytes = false
+    const marker = `OMEGA_CURSOR_COMPLETE_${randomUUID()}`
     const client = new JsonRpcStdioClient({
       bin: this.opts.bin ?? process.env.CURSOR_AGENT_BIN ?? "cursor-agent",
       args: ["--disable-auto-update", "acp"],
@@ -89,7 +93,7 @@ export class CursorAcpWorker implements Worker {
       requestTimeoutMs: this.opts.requestTimeoutMs ?? SETUP_TIMEOUT_MS,
       stderrLimit: 0,
       onServerRequest: (id, method, params) => {
-        const frame = serverReply(id, method, params, prompting && !promptError ? sessionId : undefined)
+        const frame = serverReply(id, method, params, prompting ? sessionId : undefined)
         // If the pipe broke, the transport owns rejection of pending requests.
         try { client.send(frame) } catch (err) {
           if (!(err instanceof StdioTransportError)) throw err
@@ -97,7 +101,7 @@ export class CursorAcpWorker implements Worker {
         }
       },
       onNotification: (method, params) => {
-        if (!prompting || promptError || method !== "session/update") return
+        if (!prompting || method !== "session/update") return
         const message = asRecord(params)
         if (!message || message.sessionId !== sessionId) return
         const update = asRecord(message.update)
@@ -107,10 +111,13 @@ export class CursorAcpWorker implements Worker {
         }
         if (content?.type !== "text" || typeof content.text !== "string") return
         if (update?.sessionUpdate === "agent_message_chunk") {
-          promptError = backendFailure(content.text)
-          if (!promptError) {
-            text += content.text
-            ctx.onProgress({ kind: "text", text: content.text })
+          // Cursor sends backend errors through the same update as answer deltas.
+          // Do not publish answer text until we can tell which kind of turn ended.
+          lastChunk = content.text
+          text += lastChunk
+          if (!sawAnswerBytes && lastChunk.trim() && !lastChunk.startsWith("\n\n")) {
+            sawAnswerBytes = true
+            ctx.onProgress({ kind: "phase", phase: "cursor-response" })
           }
         } else if (update?.sessionUpdate === "agent_thought_chunk") {
           ctx.onProgress({ kind: "reasoning", text: content.text })
@@ -166,14 +173,21 @@ export class CursorAcpWorker implements Worker {
       prompting = true
       const result = asRecord(await client.request("session/prompt", {
         sessionId,
-        prompt: [{ type: "text", text: researchPrompt(spec) }],
+        prompt: [{ type: "text", text: researchPrompt(spec, marker) }],
       }, this.opts.promptTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS))
       prompting = false
-      if (promptError) throw promptError
       if (result?.stopReason !== "end_turn") {
         throw failure("turn_incomplete", "Cursor did not complete the ACP prompt turn")
       }
+      text = text.trimEnd()
+      const end = `\n${marker}`
+      if (!text) throw failure("no_result", "Cursor completed the ACP turn without assistant text")
+      if (!text.endsWith(end)) {
+        throw backendFailure(lastChunk) ?? failure("provider_error", "Cursor did not return a verifiable complete answer")
+      }
+      text = text.slice(0, -end.length)
       if (!text.trim()) throw failure("no_result", "Cursor completed the ACP turn without assistant text")
+      ctx.onProgress({ kind: "text", text })
 
       let structured: unknown
       if (spec.schema) {
@@ -219,13 +233,18 @@ async function assertNoNativeMcp(cwd: string): Promise<void> {
   const configs = [
     join(homedir(), ".cursor", "mcp.json"),
     "/etc/cursor/private-inference.toml",
+    join(cwd, ".cursor", "mcp.json"),
   ]
   if (process.platform === "darwin") configs.push("/Library/Application Support/Cursor/private-inference.toml")
   if (process.platform === "win32") configs.push("C:\\ProgramData\\Cursor\\private-inference.toml")
-  // The CLI uses the git root when one exists, otherwise the process cwd.
+  // Only the nearest git root is a project config source in the CLI.
   for (let dir = cwd; ; dir = dirname(dir)) {
-    configs.push(join(dir, ".cursor", "mcp.json"))
-    if (dirname(dir) === dir) break
+    if (existsSync(join(dir, ".git"))) {
+      if (dir !== cwd) configs.push(join(dir, ".cursor", "mcp.json"))
+      break
+    }
+    const parent = dirname(dir)
+    if (dirname(parent) === parent) break
   }
 
   for (const path of configs) {
@@ -254,12 +273,13 @@ function backendFailure(chunk: string): AgentError | undefined {
   return undefined
 }
 
-function researchPrompt(spec: AgentSpec): string {
+function researchPrompt(spec: AgentSpec, marker: string): string {
   return [
     "Research the task below in read-only mode.",
     spec.instructions,
     spec.prompt,
-    spec.schema && `Return only a JSON value conforming to this JSON Schema:\n${JSON.stringify(spec.schema)}`,
+    spec.schema && `Write the answer as a single JSON value conforming to this JSON Schema:\n${JSON.stringify(spec.schema)}`,
+    `After the complete answer, add this exact final line, with no formatting or text after it:\n${marker}`,
   ].filter(Boolean).join("\n\n")
 }
 

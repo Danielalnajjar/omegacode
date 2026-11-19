@@ -201,8 +201,10 @@ Each attempt keeps Cursor's session and model selection in private scratch
 state. The CLI uses its existing host login or an inherited `CURSOR_API_KEY`;
 OmegaCode does not authenticate or pass through `CURSOR_AUTH_TOKEN`, which
 would write to the login store. Missing authentication is `auth_required`.
-The normal workflow schema validation and corrective retry apply to JSON
-returned as text. The ACP prompt has a 30-minute request deadline in addition
+Cursor can stream backend errors as assistant text. OmegaCode verifies an
+internal completion marker before publishing the answer and removes it from
+the returned text. The normal schema validation and corrective retry apply to
+JSON answers. The ACP prompt has a 30-minute request deadline in addition
 to the workflow's agent timeout. Cursor does not report per-turn token usage
 on this wire.
 

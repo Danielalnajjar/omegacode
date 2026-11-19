@@ -37,8 +37,8 @@ function setup(t: TestContext, scenario: string) {
     cwd: dir, provider: "acp-cursor", model: "grok-4.7", effort: "medium",
     sandbox: "read-only", approval: "never", prompt: "Inspect the fixture",
   }
-  const records = () => readdirSync(dir).filter(name => name.endsWith(".jsonl")).map(name =>
-    readFileSync(join(dir, name), "utf8").trim().split("\n").map(line => JSON.parse(line)))
+  const records = (cwd = dir) => readdirSync(cwd).filter(name => name.endsWith(".jsonl")).map(name =>
+    readFileSync(join(cwd, name), "utf8").trim().split("\n").map(line => JSON.parse(line)))
   const assertClean = (record: ReturnType<typeof records>[number]) => {
     assert.equal(existsSync(record[0].config), false, "scratch state was removed")
     assert.throws(() => process.kill(record[0].pid, 0), { code: "ESRCH" }, "fixture process exited")
@@ -48,12 +48,18 @@ function setup(t: TestContext, scenario: string) {
 
 test("CLI capabilities and parallel Cursor ACP research use the exact configured model and return validated JSON", posixOnly, async (t) => {
   const { dir, records, assertClean } = setup(t, "research")
+  // A clean launch home can serve a checkout inside a different user's tree.
+  mkdirSync(join(dir, ".cursor"))
+  writeFileSync(join(dir, ".cursor", "mcp.json"), "fixture configuration outside the checkout")
+  const project = join(dir, "project")
+  mkdirSync(join(project, ".git"), { recursive: true })
+  writeFileSync(join(project, "scenario"), "research")
   const env = { ...process.env, OMEGACODE_HOME: join(dir, "omega-home"), CURSOR_AGENT_BIN: bin,
     CURSOR_AUTH_TOKEN: "fixture-not-a-credential" }
-  const flags = { cwd: dir, env, timeout: 20_000 }
+  const flags = { cwd: project, env, timeout: 20_000 }
   const { stdout: caps } = await exec(process.execPath, ["--import", register, cli, "capabilities", "--json"], flags)
   assert.ok(JSON.parse(caps).providers.includes("acp-cursor"))
-  assert.deepEqual(records(), [], "capabilities did not spawn the fixture")
+  assert.deepEqual(records(project), [], "capabilities did not spawn the fixture")
 
   const workflow = join(dir, "research.workflow.js")
   writeFileSync(workflow, `
@@ -66,7 +72,7 @@ test("CLI capabilities and parallel Cursor ACP research use the exact configured
   const { stdout } = await exec(process.execPath, ["--import", register, cli, "run", workflow,
     "--provider", "acp-cursor", "--model", "grok-4.7", "--effort", "medium", "--no-serve", "--json"], flags)
   assert.deepEqual(JSON.parse(stdout).result, [{ source: "fixture" }, { source: "fixture" }])
-  const runs = records()
+  const runs = records(project)
   assert.equal(runs.length, 2)
   assert.notEqual(runs[0][0].config, runs[1][0].config)
   for (const run of runs) {
@@ -122,7 +128,21 @@ for (const scope of ["home", "workspace"] as const) {
   })
 }
 
-for (const [scenario, code] of [["backend-auth", "auth_required"], ["backend-failure", "provider_error"]]) {
+test("Cursor ACP returns a plain answer without the internal completion marker", posixOnly, async (t) => {
+  const { worker, spec, records, assertClean } = setup(t, "plain")
+  const output: string[] = []
+  const result = await worker.runAgent(spec, {
+    signal: new AbortController().signal,
+    onProgress(progress) { if (progress.kind === "text") output.push(progress.text) },
+  })
+  assert.equal(result.text, "Read-only fixture result.")
+  assert.deepEqual(output, [result.text])
+  assertClean(records()[0])
+})
+
+for (const [scenario, code] of [
+  ["backend-auth", "auth_required"], ["backend-failure", "provider_error"], ["backend-unknown", "provider_error"],
+]) {
   test(`Cursor ACP treats error chunks before end_turn as sanitized failures: ${scenario}`, posixOnly, async (t) => {
     const { worker, spec, records, assertClean } = setup(t, scenario)
     const output: string[] = []
@@ -131,7 +151,7 @@ for (const [scenario, code] of [["backend-auth", "auth_required"], ["backend-fai
       onProgress(progress) { if (progress.kind === "text") output.push(progress.text) },
     }), (error: unknown) => error instanceof AgentError && error.code === code &&
       !error.retryable && !error.message.includes("fixture-private-diagnostic"))
-    assert.deepEqual(output, ["A partial answer."])
+    assert.deepEqual(output, [])
     assertClean(records()[0])
   })
 }

@@ -1046,8 +1046,9 @@ function isProviderProgress(event: WorkerProgress): boolean {
     case "usage":
       return hasProviderUsage(event.usage)
     case "phase":
-      // Codex only starts extraction once its working turn has completed.
-      return event.phase === "extraction"
+      // Codex has finished its working turn; Cursor has received answer bytes
+      // it must buffer before publishing the verified result.
+      return event.phase === "extraction" || event.phase === "cursor-response"
     default:
       // A local phase change or profile label does not mean the provider has begun work.
       return false

@@ -40,12 +40,18 @@ const send = (message) => console.log(JSON.stringify({ jsonrpc: "2.0", ...messag
 const update = (value) => send({ method: "session/update", params: { sessionId, update: value } })
 const message = (kind, text) => update({ sessionUpdate: kind, content: { type: "text", text } })
 let promptId
+let marker
 function permission(id, kind, toolCallId) {
   send({ id, method: "session/request_permission", params: { sessionId, toolCall: { kind, toolCallId }, options } })
 }
 function finish() {
-  message("agent_message_chunk", '{"source":')
-  message("agent_message_chunk", '"fixture"}')
+  if (scenario === "plain") message("agent_message_chunk", "Read-only fixture result.")
+  else {
+    message("agent_message_chunk", '{"source":')
+    message("agent_message_chunk", '"fixture"}')
+  }
+  message("agent_message_chunk", "\n")
+  message("agent_message_chunk", marker)
   send({ id: promptId, result: { stopReason: "end_turn" } })
 }
 
@@ -85,13 +91,21 @@ readline.createInterface({ input: process.stdin }).on("line", line => {
       assert.ok(Array.isArray(params.prompt) && params.prompt.length === 1)
       assert.equal(params.prompt[0].type, "text")
       assert.match(params.prompt[0].text, /Inspect the fixture/)
+      marker = params.prompt[0].text.split("\n").at(-1)
+      assert.match(marker, /^OMEGA_CURSOR_COMPLETE_[0-9a-f-]+$/)
       promptId = id
       message("agent_thought_chunk", "Checking source")
       if (scenario === "timeout" || scenario === "cancel") return
-      if (scenario === "backend-auth" || scenario === "backend-failure") {
+      if (scenario.startsWith("backend-")) {
         message("agent_message_chunk", "A partial answer.")
-        const error = scenario === "backend-auth" ? "[unauthenticated] " : ""
-        message("agent_message_chunk", `\n\nError: ${error}fixture-private-diagnostic`)
+        if (scenario === "backend-unknown") {
+          // Even if the model already wrote the marker, later provider text invalidates it.
+          message("agent_message_chunk", `\n${marker}`)
+          message("agent_message_chunk", "\n\nfixture-private-diagnostic")
+        } else {
+          const error = scenario === "backend-auth" ? "[unauthenticated] " : ""
+          message("agent_message_chunk", `\n\nError: ${error}fixture-private-diagnostic`)
+        }
         return reply({ stopReason: "end_turn" })
       }
       permission("web", "search", "web_search_fixture")

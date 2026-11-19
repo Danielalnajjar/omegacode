@@ -103,8 +103,7 @@ readline.createInterface({ input: process.stdin }).on("line", line => {
           message("agent_message_chunk", `\n${marker}`)
           message("agent_message_chunk", "\n\nfixture-private-diagnostic")
         } else {
-          const error = scenario === "backend-auth" ? "[unauthenticated] " : ""
-          message("agent_message_chunk", `\n\nError: ${error}fixture-private-diagnostic`)
+          message("agent_message_chunk", "\n\nError: [unauthenticated] fixture-private-diagnostic")
         }
         return reply({ stopReason: "end_turn" })
       }

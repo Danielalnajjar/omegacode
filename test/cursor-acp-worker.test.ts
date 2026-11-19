@@ -141,7 +141,7 @@ test("Cursor ACP returns a plain answer without the internal completion marker",
 })
 
 for (const [scenario, code] of [
-  ["backend-auth", "auth_required"], ["backend-failure", "provider_error"], ["backend-unknown", "provider_error"],
+  ["backend-auth", "auth_required"], ["backend-unknown", "provider_error"],
 ]) {
   test(`Cursor ACP treats error chunks before end_turn as sanitized failures: ${scenario}`, posixOnly, async (t) => {
     const { worker, spec, records, assertClean } = setup(t, scenario)

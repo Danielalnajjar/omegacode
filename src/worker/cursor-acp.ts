@@ -183,7 +183,11 @@ export class CursorAcpWorker implements Worker {
       const end = `\n${marker}`
       if (!text) throw failure("no_result", "Cursor completed the ACP turn without assistant text")
       if (!text.endsWith(end)) {
-        throw backendFailure(lastChunk) ?? failure("provider_error", "Cursor did not return a verifiable complete answer")
+        // The pinned CLI sends these auth notices as one message chunk.
+        if (lastChunk === "\n\nPlease sign in to continue" || lastChunk.startsWith("\n\nError: [unauthenticated] ")) {
+          throw failure("auth_required", AUTH_REQUIRED)
+        }
+        throw failure("provider_error", "Cursor did not return a verifiable complete answer")
       }
       text = text.slice(0, -end.length)
       if (!text.trim()) throw failure("no_result", "Cursor completed the ACP turn without assistant text")
@@ -256,21 +260,6 @@ async function assertNoNativeMcp(cwd: string): Promise<void> {
     }
     throw failure("invalid_config", "Cursor ACP requires a home and workspace without native MCP or private-inference configuration")
   }
-}
-
-/** Cursor 2026.11.19 sends these backend failures as single message chunks, then ends the turn. */
-function backendFailure(chunk: string): AgentError | undefined {
-  if (chunk === "\n\nPlease sign in to continue" || chunk.startsWith("\n\nError: [unauthenticated] ")) {
-    return failure("auth_required", AUTH_REQUIRED)
-  }
-  if (chunk.startsWith("\n\nError: ") || [
-    "\n\nUpgrade your plan to continue",
-    "\n\nAdd a payment method to continue",
-    "\n\nCheck your settings to continue",
-  ].includes(chunk)) {
-    return failure("provider_error", "Cursor backend could not complete the ACP prompt")
-  }
-  return undefined
 }
 
 function researchPrompt(spec: AgentSpec, marker: string): string {

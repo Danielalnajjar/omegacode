@@ -121,7 +121,6 @@ export class CursorAcpWorker implements Worker {
       client.start()
       const init = asRecord(await client.request("initialize", {
         protocolVersion: 1,
-        clientInfo: { name: "omegacode" },
         // Cursor otherwise advertises opaque expanded variant IDs without a
         // separate reasoning selector. Do not advertise client tools.
         clientCapabilities: { _meta: { parameterizedModelPicker: true } },

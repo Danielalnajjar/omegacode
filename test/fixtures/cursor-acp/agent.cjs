@@ -59,8 +59,10 @@ readline.createInterface({ input: process.stdin }).on("line", line => {
   const reply = value => send({ id, result: value })
   switch (method) {
     case "initialize":
-      assert.equal(params.protocolVersion, 1)
-      assert.deepEqual(params.clientCapabilities, { _meta: { parameterizedModelPicker: true } })
+      assert.deepEqual(params, {
+        protocolVersion: 1,
+        clientCapabilities: { _meta: { parameterizedModelPicker: true } },
+      })
       return reply({ protocolVersion: 1 })
     case "session/new":
       assert.equal(fs.realpathSync(params.cwd), cwd)

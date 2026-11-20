@@ -15,6 +15,7 @@ const persistentOnly = { skip: process.platform !== "darwin" && process.platform
 const bin = fileURLToPath(new URL("./fixtures/cursor-acp/agent.cjs", import.meta.url))
 const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url))
 const register = fileURLToPath(new URL("./register.mjs", import.meta.url))
+const persistentHost = fileURLToPath(new URL("./fixtures/cursor-acp/persistent-host.mjs", import.meta.url))
 const exec = promisify(execFile)
 
 function setup(t: TestContext, scenario: string) {
@@ -76,7 +77,8 @@ test("CLI capabilities and parallel Cursor ACP research work with a configured h
   const env = { ...process.env, OMEGACODE_HOME: join(dir, "omega-home"), CURSOR_AGENT_BIN: bin,
     CURSOR_AUTH_TOKEN: "fixture-not-a-credential" }
   const flags = { cwd: project, env, timeout: 20_000 }
-  const { stdout: caps } = await exec(process.execPath, ["--import", register, cli, "capabilities", "--json"], flags)
+  const cliArgs = ["--import", register, "--import", persistentHost, cli]
+  const { stdout: caps } = await exec(process.execPath, [...cliArgs, "capabilities", "--json"], flags)
   assert.ok(JSON.parse(caps).providers.includes("acp-cursor"))
   assert.deepEqual(records(project), [], "capabilities did not spawn the fixture")
 
@@ -88,7 +90,7 @@ test("CLI capabilities and parallel Cursor ACP research work with a configured h
       schema: { type: "object", properties: { source: { const: "fixture" } }, required: ["source"] }
     })))
   `)
-  const { stdout } = await exec(process.execPath, ["--import", register, cli, "run", workflow,
+  const { stdout } = await exec(process.execPath, [...cliArgs, "run", workflow,
     "--provider", "acp-cursor", "--model", "grok-4.7", "--effort", "medium", "--no-serve", "--json"], flags)
   const outcome = JSON.parse(stdout)
   assert.equal(outcome.agentCounts.failed, 0)
@@ -125,6 +127,8 @@ test("CLI capabilities and parallel Cursor ACP research work with a configured h
 
 test("Cursor ACP retains the absolute Linux login root without importing extensions", { skip: process.platform !== "linux" }, async (t) => {
   const { dir, home, worker, spec, records, assertClean } = setup(t, "research")
+  const exists = fs.existsSync
+  t.mock.method(fs, "existsSync", (path: fs.PathLike) => path !== "/etc/thread-vm/base-verified" && exists(path))
   const xdg = join(dir, "xdg-config")
   process.env.XDG_CONFIG_HOME = xdg
   for (const root of [join(home, ".cursor"), join(xdg, "cursor")]) {
@@ -141,7 +145,7 @@ test("Cursor ACP retains the absolute Linux login root without importing extensi
 })
 
 test("Cursor ACP keeps the managed Linux guest launcher on its original home", { skip: process.platform !== "linux" }, async (t) => {
-  const { dir, home, spec, records, assertClean } = setup(t, "research")
+  const { dir, home, worker: directWorker, spec, records, assertClean } = setup(t, "research")
   const exists = fs.existsSync
   t.mock.method(fs, "existsSync", (path: fs.PathLike) => path === "/etc/thread-vm/base-verified" || exists(path))
   const launcher = join(home, ".local", "bin", "thread-vm-cursor")
@@ -158,6 +162,7 @@ test("Cursor ACP keeps the managed Linux guest launcher on its original home", {
   mkdirSync(join(home, ".claude"))
   writeFileSync(join(home, ".claude", "settings.json"), "{}")
   await assert.rejects(worker.runAgent(spec, ctx), { code: "invalid_config", message: /without native MCP/ })
+  await assert.rejects(directWorker.runAgent(spec, ctx), { code: "invalid_config", message: /without native MCP/ })
   assert.equal(records(dir).length, 1)
 })
 

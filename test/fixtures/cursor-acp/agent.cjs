@@ -3,6 +3,7 @@
 // Wire shapes come from the installed bundles; the model catalog is a fixture.
 const assert = require("node:assert/strict")
 const fs = require("node:fs")
+const { homedir } = require("node:os")
 const readline = require("node:readline")
 const path = require("node:path")
 
@@ -17,7 +18,19 @@ assert.equal(process.env.CURSOR_DATA_DIR, config)
 assert.equal(process.env.CURSOR_AGENT_DISABLE_DEBUG_LOG, "1")
 assert.equal("CURSOR_AUTH_TOKEN" in process.env, false)
 function note(event) { fs.appendFileSync(record, JSON.stringify(event) + "\n") }
-note({ pid: process.pid, config, cwd })
+const home = homedir()
+const keychainsDir = path.join(home, "Library", "Keychains")
+const loginKeychain = path.join(keychainsDir, "login.keychain-db")
+note({
+  pid: process.pid, config, cwd, home, homeMode: fs.statSync(home).mode & 0o777,
+  nativeHomeFiles: [".claude/settings.json", ".cursor/hooks.json", ".cursor/mcp.json"]
+    .filter(file => fs.existsSync(path.join(home, file))),
+  hasConfigHooks: fs.existsSync(path.join(config, "hooks.json")),
+  keychainAlias: fs.lstatSync(loginKeychain, { throwIfNoEntry: false })?.isSymbolicLink()
+    ? fs.readlinkSync(loginKeychain) : undefined,
+  hasOtherKeychain: fs.existsSync(path.join(keychainsDir, "other.keychain-db")),
+  xdgConfigHome: process.env.XDG_CONFIG_HOME,
+})
 
 let mode = "agent"
 let model = "other-model"

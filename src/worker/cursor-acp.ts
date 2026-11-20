@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto"
-import { existsSync } from "node:fs"
-import { lstat, mkdtemp, realpath, rm } from "node:fs/promises"
+import fs from "node:fs"
+import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, isAbsolute, join } from "node:path"
 import { emptyUsage, type AgentResult, type AgentSpec } from "../dsl/types.js"
 import { encodeNotification, encodeResult, type JsonRpcId } from "./codex-protocol.js"
 import { AgentError, AgentInterrupted, type Worker, type WorkerContext } from "./index.js"
@@ -65,14 +65,20 @@ export class CursorAcpWorker implements Worker {
     const cwd = await realpath(spec.cwd).catch(() => {
       throw failure("invalid_config", "Cursor ACP could not resolve the working directory")
     })
-    await assertNoNativeExtensions(cwd)
     if (ctx.signal.aborted) throw new AgentInterrupted()
 
-    // Cursor persists ACP sessions and model selection. Keep each process's state
-    // private; the native CLI can still use inherited auth or its normal login.
+    // The managed guest launcher needs the original home to locate its generation;
+    // it isolates HOME itself before executing Cursor. Match Skills' guest marker.
+    const isolateHome = process.platform === "darwin"
+      || (process.platform === "linux" && !fs.existsSync("/etc/thread-vm/base-verified"))
+    // Cursor persists ACP sessions and model selection. It also reads user
+    // hooks and MCP from its process home, independently of these state dirs.
     const state = await mkdtemp(join(tmpdir(), "omega-cursor-acp-"))
+    const hostHome = homedir()
+    const launchHome = isolateHome ? state : hostHome
     const env: NodeJS.ProcessEnv = {
       ...process.env,
+      ...(isolateHome ? { HOME: launchHome } : {}),
       CURSOR_CONFIG_DIR: state,
       CURSOR_DATA_DIR: state,
       CURSOR_AGENT_DISABLE_DEBUG_LOG: "1",
@@ -136,6 +142,8 @@ export class CursorAcpWorker implements Worker {
     }
 
     try {
+      await assertNoNativeExtensions(cwd, launchHome, env)
+      if (isolateHome) await prepareNativeLogin(env, hostHome, launchHome)
       if (ctx.signal.aborted) throw new AgentInterrupted()
       ctx.signal.addEventListener("abort", cancel, { once: true })
       client.start()
@@ -227,10 +235,46 @@ export class CursorAcpWorker implements Worker {
   }
 }
 
+/** Preserve the pinned CLI's native login without importing its user extensions. */
+async function prepareNativeLogin(env: NodeJS.ProcessEnv, hostHome: string, launchHome: string): Promise<void> {
+  if (!isAbsolute(hostHome)) throw failure("invalid_config", "Cursor ACP requires an absolute host home for native login")
+  delete env.XDG_CACHE_HOME
+  delete env.XDG_DATA_HOME
+  delete env.XDG_STATE_HOME
+  if (process.platform === "linux") {
+    // File authentication uses XDG, while native extension loaders use HOME,
+    // the workspace or machine paths. CLI config/data already point to scratch.
+    if (!env.XDG_CONFIG_HOME || !isAbsolute(env.XDG_CONFIG_HOME)) env.XDG_CONFIG_HOME = join(hostHome, ".config")
+    return
+  }
+
+  delete env.XDG_CONFIG_HOME
+  delete env.CFFIXED_USER_HOME
+  const keychainPath = join("Library", "Keychains", "login.keychain-db")
+  const source = join(hostHome, keychainPath)
+  let keychain
+  try {
+    keychain = await fs.promises.lstat(source)
+  } catch (err) {
+    if (isMissingPath(err)) return
+    throw failure("invalid_config", "Cursor ACP could not inspect the standard login keychain")
+  }
+  if (!keychain.isFile() || keychain.uid !== process.getuid?.()) return
+  // Allow the system Keychain lookup to find the existing login file. Never
+  // copy it or expose the enclosing directory to the isolated home.
+  try {
+    const alias = join(launchHome, keychainPath)
+    await mkdir(dirname(alias), { recursive: true, mode: 0o700 })
+    await symlink(source, alias)
+  } catch {
+    throw failure("invalid_config", "Cursor ACP could not expose the standard login keychain to its private home")
+  }
+}
+
 /** Native MCP startup and hooks run outside ACP tool approvals. Inspect
  * paths only, never config contents. */
-async function assertNoNativeExtensions(cwd: string): Promise<void> {
-  if (process.env.CURSOR_PRIVATE_INFERENCE_CONFIG?.trim()) {
+async function assertNoNativeExtensions(cwd: string, launchHome: string, env: NodeJS.ProcessEnv): Promise<void> {
+  if (env.CURSOR_PRIVATE_INFERENCE_CONFIG?.trim()) {
     throw failure("invalid_config", "Cursor ACP requires a launch without private-inference configuration")
   }
 
@@ -247,27 +291,31 @@ async function assertNoNativeExtensions(cwd: string): Promise<void> {
     configs.add(join(dir, ".claude", "settings.json"))
     if (project) configs.add(join(dir, ".claude", "settings.local.json"))
   }
-  addNativeConfigs(homedir(), false)
+  addNativeConfigs(launchHome, false)
   addNativeConfigs(cwd, true)
   // Only the nearest git root is a project config source in the CLI.
   for (let dir = cwd; ; dir = dirname(dir)) {
-    if (existsSync(join(dir, ".git"))) {
+    if (fs.existsSync(join(dir, ".git"))) {
       addNativeConfigs(dir, true)
       break
     }
     const parent = dirname(dir)
-    if (dirname(parent) === parent) break
+    if (parent === dir) break
   }
 
   for (const path of configs) {
     try {
-      await lstat(path)
+      await fs.promises.lstat(path)
     } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code
-      if (code === "ENOENT" || code === "ENOTDIR") continue
+      if (isMissingPath(err)) continue
     }
     throw failure("invalid_config", "Cursor ACP requires a home and workspace without native MCP, hooks, or private-inference configuration")
   }
+}
+
+function isMissingPath(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException).code
+  return code === "ENOENT" || code === "ENOTDIR"
 }
 
 function researchPrompt(spec: AgentSpec, marker: string): string {

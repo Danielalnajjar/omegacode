@@ -193,13 +193,20 @@ Only Cursor's read-only Ask mode and unattended `approval: "never"` are
 supported; `maxTurns` is not supported. The client approves Cursor's native web search and fetch once
 per request, rejects other tool approvals, and provides no client filesystem,
 terminal, or MCP tools. Ask mode is enforced by Cursor, not an OS sandbox.
-Project CLI settings are disabled. The launch home and workspace must have
-no native MCP, hooks, or private-inference config: Cursor can run these
-extensions outside ACP approvals. OmegaCode refuses the local files without
-reading or modifying them. Use an account without Cursor team-managed hooks;
-ACP does not expose a switch that disables them.
+Project CLI settings are disabled. Cursor can run native MCP and hooks outside
+ACP approvals, so OmegaCode checks the launch home, workspace, and applicable
+machine-managed paths without reading or modifying config files. It refuses
+native extensions on those paths and private-inference overrides. Use an
+account without Cursor team-managed hooks; ACP cannot disable them.
+
 Each attempt keeps Cursor's session and model selection in private scratch
-state. The CLI uses its existing host login or an inherited `CURSOR_API_KEY`;
+state. On persistent macOS and Linux hosts, only the Cursor subprocess uses
+that scratch home. macOS links only the existing standard login keychain
+file, when present. Linux retains the native absolute XDG config root (or the
+original home's `.config`) for login; Cursor's own CLI config and data still
+point to scratch. Marked Linux thread VMs keep the managed launcher's
+original home, and other platforms retain the original-home check.
+The CLI uses its existing host login or an inherited `CURSOR_API_KEY`;
 OmegaCode does not authenticate or pass through `CURSOR_AUTH_TOKEN`, which
 would write to the login store. Missing authentication is `auth_required`.
 Cursor can stream backend errors as assistant text. OmegaCode verifies an

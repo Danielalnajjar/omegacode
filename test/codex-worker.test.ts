@@ -477,6 +477,7 @@ function makeServedWorker(
     threadId?: string
     initResult?: unknown
     threadReadResult?: unknown | ((params: any) => unknown)
+    threadReadError?: { code: number; message: string }
     onServerReq?: (child: FakeChild, req: any) => void
     onSpawn?: (env: NodeJS.ProcessEnv | undefined) => void
   } = {},
@@ -504,6 +505,9 @@ function makeServedWorker(
         if (req.method === "initialize") return child.pushLine({ jsonrpc: "2.0", id: req.id, result: opts.initResult ?? INIT_OK })
         if (req.method === "initialized") return
         if (req.method === "thread/start") return child.pushLine({ jsonrpc: "2.0", id: req.id, result: { thread: { id: threadId } } })
+        if (req.method === "thread/read" && opts.threadReadError) {
+          return child.pushLine({ jsonrpc: "2.0", id: req.id, error: opts.threadReadError })
+        }
         if (req.method === "thread/read") return child.pushLine({
           jsonrpc: "2.0",
           id: req.id,
@@ -1587,6 +1591,23 @@ test("concurrent root turns cannot cross-correlate child-role evidence", async (
   ])
   assert.deepEqual(results.map((result) => result.status), ["rejected", "fulfilled"])
   assert.ok(results[0].status === "rejected" && results[0].reason.code === "child_role_unproven")
+})
+
+test("a child unloaded before role and turn observation is missing proof, not a cleanup failure", async (t) => {
+  const context = ctx()
+  const { worker } = makeServedWorker(
+    (_req, reply) => {
+      reply(childSpawn("thread-1", "child-1", "v1"))
+      reply(turnEvent("thread-1", "completed"))
+    },
+    { threadReadError: { code: -32600, message: "thread not loaded: child-1" } },
+  )
+  t.after(() => worker.shutdown())
+  await assert.rejects(
+    worker.runAgent(spec({ codexChildRole: "librarian" }), context),
+    (error: unknown) => error instanceof AgentError && error.code === "child_role_unproven",
+  )
+  assert.ok(!context.events.some((event) => event.kind === "tool-result" && event.name === "codex-thread-cleanup"))
 })
 
 test("cancelling a role-proof turn interrupts its exact active root and child", async (t) => {

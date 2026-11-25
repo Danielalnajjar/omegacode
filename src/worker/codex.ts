@@ -1245,8 +1245,7 @@ export class CodexWorker implements Worker {
         if (!isObject(params) || typeof params.threadId !== "string") return
         this.threadCloseWaiters.get(params.threadId)?.()
         if (this.childRoleProofs.size > 0 && !this.childTurns.has(params.threadId)) {
-          this.childTurns.set(params.threadId, null)
-          this.childTurnWaiters.get(params.threadId)?.()
+          this.recordChildTurn(params.threadId, null)
         }
         return
       }
@@ -1403,7 +1402,11 @@ export class CodexWorker implements Worker {
   private observeChildTurn({ threadId, turn }: { threadId: string; turn: Record<string, unknown> }): void {
     if (this.childRoleProofs.size === 0 || this.turns.has(threadId)) return
     if (typeof turn.id !== "string" || typeof turn.status !== "string") return
-    this.childTurns.set(threadId, { id: turn.id, status: turn.status })
+    this.recordChildTurn(threadId, { id: turn.id, status: turn.status })
+  }
+
+  private recordChildTurn(threadId: string, turn: { id: string; status: string } | null): void {
+    this.childTurns.set(threadId, turn)
     this.childTurnWaiters.get(threadId)?.()
     for (const proof of this.childRoleProofs.values()) proof.check?.()
   }
@@ -1474,8 +1477,8 @@ export class CodexWorker implements Worker {
     try {
       return await this.request("thread/read", { threadId, includeTurns: false })
     } catch (error) {
-      if (error instanceof JsonRpcResponseError && error.rpc.code === -32600
-        && error.rpc.message === `thread not loaded: ${threadId}`) return undefined
+      if (error instanceof AgentError && error.code === "rpc_error"
+        && error.message === `thread not loaded: ${threadId}`) return undefined
       throw error
     }
   }

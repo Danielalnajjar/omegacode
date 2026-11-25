@@ -478,6 +478,7 @@ function makeServedWorker(
     initResult?: unknown
     threadReadResult?: unknown | ((params: any) => unknown)
     threadReadError?: { code: number; message: string }
+    turnStartError?: { code: number; message: string }
     onServerReq?: (child: FakeChild, req: any) => void
     onSpawn?: (env: NodeJS.ProcessEnv | undefined) => void
   } = {},
@@ -524,6 +525,7 @@ function makeServedWorker(
         })
         if (req.method === "turn/interrupt") return child.pushLine({ jsonrpc: "2.0", id: req.id, result: {} })
         if (req.method === "turn/start") {
+          if (opts.turnStartError) return child.pushLine({ jsonrpc: "2.0", id: req.id, error: opts.turnStartError })
           const idx = turnIndex++
           child.pushLine({ jsonrpc: "2.0", id: req.id, result: { turn: { id: `turn-${idx}` } } })
           turnScript(req, (obj) => child.pushLine(obj), idx)
@@ -1651,6 +1653,30 @@ test("cancelling a role proof interrupts late descendants before releasing the s
     "interrupt child-1", "unsubscribe child-1",
     "interrupt grandchild-1", "unsubscribe grandchild-1",
   ])
+})
+
+test("a rejected role-proof turn start releases the root without waiting for a turn event", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const context = ctx()
+  const released: string[] = []
+  const { worker } = makeServedWorker(() => assert.fail("turn must not start"), {
+    turnStartError: { code: -32001, message: "server overloaded" },
+    onServerReq: (_child, req) => {
+      if (req.method === "thread/unsubscribe") released.push(req.params.threadId)
+    },
+  })
+  t.after(() => worker.shutdown())
+
+  const failed = assert.rejects(
+    worker.runAgent(spec({ codexChildRole: "librarian" }), context),
+    (error: unknown) => error instanceof AgentError && error.code === "server_overloaded" && error.retryable,
+  )
+  await tick()
+  // An explicit server rejection never emits turn/started or turn/completed.
+  t.mock.timers.tick(15_000)
+  await failed
+  assert.deepEqual(released, ["thread-1"])
+  assert.ok(!context.events.some((event) => event.kind === "tool-result" && event.name === "codex-thread-cleanup"))
 })
 
 test("CodexWorker starts Codex provider threads as ephemeral by default", async () => {

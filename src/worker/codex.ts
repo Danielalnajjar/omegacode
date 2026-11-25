@@ -538,7 +538,7 @@ export class CodexWorker implements Worker {
   // Codex forwards each thread independently: the child can start or finish
   // before its parent's spawn item arrives. Buffer both sides during proofs.
   private readonly childSpawns = new Map<string, Set<string>>()
-  /** A null entry means a thread closed without a turn notification. */
+  /** A null entry means the thread closed or its turn never started. */
   private readonly roleThreadTurns = new Map<string, RoleThreadTurn | null>()
   private readonly roleTurnWaiters = new Map<string, () => void>()
   private readonly threadCloseWaiters = new Map<string, () => void>()
@@ -1009,7 +1009,14 @@ export class CodexWorker implements Worker {
           this.interruptTurn(threadId, state.turnId)
         }
       }).catch((err: unknown) => {
-        this.settleReject(threadId, this.toAgentError(err))
+        const error = this.toAgentError(err)
+        // An RPC rejection is not a lost acknowledgement. Record that no
+        // turn began so teardown can unsubscribe without waiting for one.
+        if (proof && this.childRoleProofs.get(threadId) === proof && !this.roleThreadTurns.has(threadId)
+          && (error.code === "rpc_error" || error.code === "server_overloaded")) {
+          this.recordRoleTurn(threadId, null)
+        }
+        this.settleReject(threadId, error)
       })
     })
     return p.finally(() => {

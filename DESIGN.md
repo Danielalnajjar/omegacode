@@ -410,8 +410,9 @@ small registry of live workers and lazily starts each provider the first time it
   `item/agentMessage/delta`, capture the final `agentMessage` item, resolve on **`turn/completed`**;
   surface `thread/tokenUsage/updated`. Worker threads are ephemeral by default. Threads with
   `codexChildRole` are always ephemeral, including their native children. Verify a direct child's
-  exact parent and role with a metadata-only `thread/read`, and prove completion from that child's
-  live turn notifications. Unsubscribe observed child threads and the root after completion,
+  exact parent and role with a metadata-only `thread/read` at spawn, before the child can close,
+  and prove completion from that child's live turn notifications. Collaboration v2 spawn must
+  specify `fork_turns: "none"` because no parent rollout exists. Unsubscribe observed child threads and the root after completion,
   failure, or cancellation. With `thread_unload_delay_secs=0`, OmegaCode waits for
   `thread/closed` and their MCP connections close while sibling calls and the app-server remain running.
 - Errors from `codexErrorInfo` (`UsageLimitExceeded`/429 → classified retryable; `ContextWindowExceeded`

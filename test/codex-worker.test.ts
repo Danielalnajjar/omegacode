@@ -1458,23 +1458,31 @@ function turnEvent(threadId: string, status: string, id = "first-turn") {
 for (const version of ["v1", "v2"] as const) {
   test(`CodexWorker proves a native ${version} child without persisting its provider subtree`, async (t) => {
     const methods: string[] = []
-    const threadStarts: unknown[] = []
+    const threadStarts: Array<{ ephemeral: boolean; developerInstructions: string }> = []
     const readRequests: unknown[] = []
     const releases: string[] = []
+    let childClosed = false
     const { worker } = makeServedWorker(
       (_req, reply) => {
         if (version === "v1") reply(turnEvent("child-1", "completed"))
         reply(childSpawn("thread-1", "child-1", version))
         reply(childSpawn("child-1", "grandchild-1", version))
+        reply(turnEvent("grandchild-1", "completed"))
+        if (version === "v1") {
+          childClosed = true
+          reply({ jsonrpc: "2.0", method: "thread/closed", params: { threadId: "child-1" } })
+        }
         reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
         reply(turnEvent("thread-1", "completed"))
       },
       {
         threadEphemeral: false,
-        threadReadResult: { thread: { id: "child-1", parentThreadId: "thread-1", agentRole: "librarian" } },
+        threadReadResult: () => childClosed
+          ? null
+          : { thread: { id: "child-1", parentThreadId: "thread-1", agentRole: "librarian" } },
         onServerReq: (child, req) => {
           methods.push(req.method)
-          if (req.method === "thread/start") threadStarts.push(req.params.ephemeral)
+          if (req.method === "thread/start") threadStarts.push(req.params)
           if (req.method === "thread/read") {
             readRequests.push(req.params)
             if (version === "v2") setImmediate(() => child.pushLine(turnEvent("child-1", "completed")))
@@ -1485,9 +1493,10 @@ for (const version of ["v1", "v2"] as const) {
     )
     t.after(() => worker.shutdown())
 
-    const result = await worker.runAgent(spec({ codexChildRole: "librarian" }), ctx())
+    const result = await worker.runAgent(spec({ codexChildRole: "librarian", instructions: "Remember the query." }), ctx())
     assert.equal(result.text, "done")
-    assert.deepEqual(threadStarts, [true])
+    assert.deepEqual(threadStarts.map((params) => params.ephemeral), [true])
+    assert.match(threadStarts[0].developerInstructions, /Remember the query\.[\s\S]*fork_turns to "none"/)
     assert.deepEqual(readRequests, [{ threadId: "child-1", includeTurns: false }])
     assert.ok(!methods.includes("thread/list") && !methods.includes("thread/delete"))
     assert.deepEqual(releases.slice(0, -1).sort(), ["child-1", "grandchild-1"])
@@ -1583,17 +1592,21 @@ test("concurrent root turns cannot cross-correlate child-role evidence", async (
 test("cancelling a role-proof turn interrupts its exact active root and child", async (t) => {
   const controller = new AbortController()
   const interrupted: unknown[] = []
-  const released: string[] = []
+  const releaseOrder: string[] = []
   const { worker } = makeServedWorker(
     (_req, reply) => {
       reply(childSpawn("thread-1", "child-1"))
-      reply(turnEvent("child-1", "inProgress", "child-turn"))
       controller.abort()
+      // The server has not attached the child listener when the root aborts.
+      setImmediate(() => reply(turnEvent("child-1", "inProgress", "child-turn")))
     },
     {
       onServerReq: (_child, req) => {
-        if (req.method === "turn/interrupt") interrupted.push(req.params)
-        if (req.method === "thread/unsubscribe") released.push(req.params.threadId)
+        if (req.method === "turn/interrupt") {
+          interrupted.push(req.params)
+          releaseOrder.push(`interrupt ${req.params.threadId}`)
+        }
+        if (req.method === "thread/unsubscribe") releaseOrder.push(`unsubscribe ${req.params.threadId}`)
       },
     },
   )
@@ -1603,7 +1616,7 @@ test("cancelling a role-proof turn interrupts its exact active root and child", 
     { threadId: "thread-1", turnId: "turn-0" },
     { threadId: "child-1", turnId: "child-turn" },
   ])
-  assert.deepEqual(released, ["child-1", "thread-1"])
+  assert.deepEqual(releaseOrder, ["interrupt thread-1", "interrupt child-1", "unsubscribe child-1", "unsubscribe thread-1"])
 })
 
 test("CodexWorker starts Codex provider threads as ephemeral by default", async () => {

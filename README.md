@@ -98,8 +98,10 @@ Provider-native options stay deliberately provider-specific:
   agent then loads from the selected home. The viewer shows that profile's authored subscription
   name, not the stable id.
 - Codex: `codexChildRole` verifies an exact native child role and completed turn without saving
-  the provider threads; `codexWebSearch` is `"disabled"`, `"cached"`, or `"live"`;
-  and `codexNetworkAccess` controls network access inside read-only/workspace-write sandboxes.
+  the provider threads. With Codex collaboration v2, pass `fork_turns: "none"` to `spawn_agent`
+  and include the necessary context in the child message; there is no saved history to inherit.
+  `codexWebSearch` is `"disabled"`, `"cached"`, or `"live"`, and `codexNetworkAccess` controls
+  network access inside read-only/workspace-write sandboxes.
   `codexPermissions` selects a non-empty named permission profile in the caller-owned Codex
   configuration (Codex 0.153.4+). It replaces legacy sandbox fields on thread and every turn;
   the profile owns filesystem and network policy, so it cannot accompany `codexNetworkAccess`.

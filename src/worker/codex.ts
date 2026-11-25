@@ -499,7 +499,13 @@ interface ChildRoleProof {
   role: string
   roleReads: Map<string, Promise<boolean | AgentError>>
   cancel: AbortController
+  rootTurnRequested: boolean
   check?: () => void
+}
+
+interface RoleThreadTurn {
+  id: string
+  status: string
 }
 
 export class CodexWorker implements Worker {
@@ -533,8 +539,8 @@ export class CodexWorker implements Worker {
   // before its parent's spawn item arrives. Buffer both sides during proofs.
   private readonly childSpawns = new Map<string, Set<string>>()
   /** A null entry means a thread closed without a turn notification. */
-  private readonly childTurns = new Map<string, { id: string; status: string } | null>()
-  private readonly childTurnWaiters = new Map<string, () => void>()
+  private readonly roleThreadTurns = new Map<string, RoleThreadTurn | null>()
+  private readonly roleTurnWaiters = new Map<string, () => void>()
   private readonly threadCloseWaiters = new Map<string, () => void>()
   private shuttingDown = false
 
@@ -641,6 +647,7 @@ export class CodexWorker implements Worker {
       role: spec.codexChildRole,
       roleReads: new Map(),
       cancel: new AbortController(),
+      rootTurnRequested: false,
     }
     if (childProof) this.childRoleProofs.set(threadId, childProof)
     try {
@@ -739,62 +746,71 @@ export class CodexWorker implements Worker {
       usage: extraction.usage,
     }
     } finally {
-      if (childProof) await this.releaseRoleProofChildren(threadId, childProof, ctx)
-      await this.releaseThread(threadId, ctx)
+      if (childProof) await this.releaseRoleProofTree(threadId, childProof, ctx)
+      else await this.releaseThread(threadId, ctx)
     }
   }
 
-  private async releaseRoleProofChildren(threadId: string, proof: ChildRoleProof, ctx: WorkerContext): Promise<void> {
+  private async releaseRoleProofTree(threadId: string, proof: ChildRoleProof, ctx: WorkerContext): Promise<void> {
     proof.cancel.abort()
-    // Root unsubscribe does not unload native children. Follow exact
-    // spawn edges, not the app-server's list of all loaded threads.
-    const subtree = new Set([threadId])
-    for (const parent of subtree) {
-      for (const child of this.childSpawns.get(parent) ?? []) subtree.add(child)
-      this.childSpawns.delete(parent)
+    const released = new Set<string>()
+    const releaseSubtree = async (parentId: string, waitForTurn: boolean): Promise<void> => {
+      if (released.has(parentId)) return
+      released.add(parentId)
+      // A parent can still announce a spawn during cancellation. Keep its
+      // subscription until its turn stops, then drain the observed edges.
+      await this.releaseThread(parentId, ctx, waitForTurn)
+      const children = [...(this.childSpawns.get(parentId) ?? [])]
+      await Promise.all(children.map((childId) => releaseSubtree(childId, true)))
     }
-    subtree.delete(threadId)
+
     try {
-      await Promise.all([...subtree].map((child) => this.releaseThread(child, ctx, true)))
+      await releaseSubtree(threadId, proof.rootTurnRequested)
     } finally {
       this.childRoleProofs.delete(threadId)
-      for (const child of subtree) this.childTurns.delete(child)
+      for (const id of released) {
+        this.childSpawns.delete(id)
+        this.roleThreadTurns.delete(id)
+      }
       if (this.childRoleProofs.size === 0) {
         this.childSpawns.clear()
-        this.childTurns.clear()
+        this.roleThreadTurns.clear()
       }
     }
   }
 
-  private async releaseThread(threadId: string, ctx: WorkerContext, nativeChild = false): Promise<void> {
+  private async releaseThread(threadId: string, ctx: WorkerContext, waitForTurn = false): Promise<void> {
     let resolveClosed!: () => void
     const closed = new Promise<void>((resolve) => { resolveClosed = resolve })
     let timeout!: ReturnType<typeof setTimeout>
+    let waitingFor = waitForTurn ? "a role-proof turn to stop" : "thread/closed after unsubscribe"
     const releaseController = new AbortController()
     const deadline = new Promise<never>((_, reject) => {
-      timeout = setTimeout(() => reject(new Error("timed out waiting for thread/closed after unsubscribe")), THREAD_RELEASE_TIMEOUT_MS)
+      timeout = setTimeout(() => reject(new Error(`timed out waiting for ${waitingFor}`)), THREAD_RELEASE_TIMEOUT_MS)
     })
     this.threadCloseWaiters.set(threadId, resolveClosed)
     try {
       const release = async () => {
-        if (nativeChild && !this.childTurns.has(threadId)) {
+        if (waitForTurn && !this.roleThreadTurns.has(threadId)) {
           // A spawn item can arrive before the server attaches its child listener.
           // Do not unsubscribe before it can deliver the exact active turn ID.
           const metadata = await this.readLiveChildThread(threadId)
           if (metadata === undefined || releaseController.signal.aborted) return
-          if (!this.childTurns.has(threadId)) {
-            const observed = new Promise<void>((resolve) => { this.childTurnWaiters.set(threadId, resolve) })
-            await untilAborted(observed, releaseController.signal)
-          }
+          await this.waitForRoleTurn(threadId, (turn) => turn !== undefined, releaseController.signal)
         }
-        const turn = nativeChild ? this.childTurns.get(threadId) : undefined
-        this.interruptTurn(threadId, turn?.status === "inProgress" ? turn.id : undefined)
+        const turn = waitForTurn ? this.roleThreadTurns.get(threadId) : undefined
+        if (turn?.status === "inProgress") {
+          this.interruptTurn(threadId, turn.id)
+          await this.waitForRoleTurn(threadId, (observed) => observed !== undefined && observed?.status !== "inProgress",
+            releaseController.signal)
+        }
+        waitingFor = "thread/closed after unsubscribe"
         const response = await this.request("thread/unsubscribe", { threadId })
         if (isObject(response) && response.status === "notLoaded") return
         if (isObject(response) && response.status === "notSubscribed") {
           // There is no subscription whose removal can trigger thread/closed.
           // For a native child this means the server did not release its runtime.
-          if (nativeChild) throw new Error("provider child is loaded but not subscribed")
+          if (waitForTurn) throw new Error("role-proof thread is loaded but not subscribed")
           return
         }
         await closed
@@ -812,7 +828,24 @@ export class CodexWorker implements Worker {
       clearTimeout(timeout)
       releaseController.abort()
       this.threadCloseWaiters.delete(threadId)
-      this.childTurnWaiters.delete(threadId)
+    }
+  }
+
+  private async waitForRoleTurn(
+    threadId: string,
+    ready: (turn: RoleThreadTurn | null | undefined) => boolean,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (ready(this.roleThreadTurns.get(threadId))) return
+    const observed = new Promise<void>((resolve) => {
+      this.roleTurnWaiters.set(threadId, () => {
+        if (ready(this.roleThreadTurns.get(threadId))) resolve()
+      })
+    })
+    try {
+      await untilAborted(observed, signal)
+    } finally {
+      this.roleTurnWaiters.delete(threadId)
     }
   }
 
@@ -928,6 +961,7 @@ export class CodexWorker implements Worker {
     requiredChildRole?: string,
   ): Promise<AgentResult> {
     const { threadId } = turnParams
+    const proof = this.childRoleProofs.get(threadId)
     let onAbort: (() => void) | undefined
     const p = new Promise<AgentResult>((resolve, reject) => {
       const state: TurnState = {
@@ -951,7 +985,7 @@ export class CodexWorker implements Worker {
       // long) ack→turn/completed gap that notifications must keep alive. (M30)
       this.touchTurn(state)
       onAbort = () => {
-        this.interruptTurn(threadId, state.turnId)
+        if (!proof) this.interruptTurn(threadId, state.turnId)
         this.settleReject(threadId, new AgentInterrupted())
       }
       if (ctx.signal.aborted) {
@@ -959,13 +993,21 @@ export class CodexWorker implements Worker {
         return
       }
       ctx.signal.addEventListener("abort", onAbort)
+      if (proof) {
+        proof.rootTurnRequested = true
+        this.roleThreadTurns.delete(threadId)
+      }
       this.request("turn/start", turnParams).then((result) => {
         if (state.turnId !== undefined || !isObject(result) || !isObject(result.turn)
           || typeof result.turn.id !== "string") return
         state.turnId = result.turn.id
-        // Abort can win before the server acknowledges the turn. Release
-        // waits for idle, so interrupt using the exact ID when it arrives.
-        if (ctx.signal.aborted) this.interruptTurn(threadId, state.turnId)
+        // A role proof's teardown owns interruption, including a start
+        // acknowledged after cancellation. Ordinary turns interrupt here.
+        if (proof && this.childRoleProofs.get(threadId) === proof) {
+          this.recordRoleTurn(threadId, { id: state.turnId, status: "inProgress" })
+        } else if (!proof && ctx.signal.aborted) {
+          this.interruptTurn(threadId, state.turnId)
+        }
       }).catch((err: unknown) => {
         this.settleReject(threadId, this.toAgentError(err))
       })
@@ -1244,8 +1286,9 @@ export class CodexWorker implements Worker {
       case "thread/closed": {
         if (!isObject(params) || typeof params.threadId !== "string") return
         this.threadCloseWaiters.get(params.threadId)?.()
-        if (this.childRoleProofs.size > 0 && !this.childTurns.has(params.threadId)) {
-          this.recordChildTurn(params.threadId, null)
+        const turn = this.roleThreadTurns.get(params.threadId)
+        if (this.childRoleProofs.size > 0 && (turn === undefined || turn?.status === "inProgress")) {
+          this.recordRoleTurn(params.threadId, null)
         }
         return
       }
@@ -1354,7 +1397,7 @@ export class CodexWorker implements Worker {
         if (!isTurnCompleted(params)) return
         const state = this.turns.get(params.threadId)
         if (state && typeof params.turn.id === "string") state.turnId = params.turn.id
-        else this.observeChildTurn(params)
+        this.observeRoleTurn(params)
         return
       }
       case "turn/completed": {
@@ -1364,7 +1407,7 @@ export class CodexWorker implements Worker {
           this.onTurnCompletedDrift(params)
           return
         }
-        this.observeChildTurn(params)
+        this.observeRoleTurn(params)
         this.onTurnCompleted(params)
         return
       }
@@ -1399,15 +1442,17 @@ export class CodexWorker implements Worker {
     }
   }
 
-  private observeChildTurn({ threadId, turn }: { threadId: string; turn: Record<string, unknown> }): void {
-    if (this.childRoleProofs.size === 0 || this.turns.has(threadId)) return
+  private observeRoleTurn({ threadId, turn }: { threadId: string; turn: Record<string, unknown> }): void {
+    if (this.childRoleProofs.size === 0 || (this.turns.has(threadId) && !this.childRoleProofs.has(threadId))) return
     if (typeof turn.id !== "string" || typeof turn.status !== "string") return
-    this.recordChildTurn(threadId, { id: turn.id, status: turn.status })
+    const state = this.turns.get(threadId)
+    if (state) state.turnId = turn.id
+    this.recordRoleTurn(threadId, { id: turn.id, status: turn.status })
   }
 
-  private recordChildTurn(threadId: string, turn: { id: string; status: string } | null): void {
-    this.childTurns.set(threadId, turn)
-    this.childTurnWaiters.get(threadId)?.()
+  private recordRoleTurn(threadId: string, turn: RoleThreadTurn | null): void {
+    this.roleThreadTurns.set(threadId, turn)
+    this.roleTurnWaiters.get(threadId)?.()
     for (const proof of this.childRoleProofs.values()) proof.check?.()
   }
 
@@ -1517,7 +1562,7 @@ export class CodexWorker implements Worker {
     const childCompleted = new Promise<boolean>((resolve) => {
       timeout = setTimeout(() => resolve(false), this.requestTimeoutMs || DEFAULT_REQUEST_TIMEOUT_MS)
       proof.check = () => {
-        const statuses = matchingChildren.map((id) => this.childTurns.get(id))
+        const statuses = matchingChildren.map((id) => this.roleThreadTurns.get(id))
         if (statuses.some((turn) => turn?.status === "completed")) resolve(true)
         else if (statuses.every((turn) => turn !== undefined && turn?.status !== "inProgress")) resolve(false)
       }
@@ -1588,7 +1633,7 @@ export class CodexWorker implements Worker {
     const state = this.turns.get(threadId)
     if (!state || state.settled) return
     // Best-effort interrupt so a half-alive server stops burning tokens.
-    this.interruptTurn(threadId, state.turnId)
+    if (!this.childRoleProofs.has(threadId)) this.interruptTurn(threadId, state.turnId)
     this.settleReject(
       threadId,
       new AgentError({

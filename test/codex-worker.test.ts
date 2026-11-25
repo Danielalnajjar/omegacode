@@ -1503,8 +1503,7 @@ for (const version of ["v1", "v2"] as const) {
     assert.match(threadStarts[0].developerInstructions, /Remember the query\.[\s\S]*fork_turns to "none"/)
     assert.deepEqual(readRequests, [{ threadId: "child-1", includeTurns: false }])
     assert.ok(!methods.includes("thread/list") && !methods.includes("thread/delete"))
-    assert.deepEqual(releases.slice(0, -1).sort(), ["child-1", "grandchild-1"])
-    assert.equal(releases.at(-1), "thread-1")
+    assert.deepEqual(releases, ["thread-1", "child-1", "grandchild-1"])
   })
 }
 
@@ -1532,8 +1531,11 @@ for (const scenario of ["absent", "failed", "restarted", "mismatched-role", "mis
             agentRole: scenario === "mismatched-role" ? "explorer" : "librarian",
           },
         },
-        onServerReq: (_child, req) => {
-          if (req.method === "turn/interrupt") interrupted.push(req.params)
+        onServerReq: (server, req) => {
+          if (req.method === "turn/interrupt") {
+            interrupted.push(req.params)
+            server.pushLine(turnEvent(req.params.threadId, "interrupted", req.params.turnId))
+          }
         },
       },
     )
@@ -1610,7 +1612,7 @@ test("a child unloaded before role and turn observation is missing proof, not a 
   assert.ok(!context.events.some((event) => event.kind === "tool-result" && event.name === "codex-thread-cleanup"))
 })
 
-test("cancelling a role-proof turn interrupts its exact active root and child", async (t) => {
+test("cancelling a role proof interrupts late descendants before releasing the subtree", async (t) => {
   const controller = new AbortController()
   const interrupted: unknown[] = []
   const releaseOrder: string[] = []
@@ -1622,10 +1624,16 @@ test("cancelling a role-proof turn interrupts its exact active root and child", 
       setImmediate(() => reply(turnEvent("child-1", "inProgress", "child-turn")))
     },
     {
-      onServerReq: (_child, req) => {
+      onServerReq: (server, req) => {
         if (req.method === "turn/interrupt") {
           interrupted.push(req.params)
           releaseOrder.push(`interrupt ${req.params.threadId}`)
+          if (req.params.threadId === "child-1") {
+            // The native spawn was already in flight when the child was interrupted.
+            server.pushLine(childSpawn("child-1", "grandchild-1"))
+            server.pushLine(turnEvent("grandchild-1", "inProgress", "grandchild-turn"))
+          }
+          server.pushLine(turnEvent(req.params.threadId, "interrupted", req.params.turnId))
         }
         if (req.method === "thread/unsubscribe") releaseOrder.push(`unsubscribe ${req.params.threadId}`)
       },
@@ -1636,8 +1644,13 @@ test("cancelling a role-proof turn interrupts its exact active root and child", 
   assert.deepEqual(interrupted, [
     { threadId: "thread-1", turnId: "turn-0" },
     { threadId: "child-1", turnId: "child-turn" },
+    { threadId: "grandchild-1", turnId: "grandchild-turn" },
   ])
-  assert.deepEqual(releaseOrder, ["interrupt thread-1", "interrupt child-1", "unsubscribe child-1", "unsubscribe thread-1"])
+  assert.deepEqual(releaseOrder, [
+    "interrupt thread-1", "unsubscribe thread-1",
+    "interrupt child-1", "unsubscribe child-1",
+    "interrupt grandchild-1", "unsubscribe grandchild-1",
+  ])
 })
 
 test("CodexWorker starts Codex provider threads as ephemeral by default", async () => {

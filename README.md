@@ -97,8 +97,8 @@ Provider-native options stay deliberately provider-specific:
   timeout twice, after 1 s and 2 s, for the same profile. The profile joins cache identity so it can accompany `claudeAgent`; the named
   agent then loads from the selected home. The viewer shows that profile's authored subscription
   name, not the stable id.
-- Codex: `codexChildRole` uses provider thread metadata to prove an exact native child role completed,
-  then deletes that temporary provider thread subtree; `codexWebSearch` is `"disabled"`, `"cached"`, or `"live"`;
+- Codex: `codexChildRole` verifies an exact native child role and completed turn without saving
+  the provider threads; `codexWebSearch` is `"disabled"`, `"cached"`, or `"live"`;
   and `codexNetworkAccess` controls network access inside read-only/workspace-write sandboxes.
   `codexPermissions` selects a non-empty named permission profile in the caller-owned Codex
   configuration (Codex 0.153.4+). It replaces legacy sandbox fields on thread and every turn;

@@ -34,8 +34,8 @@ import {
   isThreadItem,
   isTokenUsage,
   isTurnCompleted,
-  readListedChildRolePage,
-  hasReadCompletedChildRole,
+  readSpawnedChildIds,
+  matchesReadChildRole,
   readErrorNotificationThreadId,
   readErrorNotificationMessage,
   readErrorNotificationCode,
@@ -73,9 +73,7 @@ export interface CodexWorkerOpts {
    *  thread has received NO inbound frame (notification or approval request)
    *  for this long, instead of hanging forever. */
   turnStallTimeoutMs?: number
-  /** Start provider Codex threads as ephemeral by default. OmegaCode owns run
-   *  artifacts itself; persisting each worker as a normal Codex Desktop thread
-   *  creates sidebar noise without helping OmegaCode resume. */
+  /** Debug override for ordinary provider threads. Role-proof threads are always ephemeral. */
   threadEphemeral?: boolean
 }
 
@@ -107,10 +105,7 @@ export const DEFAULT_TURN_STALL_TIMEOUT_MS = 30 * 60_000
  *  with a text-complete transcript and no answer file. */
 export const DEFAULT_EXTRACTION_TURN_TIMEOUT_MS = 15 * 60_000
 
-/** Provider-side Codex threads are an implementation detail of an OmegaCode run.
- *  Keep ordinary calls ephemeral and unsubscribe after each agent. A codexChildRole
- *  call is temporarily durable because 0.149 does not list ephemeral child metadata;
- *  that exact subtree is deleted after role verification. */
+/** OmegaCode owns run artifacts; provider-side threads need not be persisted. */
 export const DEFAULT_THREAD_EPHEMERAL = true
 
 /** Keep thread initialization below the measured local app-server saturation
@@ -476,6 +471,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 /** Per-thread turn state accumulated while a turn streams. */
 interface TurnState {
   threadId: string
+  turnId?: string
   deltaText: string
   finalMessage?: string
   usage: AgentUsage
@@ -497,6 +493,11 @@ interface TurnState {
   requiredChildRole?: string
   /** Prevent duplicate turn/completed frames from issuing duplicate proof lookups. */
   childRoleVerificationStarted: boolean
+}
+
+interface ChildRoleProof {
+  cancel: AbortController
+  check?: () => void
 }
 
 export class CodexWorker implements Worker {
@@ -525,6 +526,11 @@ export class CodexWorker implements Worker {
   private serverUserAgent: string | null = null
   /** Active turns keyed by providerThreadId. */
   private readonly turns = new Map<string, TurnState>()
+  private readonly childRoleProofs = new Map<string, ChildRoleProof>()
+  // Codex forwards each thread independently: the child can start or finish
+  // before its parent's spawn item arrives. Buffer both sides during proofs.
+  private readonly childSpawns = new Map<string, Set<string>>()
+  private readonly childTurns = new Map<string, { id: string; status: string }>()
   private readonly threadCloseWaiters = new Map<string, () => void>()
   private shuttingDown = false
 
@@ -581,9 +587,7 @@ export class CodexWorker implements Worker {
         : { sandbox: toCodexSandboxMode(spec.sandbox) }),
       ...(spec.instructions ? { developerInstructions: spec.instructions } : {}),
       experimentalRawEvents: false,
-      // Codex 0.149 does not list child metadata for ephemeral threads.
-      // Role-proof calls are briefly persisted, verified, then deleted as an exact subtree.
-      ephemeral: spec.codexChildRole === undefined ? this.threadEphemeral : false,
+      ephemeral: spec.codexChildRole !== undefined || this.threadEphemeral,
       // Omega units are short packet-in / JSON-out jobs: keep every thread on
       // classic compaction even when ~/.codex/config.toml (or a model-catalog
       // default) enables Astra's experimental context management. Per-thread
@@ -623,6 +627,8 @@ export class CodexWorker implements Worker {
       })
     }
 
+    const childProof = spec.codexChildRole === undefined ? undefined : { cancel: new AbortController() }
+    if (childProof) this.childRoleProofs.set(threadId, childProof)
     try {
     // 2. Two-phase structured output — match the native Claude SDK behavior.
     //    A free-form WORKING turn (no schema → prose + tools, streamed to the
@@ -719,44 +725,62 @@ export class CodexWorker implements Worker {
       usage: extraction.usage,
     }
     } finally {
-      try {
-        if (spec.codexChildRole !== undefined) {
-          await this.request("thread/delete", { threadId })
-        } else {
-          // Codex rejects thread/delete for ephemeral threads. Unsubscribe the only
-          // app-server connection, then wait for its shutdown/MCP teardown notification.
-          let resolveClosed!: () => void
-          const threadClosed = new Promise<void>((resolve) => {
-            resolveClosed = resolve
-          })
-          let timeout!: ReturnType<typeof setTimeout>
-          const releaseDeadline = new Promise<never>((_, reject) => {
-            timeout = setTimeout(() => reject(new Error("timed out waiting for thread/closed after unsubscribe")), THREAD_RELEASE_TIMEOUT_MS)
-          })
-          this.threadCloseWaiters.set(threadId, () => {
-            this.threadCloseWaiters.delete(threadId)
-            resolveClosed()
-          })
-          try {
-            const release = this.request("thread/unsubscribe", { threadId }).then((response) => {
-              if (isObject(response) && response.status === "notLoaded") this.threadCloseWaiters.get(threadId)?.()
-              return threadClosed
-            })
-            await Promise.race([release, releaseDeadline])
-          } finally {
-            clearTimeout(timeout)
-            this.threadCloseWaiters.delete(threadId)
-          }
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        ctx.onProgress({
-          kind: "tool-result",
-          name: "codex-thread-cleanup",
-          output: `could not release provider thread ${threadId}: ${message}`,
-          isError: true,
-        })
-      }
+      if (childProof) await this.releaseRoleProofChildren(threadId, childProof, ctx)
+      await this.releaseThread(threadId, ctx)
+    }
+  }
+
+  private async releaseRoleProofChildren(threadId: string, proof: ChildRoleProof, ctx: WorkerContext): Promise<void> {
+    proof.cancel.abort()
+    this.childRoleProofs.delete(threadId)
+    // Root unsubscribe does not unload native children. Follow exact
+    // spawn edges, not the app-server's list of all loaded threads.
+    const subtree = new Set([threadId])
+    for (const parent of subtree) {
+      for (const child of this.childSpawns.get(parent) ?? []) subtree.add(child)
+      this.childSpawns.delete(parent)
+    }
+    subtree.delete(threadId)
+    const releases = [...subtree].map((child) => {
+      const turn = this.childTurns.get(child)
+      this.childTurns.delete(child)
+      return this.releaseThread(child, ctx, turn?.status === "inProgress" ? turn.id : undefined)
+    })
+    if (this.childRoleProofs.size === 0) {
+      this.childSpawns.clear()
+      this.childTurns.clear()
+    }
+    await Promise.all(releases)
+  }
+
+  private async releaseThread(threadId: string, ctx: WorkerContext, activeTurnId?: string): Promise<void> {
+    // Keep unsubscribe's ordinary bounded teardown even if an active child
+    // cannot be interrupted (it may have completed in the meantime).
+    this.interruptTurn(threadId, activeTurnId)
+    let resolveClosed!: () => void
+    const closed = new Promise<void>((resolve) => { resolveClosed = resolve })
+    let timeout!: ReturnType<typeof setTimeout>
+    const deadline = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => reject(new Error("timed out waiting for thread/closed after unsubscribe")), THREAD_RELEASE_TIMEOUT_MS)
+    })
+    this.threadCloseWaiters.set(threadId, resolveClosed)
+    try {
+      const release = this.request("thread/unsubscribe", { threadId }).then((response) => {
+        if (isObject(response) && response.status === "notLoaded") return
+        return closed
+      })
+      await Promise.race([release, deadline])
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      ctx.onProgress({
+        kind: "tool-result",
+        name: "codex-thread-cleanup",
+        output: `could not release provider thread ${threadId}: ${message}`,
+        isError: true,
+      })
+    } finally {
+      clearTimeout(timeout)
+      this.threadCloseWaiters.delete(threadId)
     }
   }
 
@@ -844,6 +868,15 @@ export class CodexWorker implements Worker {
     return inventory
   }
 
+  private interruptTurn(threadId: string, turnId: string | undefined): void {
+    if (turnId === undefined) return
+    try {
+      this.send(encodeRequest(this.client?.allocId() ?? 0, "turn/interrupt", { threadId, turnId }))
+    } catch {
+      // Best effort; abort or teardown still settles locally if the server is gone.
+    }
+  }
+
   private async readMcpInventoryEntries(cwd: string): Promise<CodexMcpInventoryEntry[]> {
     try {
       return parseCodexMcpInventory(await this.loadMcpInventory(cwd))
@@ -886,11 +919,7 @@ export class CodexWorker implements Worker {
       // long) ack→turn/completed gap that notifications must keep alive. (M30)
       this.touchTurn(state)
       onAbort = () => {
-        try {
-          this.send(encodeRequest(this.client?.allocId() ?? 0, "turn/interrupt", { threadId }))
-        } catch {
-          // child already gone; the reject below settles the turn anyway
-        }
+        this.interruptTurn(threadId, state.turnId)
         this.settleReject(threadId, new AgentInterrupted())
       }
       if (ctx.signal.aborted) {
@@ -898,7 +927,14 @@ export class CodexWorker implements Worker {
         return
       }
       ctx.signal.addEventListener("abort", onAbort)
-      this.request("turn/start", turnParams).catch((err: unknown) => {
+      this.request("turn/start", turnParams).then((result) => {
+        if (state.turnId !== undefined || !isObject(result) || !isObject(result.turn)
+          || typeof result.turn.id !== "string") return
+        state.turnId = result.turn.id
+        // Abort can win before the server acknowledges the turn. Release
+        // waits for idle, so interrupt using the exact ID when it arrives.
+        if (ctx.signal.aborted) this.interruptTurn(threadId, state.turnId)
+      }).catch((err: unknown) => {
         this.settleReject(threadId, this.toAgentError(err))
       })
     })
@@ -1204,6 +1240,14 @@ export class CodexWorker implements Worker {
       }
       case "item/completed": {
         if (!isThreadItem(params)) return
+        if (this.childRoleProofs.size > 0) {
+          const ids = readSpawnedChildIds(params.item, params.threadId)
+          if (ids.length > 0) {
+            const children = this.childSpawns.get(params.threadId) ?? new Set<string>()
+            for (const id of ids) children.add(id)
+            this.childSpawns.set(params.threadId, children)
+          }
+        }
         const state = this.turns.get(params.threadId)
         if (!state) return
         const item = params.item
@@ -1261,6 +1305,13 @@ export class CodexWorker implements Worker {
         }
         return
       }
+      case "turn/started": {
+        if (!isTurnCompleted(params)) return
+        const state = this.turns.get(params.threadId)
+        if (state && typeof params.turn.id === "string") state.turnId = params.turn.id
+        else this.observeChildTurn(params)
+        return
+      }
       case "turn/completed": {
         if (!isTurnCompleted(params)) {
           // Drift on the ONE notification that settles a turn: silently
@@ -1268,6 +1319,7 @@ export class CodexWorker implements Worker {
           this.onTurnCompletedDrift(params)
           return
         }
+        this.observeChildTurn(params)
         this.onTurnCompleted(params)
         return
       }
@@ -1276,7 +1328,7 @@ export class CodexWorker implements Worker {
         // notification is progress, not a terminal result; settling here would
         // race Codex's retry and amplify one reconnect into many new threads.
         const threadId = readErrorNotificationThreadId(params)
-        if (readErrorNotificationWillRetry(params) && threadId && this.turns.has(threadId)) return
+        if (threadId !== undefined && readErrorNotificationWillRetry(params)) return
         // A terminal `error` notification with no following turn/completed
         // would leave the turn forever unsettled. Settle the matching turn (or
         // all live turns if no threadId is carried). (H2)
@@ -1290,7 +1342,7 @@ export class CodexWorker implements Worker {
           message,
           retryable: !usageLimitExceeded,
         })
-        if (threadId && this.turns.has(threadId)) {
+        if (threadId !== undefined) {
           this.settleReject(threadId, err)
         } else {
           for (const tid of [...this.turns.keys()]) this.settleReject(tid, err)
@@ -1300,6 +1352,13 @@ export class CodexWorker implements Worker {
       default:
         return
     }
+  }
+
+  private observeChildTurn({ threadId, turn }: { threadId: string; turn: Record<string, unknown> }): void {
+    if (this.childRoleProofs.size === 0 || this.turns.has(threadId)) return
+    if (typeof turn.id !== "string" || typeof turn.status !== "string") return
+    this.childTurns.set(threadId, { id: turn.id, status: turn.status })
+    for (const proof of this.childRoleProofs.values()) proof.check?.()
   }
 
   /** Host-side image artifact copy. Awaited before the turn settles so the file
@@ -1366,43 +1425,13 @@ export class CodexWorker implements Worker {
 
   private async verifyRequestedChildRole(state: TurnState): Promise<boolean> {
     const role = state.requiredChildRole
-    if (role === undefined) return true
+    const proof = this.childRoleProofs.get(state.threadId)
+    if (role === undefined || !proof) return false
 
-    const childThreadIds = new Set<string>()
-    const seenCursors = new Set<string>()
-    let cursor: string | undefined
-    do {
-      const result = await this.request("thread/list", {
-        parentThreadId: state.threadId,
-        limit: 100,
-        ...(cursor === undefined ? {} : { cursor }),
-      })
-      const page = readListedChildRolePage(result, state.threadId, role)
-      if (page === undefined) {
-        throw new AgentError({
-          provider: PROVIDER,
-          code: "protocol_drift",
-          message: `codex thread/list returned an unrecognized page while verifying child role "${role}" (server: ${this.serverUserAgent ?? "unknown"})`,
-          retryable: false,
-        })
-      }
-      for (const childThreadId of page.childThreadIds) childThreadIds.add(childThreadId)
-      if (page.nextCursor === null) break
-      if (seenCursors.has(page.nextCursor)) {
-        throw new AgentError({
-          provider: PROVIDER,
-          code: "protocol_drift",
-          message: `codex thread/list repeated a pagination cursor while verifying child role "${role}" (server: ${this.serverUserAgent ?? "unknown"})`,
-          retryable: false,
-        })
-      }
-      seenCursors.add(page.nextCursor)
-      cursor = page.nextCursor
-    } while (true)
-
-    for (const childThreadId of childThreadIds) {
-      const childResult = await this.request("thread/read", { threadId: childThreadId, includeTurns: true })
-      const verified = hasReadCompletedChildRole(childResult, childThreadId, state.threadId, role)
+    const children = [...(this.childSpawns.get(state.threadId) ?? [])]
+    const roleMatches = await Promise.all(children.map(async (childThreadId) => {
+      const childResult = await this.request("thread/read", { threadId: childThreadId, includeTurns: false })
+      const verified = matchesReadChildRole(childResult, childThreadId, state.threadId, role)
       if (verified === undefined) {
         throw new AgentError({
           provider: PROVIDER,
@@ -1411,9 +1440,29 @@ export class CodexWorker implements Worker {
           retryable: false,
         })
       }
-      if (verified) return true
+      return verified
+    }))
+    const matchingChildren = children.filter((_, index) => roleMatches[index])
+    if (matchingChildren.length === 0) return false
+
+    // The root's completion is not a barrier for child notifications. Wait
+    // only for exact matches and bound missing evidence like a provider reply.
+    let timeout!: ReturnType<typeof setTimeout>
+    const childCompleted = new Promise<boolean>((resolve) => {
+      timeout = setTimeout(() => resolve(false), this.requestTimeoutMs || DEFAULT_REQUEST_TIMEOUT_MS)
+      proof.check = () => {
+        const statuses = matchingChildren.map((id) => this.childTurns.get(id)?.status)
+        if (statuses.includes("completed")) resolve(true)
+        else if (statuses.every((status) => status !== undefined && status !== "inProgress")) resolve(false)
+      }
+      proof.check()
+    })
+    try {
+      return await untilAborted(childCompleted, proof.cancel.signal)
+    } finally {
+      clearTimeout(timeout)
+      proof.check = undefined
     }
-    return false
   }
 
   private childRoleUnprovenError(role: string): AgentError {
@@ -1473,11 +1522,7 @@ export class CodexWorker implements Worker {
     const state = this.turns.get(threadId)
     if (!state || state.settled) return
     // Best-effort interrupt so a half-alive server stops burning tokens.
-    try {
-      this.send(encodeRequest(this.client?.allocId() ?? 0, "turn/interrupt", { threadId }))
-    } catch {
-      // child already gone; the reject below settles the turn anyway
-    }
+    this.interruptTurn(threadId, state.turnId)
     this.settleReject(
       threadId,
       new AgentError({

@@ -346,30 +346,20 @@ export function isTurnCompleted(
   return isObject(params) && typeof params.threadId === "string" && isObject(params.turn)
 }
 
-/** Read one page of provider-owned direct children with the exact native role.
- * `undefined` means protocol drift; an empty child list is valid absence. */
-export function readListedChildRolePage(
-  result: unknown,
-  parentThreadId: string,
-  role: string,
-): { childThreadIds: string[]; nextCursor: string | null } | undefined {
-  if (!isObject(result) || !Array.isArray(result.data)) return undefined
-  if (!(typeof result.nextCursor === "string" || result.nextCursor === null)) return undefined
-  const childThreadIds: string[] = []
-  for (const thread of result.data) {
-    if (!isObject(thread) || typeof thread.id !== "string") return undefined
-    if (!(typeof thread.parentThreadId === "string" || thread.parentThreadId === null)) return undefined
-    if (!(typeof thread.agentRole === "string" || thread.agentRole === null)) return undefined
-    if (thread.parentThreadId === parentThreadId && thread.agentRole === role) {
-      childThreadIds.push(thread.id)
-    }
+/** Child IDs from a completed provider spawn item, not from the model's output. */
+export function readSpawnedChildIds(item: Record<string, unknown>, parentThreadId: string): string[] {
+  if (item.type === "subAgentActivity" && item.kind === "started" && typeof item.agentThreadId === "string") {
+    return [item.agentThreadId]
   }
-  return { childThreadIds, nextCursor: result.nextCursor }
+  if (item.type === "collabAgentToolCall" && item.tool === "spawnAgent" && item.status === "completed"
+    && item.senderThreadId === parentThreadId && Array.isArray(item.receiverThreadIds)) {
+    return item.receiverThreadIds.filter((id): id is string => typeof id === "string")
+  }
+  return []
 }
 
-/** Validate one child returned by thread/read against the exact identity and a
- * provider-owned completed final turn. */
-export function hasReadCompletedChildRole(
+/** Verify exact live child identity. Ephemeral threads cannot return turn history. */
+export function matchesReadChildRole(
   result: unknown,
   childThreadId: string,
   parentThreadId: string,
@@ -380,18 +370,9 @@ export function hasReadCompletedChildRole(
   if (typeof thread.id !== "string") return undefined
   if (!(typeof thread.parentThreadId === "string" || thread.parentThreadId === null)) return undefined
   if (!(typeof thread.agentRole === "string" || thread.agentRole === null)) return undefined
-  if (!Array.isArray(thread.turns)) return undefined
-  for (const turn of thread.turns) {
-    if (!isObject(turn) || !["completed", "interrupted", "failed", "inProgress"].includes(String(turn.status))) {
-      return undefined
-    }
-  }
-  const finalTurn = thread.turns.at(-1)
   return thread.id === childThreadId
     && thread.parentThreadId === parentThreadId
     && thread.agentRole === role
-    && isObject(finalTurn)
-    && finalTurn.status === "completed"
 }
 
 /** An `error` notification (no following turn/completed) we must settle on. */

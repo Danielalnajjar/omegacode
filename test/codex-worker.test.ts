@@ -476,8 +476,9 @@ function makeServedWorker(
     threadEphemeral?: boolean
     threadId?: string
     initResult?: unknown
-    threadListResult?: unknown | ((params: any) => unknown)
     threadReadResult?: unknown | ((params: any) => unknown)
+    threadReadError?: { code: number; message: string }
+    turnStartError?: { code: number; message: string }
     onServerReq?: (child: FakeChild, req: any) => void
     onSpawn?: (env: NodeJS.ProcessEnv | undefined) => void
   } = {},
@@ -505,13 +506,9 @@ function makeServedWorker(
         if (req.method === "initialize") return child.pushLine({ jsonrpc: "2.0", id: req.id, result: opts.initResult ?? INIT_OK })
         if (req.method === "initialized") return
         if (req.method === "thread/start") return child.pushLine({ jsonrpc: "2.0", id: req.id, result: { thread: { id: threadId } } })
-        if (req.method === "thread/list") return child.pushLine({
-          jsonrpc: "2.0",
-          id: req.id,
-          result: typeof opts.threadListResult === "function"
-            ? opts.threadListResult(req.params)
-            : opts.threadListResult ?? { data: [], nextCursor: null, backwardsCursor: null },
-        })
+        if (req.method === "thread/read" && opts.threadReadError) {
+          return child.pushLine({ jsonrpc: "2.0", id: req.id, error: opts.threadReadError })
+        }
         if (req.method === "thread/read") return child.pushLine({
           jsonrpc: "2.0",
           id: req.id,
@@ -526,11 +523,11 @@ function makeServedWorker(
                 },
               },
         })
-        if (req.method === "thread/delete") return child.pushLine({ jsonrpc: "2.0", id: req.id, result: {} })
         if (req.method === "turn/interrupt") return child.pushLine({ jsonrpc: "2.0", id: req.id, result: {} })
         if (req.method === "turn/start") {
-          child.pushLine({ jsonrpc: "2.0", id: req.id, result: {} })
+          if (opts.turnStartError) return child.pushLine({ jsonrpc: "2.0", id: req.id, error: opts.turnStartError })
           const idx = turnIndex++
+          child.pushLine({ jsonrpc: "2.0", id: req.id, result: { turn: { id: `turn-${idx}` } } })
           turnScript(req, (obj) => child.pushLine(obj), idx)
           return
         }
@@ -1443,83 +1440,117 @@ test("execution profiles reject plugins and non-allowlisted MCP opt-ins before l
   assert.equal(spawned, false)
 })
 
-test("CodexWorker proves the exact listed child role and deletes the temporary durable subtree", async () => {
-  const threadStarts: any[] = []
-  const listRequests: any[] = []
-  const readRequests: any[] = []
-  const deleteRequests: any[] = []
-  const { worker } = makeServedWorker(
-    (_req, reply) => {
-      reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
-      reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
-    },
-    {
-      threadListResult: {
-        data: [{ id: "child-1", parentThreadId: "thread-1", agentRole: "librarian" }],
-        nextCursor: null,
-        backwardsCursor: null,
-      },
-      threadReadResult: {
-        thread: {
-          id: "child-1",
-          parentThreadId: "thread-1",
-          agentRole: "librarian",
-          turns: [{ status: "completed" }],
-        },
-      },
-      onServerReq: (_child, req) => {
-        if (req.method === "thread/start") threadStarts.push(req.params)
-        if (req.method === "thread/list") listRequests.push(req.params)
-        if (req.method === "thread/read") readRequests.push(req.params)
-        if (req.method === "thread/delete") deleteRequests.push(req.params)
-      },
-    },
-  )
-  const result = await worker.runAgent(spec({ codexChildRole: "librarian" }), ctx())
-  assert.equal(result.text, "done")
-  assert.equal(threadStarts[0].ephemeral, false)
-  assert.deepEqual(listRequests, [{ parentThreadId: "thread-1", limit: 100 }])
-  assert.deepEqual(readRequests, [{ threadId: "child-1", includeTurns: true }])
-  assert.deepEqual(deleteRequests, [{ threadId: "thread-1" }])
-  await worker.shutdown()
-})
+function childSpawn(parent: string, child: string, version: "v1" | "v2" = "v2") {
+  const item = version === "v1"
+    ? {
+      type: "collabAgentToolCall",
+      tool: "spawnAgent",
+      status: "completed",
+      senderThreadId: parent,
+      receiverThreadIds: [child],
+    }
+    : { type: "subAgentActivity", kind: "started", agentThreadId: child }
+  return { jsonrpc: "2.0", method: "item/completed", params: { threadId: parent, item } }
+}
 
-for (const scenario of ["absent", "failed", "in-progress", "mismatched-role", "unrelated-child"] as const) {
-  test(`CodexWorker rejects ${scenario} child-role evidence`, async () => {
+function turnEvent(threadId: string, status: string, id = "first-turn") {
+  return {
+    jsonrpc: "2.0",
+    method: status === "inProgress" ? "turn/started" : "turn/completed",
+    params: { threadId, turn: { id, status } },
+  }
+}
+
+for (const version of ["v1", "v2"] as const) {
+  test(`CodexWorker proves a native ${version} child without persisting its provider subtree`, async (t) => {
+    const methods: string[] = []
+    const threadStarts: Array<{ ephemeral: boolean; developerInstructions: string }> = []
+    const readRequests: unknown[] = []
+    const releases: string[] = []
+    let childClosed = false
     const { worker } = makeServedWorker(
       (_req, reply) => {
-        reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "claimed success" } } })
-        reply({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: "thread-1", turn: { status: "completed" } } })
+        if (version === "v1") reply(turnEvent("child-1", "completed"))
+        reply(childSpawn("thread-1", "child-1", version))
+        reply(childSpawn("child-1", "grandchild-1", version))
+        reply(turnEvent("grandchild-1", "completed"))
+        if (version === "v1") {
+          childClosed = true
+          reply({ jsonrpc: "2.0", method: "thread/closed", params: { threadId: "child-1" } })
+        }
+        reply({ jsonrpc: "2.0", method: "item/completed", params: { threadId: "thread-1", item: { type: "agentMessage", text: "done" } } })
+        reply(turnEvent("thread-1", "completed"))
       },
       {
-        threadListResult: {
-          data: scenario === "absent"
-            ? []
-            : [{ id: "child-1", parentThreadId: "thread-1", agentRole: "librarian" }],
-          nextCursor: null,
-          backwardsCursor: null,
-        },
-        threadReadResult: {
-          thread: {
-            id: "child-1",
-            parentThreadId: scenario === "unrelated-child" ? "other-root" : "thread-1",
-            agentRole: scenario === "mismatched-role" ? "explorer" : "librarian",
-            turns: [{
-              status: scenario === "failed" ? "failed" : scenario === "in-progress" ? "inProgress" : "completed",
-            }],
-          },
+        threadEphemeral: false,
+        threadReadResult: () => childClosed
+          ? null
+          : { thread: { id: "child-1", parentThreadId: "thread-1", agentRole: "librarian" } },
+        onServerReq: (child, req) => {
+          methods.push(req.method)
+          if (req.method === "thread/start") threadStarts.push(req.params)
+          if (req.method === "thread/read") {
+            readRequests.push(req.params)
+            if (version === "v2") setImmediate(() => child.pushLine(turnEvent("child-1", "completed")))
+          }
+          if (req.method === "thread/unsubscribe") releases.push(req.params.threadId)
         },
       },
     )
+    t.after(() => worker.shutdown())
+
+    const result = await worker.runAgent(spec({ codexChildRole: "librarian", instructions: "Remember the query." }), ctx())
+    assert.equal(result.text, "done")
+    assert.deepEqual(threadStarts.map((params) => params.ephemeral), [true])
+    assert.match(threadStarts[0].developerInstructions, /Remember the query\.[\s\S]*fork_turns to "none"/)
+    assert.deepEqual(readRequests, [{ threadId: "child-1", includeTurns: false }])
+    assert.ok(!methods.includes("thread/list") && !methods.includes("thread/delete"))
+    assert.deepEqual(releases, ["thread-1", "child-1", "grandchild-1"])
+  })
+}
+
+for (const scenario of ["absent", "failed", "restarted", "mismatched-role", "mismatched-id", "unrelated-child"] as const) {
+  test(`CodexWorker rejects ${scenario} child-role evidence`, async (t) => {
+    const interrupted: unknown[] = []
+    const { worker } = makeServedWorker(
+      (_req, reply) => {
+        if (scenario !== "absent") {
+          reply(childSpawn("thread-1", "child-1"))
+          if (scenario === "failed") reply({
+            jsonrpc: "2.0", method: "error", params: { threadId: "child-1", error: { message: "child failed" } },
+          })
+          reply(turnEvent("child-1", scenario === "failed" ? "failed" : "completed"))
+          if (scenario === "restarted") reply(turnEvent("child-1", "inProgress", "second-turn"))
+        }
+        reply(turnEvent("thread-1", "completed"))
+      },
+      {
+        requestTimeoutMs: 40,
+        threadReadResult: {
+          thread: {
+            id: scenario === "mismatched-id" ? "other-child" : "child-1",
+            parentThreadId: scenario === "unrelated-child" ? "other-root" : "thread-1",
+            agentRole: scenario === "mismatched-role" ? "explorer" : "librarian",
+          },
+        },
+        onServerReq: (server, req) => {
+          if (req.method === "turn/interrupt") {
+            interrupted.push(req.params)
+            server.pushLine(turnEvent(req.params.threadId, "interrupted", req.params.turnId))
+          }
+        },
+      },
+    )
+    t.after(() => worker.shutdown())
     await assert.rejects(
       worker.runAgent(spec({ codexChildRole: "librarian" }), ctx()),
       (error: unknown) => error instanceof AgentError && error.code === "child_role_unproven" && error.retryable === false,
     )
-    await worker.shutdown()
+    if (scenario === "restarted") assert.deepEqual(interrupted, [{ threadId: "child-1", turnId: "second-turn" }])
   })
 }
 
-test("concurrent root turns cannot cross-correlate child-role evidence", async () => {
+test("concurrent root turns cannot cross-correlate child-role evidence", async (t) => {
   let child!: FakeChild
   let nextThread = 0
   const pendingRoots: string[] = []
@@ -1537,36 +1568,115 @@ test("concurrent root turns cannot cross-correlate child-role evidence", async (
           child.pushLine({ jsonrpc: "2.0", id: req.id, result: {} })
           pendingRoots.push(req.params.threadId)
           if (pendingRoots.length !== 2) return
-          const [rootOne, rootTwo] = pendingRoots
-          // The matching-role child belongs to root two. Exact per-root metadata must prevent root
-          // one from accepting it even if the provider returns it in root one's filtered list.
-          for (const root of [rootOne, rootTwo]) {
-            child.pushLine({ jsonrpc: "2.0", method: "item/completed", params: { threadId: root, item: { type: "agentMessage", text: "done" } } })
-            child.pushLine({ jsonrpc: "2.0", method: "turn/completed", params: { threadId: root, turn: { status: "completed" } } })
-          }
+          const [first, second] = pendingRoots
+          child.pushLine(childSpawn(first, "child-1"))
+          child.pushLine(childSpawn(second, "child-2"))
+          child.pushLine({ jsonrpc: "2.0", method: "error", params: { threadId: "child-1", error: { message: "child failed" } } })
+          child.pushLine(turnEvent("child-1", "failed"))
+          child.pushLine(turnEvent("child-2", "completed"))
+          child.pushLine(turnEvent(first, "completed"))
+          child.pushLine(turnEvent(second, "completed"))
         }
-        if (req.method === "thread/list") child.pushLine({
-          jsonrpc: "2.0",
-          id: req.id,
-          result: {
-            data: req.params.parentThreadId === "root-1"
-              ? [{ id: "child-cross", parentThreadId: "root-2", agentRole: "librarian" }]
-              : [],
-            nextCursor: null,
-            backwardsCursor: null,
-          },
+        if (req.method === "thread/read") child.pushLine({
+          jsonrpc: "2.0", id: req.id, result: { thread: {
+            id: req.params.threadId,
+            parentThreadId: req.params.threadId === "child-1" ? pendingRoots[0] : pendingRoots[1],
+            agentRole: "librarian",
+          } },
         })
-        if (req.method === "thread/delete") child.pushLine({ jsonrpc: "2.0", id: req.id, result: {} })
       }
       return child as any
     },
   })
+  t.after(() => worker.shutdown())
   const results = await Promise.allSettled([
     worker.runAgent(spec({ codexChildRole: "librarian" }), ctx()),
     worker.runAgent(spec({ codexChildRole: "librarian" }), ctx()),
   ])
-  assert.ok(results.every((result) => result.status === "rejected" && result.reason instanceof AgentError && result.reason.code === "child_role_unproven"))
-  await worker.shutdown()
+  assert.deepEqual(results.map((result) => result.status), ["rejected", "fulfilled"])
+  assert.ok(results[0].status === "rejected" && results[0].reason.code === "child_role_unproven")
+})
+
+test("a child unloaded before role and turn observation is missing proof, not a cleanup failure", async (t) => {
+  const context = ctx()
+  const { worker } = makeServedWorker(
+    (_req, reply) => {
+      reply(childSpawn("thread-1", "child-1", "v1"))
+      reply(turnEvent("thread-1", "completed"))
+    },
+    { threadReadError: { code: -32600, message: "thread not loaded: child-1" } },
+  )
+  t.after(() => worker.shutdown())
+  await assert.rejects(
+    worker.runAgent(spec({ codexChildRole: "librarian" }), context),
+    (error: unknown) => error instanceof AgentError && error.code === "child_role_unproven",
+  )
+  assert.ok(!context.events.some((event) => event.kind === "tool-result" && event.name === "codex-thread-cleanup"))
+})
+
+test("cancelling a role proof interrupts late descendants before releasing the subtree", async (t) => {
+  const controller = new AbortController()
+  const interrupted: unknown[] = []
+  const releaseOrder: string[] = []
+  const { worker } = makeServedWorker(
+    (_req, reply) => {
+      reply(childSpawn("thread-1", "child-1"))
+      controller.abort()
+      // The server has not attached the child listener when the root aborts.
+      setImmediate(() => reply(turnEvent("child-1", "inProgress", "child-turn")))
+    },
+    {
+      onServerReq: (server, req) => {
+        if (req.method === "turn/interrupt") {
+          interrupted.push(req.params)
+          releaseOrder.push(`interrupt ${req.params.threadId}`)
+          if (req.params.threadId === "child-1") {
+            // The native spawn was already in flight when the child was interrupted.
+            server.pushLine(childSpawn("child-1", "grandchild-1"))
+            server.pushLine(turnEvent("grandchild-1", "inProgress", "grandchild-turn"))
+          }
+          server.pushLine(turnEvent(req.params.threadId, "interrupted", req.params.turnId))
+        }
+        if (req.method === "thread/unsubscribe") releaseOrder.push(`unsubscribe ${req.params.threadId}`)
+      },
+    },
+  )
+  t.after(() => worker.shutdown())
+  await assert.rejects(worker.runAgent(spec({ codexChildRole: "librarian" }), ctx(controller.signal)), AgentInterrupted)
+  assert.deepEqual(interrupted, [
+    { threadId: "thread-1", turnId: "turn-0" },
+    { threadId: "child-1", turnId: "child-turn" },
+    { threadId: "grandchild-1", turnId: "grandchild-turn" },
+  ])
+  assert.deepEqual(releaseOrder, [
+    "interrupt thread-1", "unsubscribe thread-1",
+    "interrupt child-1", "unsubscribe child-1",
+    "interrupt grandchild-1", "unsubscribe grandchild-1",
+  ])
+})
+
+test("a rejected role-proof turn start releases the root without waiting for a turn event", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const context = ctx()
+  const released: string[] = []
+  const { worker } = makeServedWorker(() => assert.fail("turn must not start"), {
+    turnStartError: { code: -32001, message: "server overloaded" },
+    onServerReq: (_child, req) => {
+      if (req.method === "thread/unsubscribe") released.push(req.params.threadId)
+    },
+  })
+  t.after(() => worker.shutdown())
+
+  const failed = assert.rejects(
+    worker.runAgent(spec({ codexChildRole: "librarian" }), context),
+    (error: unknown) => error instanceof AgentError && error.code === "server_overloaded" && error.retryable,
+  )
+  await tick()
+  // An explicit server rejection never emits turn/started or turn/completed.
+  t.mock.timers.tick(15_000)
+  await failed
+  assert.deepEqual(released, ["thread-1"])
+  assert.ok(!context.events.some((event) => event.kind === "tool-result" && event.name === "codex-thread-cleanup"))
 })
 
 test("CodexWorker starts Codex provider threads as ephemeral by default", async () => {
